@@ -1,0 +1,31 @@
+provider: Pasqal
+api_config:
+  endpoint: https://cloud.pasqal.com/api
+  auth_type: api_token
+  env_key: PASQAL_API_TOKEN
+
+solvers:
+  - id: pasqal_analog
+    name: Analog Quantum Processor
+    description: 중성 원자 기반 아날로그 양자 시뮬레이터
+    category: quantum_analog
+    model_type: analog
+    supported_variable_types: [binary]
+    supports_constraints: false
+    max_variables: 100
+    max_constraints: 0
+    problem_classes: [MIS, UDG_optimization, simulation, graph_problem]
+    strengths:
+      - Unit Disk Graph 문제에 최적
+      - 양자 시뮬레이션에 강점
+    weaknesses:
+      - 특정 문제 유형에만 적합
+      - 범용 최적화에 부적합
+    solution_guarantee: heuristic
+    cost_per_minute: 1.50
+    time_profile:
+      reference_variables: 50
+      base_time_seconds: [1, 10]
+      scaling_model: linear
+      scaling_factor: 1.0
+      max_time_seconds: 120

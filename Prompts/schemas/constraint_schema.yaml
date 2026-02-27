@@ -1,0 +1,162 @@
+version: '1.0'
+description: LLM이 출력하는 구조화된 제약조건 스키마
+constraint_fields:
+  name:
+    type: string
+    required: true
+    description: 제약 고유 식별자
+  description:
+    type: string
+    required: true
+    description: 제약 설명 (한글)
+  for_each:
+    type: string
+    required: false
+    description: '루프 변수 (예: i in I)'
+  lhs:
+    type: object
+    required: true
+    description: 좌변 노드
+  operator:
+    type: string
+    required: true
+    description: 비교연산자
+    enum:
+    - ==
+    - <=
+    - '>='
+    - <
+    - '>'
+    - '!='
+  rhs:
+    type: object
+    required: true
+    description: 우변 노드
+  priority:
+    type: string
+    required: true
+    description: hard 또는 soft
+  weight:
+    type: number
+    required: false
+    description: soft 페널티 가중치
+  expression:
+    type: string
+    required: true
+    description: Python식 표현 (fallback용)
+node_types:
+  value:
+    description: 숫자 상수
+    format: '{"value": number}'
+    example:
+      value: 1
+  var:
+    description: 의사결정 변수 참조
+    format: '{"var": {"name": "str", "index": "str"}}'
+    example:
+      var:
+        name: x
+        index: '[i,j]'
+  param:
+    description: 파라미터(데이터) 참조
+    format: '{"param": {"name": "str", "index": "str or null"}}'
+    example:
+      param:
+        name: max_hours
+        index: null
+  sum:
+    description: 변수 합산 (계수 선택)
+    format: '{"sum": {"var": "str", "index": "str", "over": "str", "coeff": object_or_null}}'
+    example:
+      sum:
+        var: x
+        index: '[i,j]'
+        over: j in J
+        coeff: null
+  multiply:
+    description: 두 노드의 곱
+    format: '{"multiply": [nodeA, nodeB]}'
+    example:
+      multiply:
+      - param:
+          name: cost
+          index: '[i,j]'
+      - var:
+          name: x
+          index: '[i,j]'
+  add:
+    description: 노드들의 합
+    format: '{"add": [nodeA, nodeB, ...]}'
+    example:
+      add:
+      - var:
+          name: x
+          index: '[i,j]'
+      - var:
+          name: y
+          index: '[j]'
+  subtract:
+    description: A - B
+    format: '{"subtract": [nodeA, nodeB]}'
+    example:
+      subtract:
+      - var:
+          name: z
+          index: '[i]'
+      - value: 1
+examples:
+- description: '할당 제약: 각 운행에 정확히 1명 배정'
+  json:
+    name: crew_assignment
+    description: 각 운행에 정확히 1명의 승무원 배정
+    for_each: i in I
+    lhs:
+      sum:
+        var: x
+        index: '[i,j]'
+        over: j in J
+        coeff: null
+    operator: ==
+    rhs:
+      value: 1
+    priority: hard
+    weight: 0
+    expression: sum(x[i,j] for j in J) == 1
+- description: '용량 제약: 근무시간 상한'
+  json:
+    name: work_hours_limit
+    description: 각 승무원 총 근무시간이 상한 이하
+    for_each: j in J
+    lhs:
+      sum:
+        var: x
+        index: '[i,j]'
+        over: i in I
+        coeff:
+          param: duration
+          index: '[i]'
+    operator: <=
+    rhs:
+      param:
+        name: max_work_hours
+        index: null
+    priority: hard
+    weight: 0
+    expression: sum(duration[i] * x[i,j] for i in I) <= max_work_hours
+- description: '변수 관계: 승무원 활성화'
+  json:
+    name: crew_activation
+    description: 운행 배정된 승무원은 활성 상태여야 함
+    for_each: i in I, j in J
+    lhs:
+      var:
+        name: x
+        index: '[i,j]'
+    operator: <=
+    rhs:
+      var:
+        name: y
+        index: '[j]'
+    priority: hard
+    weight: 0
+    expression: x[i,j] <= y[j]

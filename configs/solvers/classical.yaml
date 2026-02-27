@@ -1,0 +1,112 @@
+provider: Classical / NVIDIA
+api_config:
+  endpoint: local
+  auth_type: none
+  env_key: null
+
+solvers:
+  - id: classical_cpu
+    name: CPU Solver (OR-Tools / PuLP)
+    description: 고전 CPU 기반 정수 프로그래밍 및 메타휴리스틱 솔버
+    category: classical
+    model_type: LP_MIP
+    supported_variable_types: [binary, integer, continuous]
+    supports_constraints: true
+    max_variables: 10000000
+    max_constraints: 10000000
+    problem_classes: [LP, MIP, scheduling, routing, assignment, all]
+    strengths:
+      - 정확한 최적해 보장 (LP/MIP)
+      - 모든 변수 타입 지원
+      - 매우 저렴한 비용
+      - 안정적이고 검증된 알고리즘
+    weaknesses:
+      - 대규모 조합 최적화에서 지수적 시간 증가
+      - NP-hard 문제에서 매우 느릴 수 있음
+    solution_guarantee: exact
+    cost_per_minute: 0.01
+    time_profile:
+      reference_variables: 1000
+      base_time_seconds: [1, 30]
+      scaling_model: exponential
+      scaling_factor: 1.2
+      max_time_seconds: 3600
+
+  - id: nvidia_cuopt
+    name: NVIDIA cuOpt (GPU 최적화)
+    description: GPU 가속 MIP/LP/VRP 솔버 — 대규모 선형/정수 프로그래밍에 최적
+    category: classical_gpu
+    model_type: LP_MIP
+    supported_variable_types: [binary, integer, continuous]
+    supports_constraints: true
+    max_variables: 10000000
+    max_constraints: 10000000
+    problem_classes: [LP, MIP, VRP, scheduling, routing, large_optimization]
+    strengths:
+      - CPU 대비 최대 100배 속도 향상
+      - 대규모 LP/MIP에 최적
+      - Apache 2.0 오픈소스
+    weaknesses:
+      - NVIDIA GPU 필요
+      - 소규모 문제에서 이점 적음
+    solution_guarantee: exact
+    cost_per_minute: 0.07
+    time_profile:
+      reference_variables: 1000
+      base_time_seconds: [1, 10]
+      scaling_model: linear
+      scaling_factor: 0.8
+      max_time_seconds: 600
+    min_variable_advantage: 1000
+
+  - id: nvidia_cuquantum
+    name: NVIDIA cuQuantum (GPU 양자 시뮬레이터)
+    description: GPU에서 양자 회로 시뮬레이션하여 양자 알고리즘 검증
+    category: quantum_simulator
+    model_type: circuit
+    supported_variable_types: [binary]
+    supports_constraints: false
+    max_variables: 35
+    max_constraints: 0
+    problem_classes: [QAOA, VQE, simulation, algorithm_validation]
+    strengths:
+      - 양자 하드웨어 없이 알고리즘 검증
+      - 30+ 큐빗까지 시뮬레이션
+      - 노이즈 없는 이상적 시뮬레이션
+    weaknesses:
+      - 큐빗 수 증가 시 메모리 지수적 증가
+      - 대규모 최적화 부적합
+    solution_guarantee: heuristic
+    cost_per_minute: 0.07
+    time_profile:
+      reference_variables: 15
+      base_time_seconds: [1, 30]
+      scaling_model: exponential
+      scaling_factor: 2.0
+      max_time_seconds: 600
+
+  - id: nvidia_cudaq
+    name: NVIDIA CUDA-Q (양자-GPU 하이브리드)
+    description: 양자 컴퓨터와 GPU를 통합하는 하이브리드 양자-고전 플랫폼
+    category: quantum_hybrid_gpu
+    model_type: circuit
+    supported_variable_types: [binary]
+    supports_constraints: false
+    max_variables: 100
+    max_constraints: 0
+    problem_classes: [QAOA, VQE, hybrid_optimization, quantum_ml]
+    strengths:
+      - 양자-GPU 하이브리드 워크플로우
+      - 다양한 QPU 백엔드 지원
+    weaknesses:
+      - 설정 복잡도 높음
+      - QPU 연결 시 추가 비용
+      - 대규모 순수 최적화에 부적합
+    solution_guarantee: heuristic
+    cost_per_minute: 0.12
+    time_profile:
+      reference_variables: 30
+      base_time_seconds: [5, 60]
+      scaling_model: exponential
+      scaling_factor: 1.5
+      max_time_seconds: 600

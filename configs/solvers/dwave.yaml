@@ -1,0 +1,108 @@
+provider: D-Wave Systems
+api_config:
+  endpoint: https://cloud.dwavesys.com/sapi/v2
+  auth_type: api_token
+  env_key: DWAVE_API_TOKEN
+
+solvers:
+  - id: dwave_hybrid_cqm
+    name: Hybrid CQM Solver
+    description: 제약조건을 네이티브로 지원하는 대규모 하이브리드 양자-고전 솔버
+    category: quantum_hybrid
+    model_type: CQM
+    supported_variable_types: [binary, integer, continuous]
+    supports_constraints: true
+    max_variables: 1000000
+    max_constraints: 100000
+    problem_classes: [scheduling, routing, assignment, knapsack, resource_allocation]
+    strengths:
+      - 제약조건 네이티브 지원
+      - 모든 변수 타입 지원 (바이너리, 정수, 연속)
+      - 대규모 문제 처리 가능 (100만 변수)
+    weaknesses:
+      - 최적해 보장 불가 (근사해)
+      - 클라우드 비용 발생
+    solution_guarantee: approximate
+    cost_per_minute: 0.20
+    time_profile:
+      reference_variables: 1000
+      base_time_seconds: [5, 20]
+      scaling_model: sublinear
+      scaling_factor: 1.0
+      max_time_seconds: 300
+
+  - id: dwave_hybrid_bqm
+    name: Hybrid BQM Solver
+    description: 대규모 바이너리 최적화를 위한 하이브리드 솔버
+    category: quantum_hybrid
+    model_type: BQM
+    supported_variable_types: [binary, spin]
+    supports_constraints: false
+    max_variables: 1000000
+    max_constraints: 0
+    problem_classes: [QUBO, max_cut, graph_coloring, clustering]
+    strengths:
+      - 대규모 바이너리 최적화에 강함
+      - 빠른 처리 속도
+    weaknesses:
+      - 제약조건은 페널티로 변환 필요
+      - 바이너리/스핀 변수만 지원
+    solution_guarantee: approximate
+    cost_per_minute: 0.20
+    time_profile:
+      reference_variables: 1000
+      base_time_seconds: [3, 15]
+      scaling_model: sublinear
+      scaling_factor: 1.0
+      max_time_seconds: 300
+
+  - id: dwave_advantage_qpu
+    name: Advantage QPU
+    description: 5000+ 큐빗 양자 처리 장치 (순수 양자 컴퓨팅)
+    category: quantum_native
+    model_type: BQM
+    supported_variable_types: [binary, spin]
+    supports_constraints: false
+    max_variables: 5000
+    max_constraints: 0
+    problem_classes: [QUBO, ising, small_optimization]
+    strengths:
+      - 순수 양자 컴퓨팅 (밀리초 단위)
+      - 양자 이점 연구에 적합
+    weaknesses:
+      - 실효 변수 수 제한적 (~200, 임베딩 후)
+      - 제약조건은 페널티로 변환 필요
+      - 노이즈에 민감
+    solution_guarantee: heuristic
+    cost_per_minute: 0.33
+    time_profile:
+      reference_variables: 100
+      base_time_seconds: [0.01, 0.1]
+      scaling_model: linear
+      scaling_factor: 1.0
+      max_time_seconds: 5
+
+  - id: dwave_nl
+    name: Nonlinear Model Solver
+    description: 비선형 모델을 지원하는 하이브리드 솔버 (순열, 부분집합 등)
+    category: quantum_hybrid
+    model_type: NL
+    supported_variable_types: [binary, integer]
+    supports_constraints: true
+    max_variables: 1000000
+    max_constraints: 100000
+    problem_classes: [scheduling, TSP, permutation, subset_selection]
+    strengths:
+      - 순열/부분집합 네이티브 지원
+      - 비선형 목적함수 지원
+    weaknesses:
+      - 연속 변수 미지원
+      - 비교적 새로운 모델 타입
+    solution_guarantee: approximate
+    cost_per_minute: 0.20
+    time_profile:
+      reference_variables: 1000
+      base_time_seconds: [5, 20]
+      scaling_model: sublinear
+      scaling_factor: 1.0
+      max_time_seconds: 300

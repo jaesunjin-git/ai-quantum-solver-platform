@@ -1,0 +1,270 @@
+from __future__ import annotations
+"""
+domains/crew/skills/math_model.py
+─────────────────────────────────
+수학 모델 생성 및 관리 스킬.
+
+skill_math_model: LLM을 사용하여 분석 데이터로부터 수학적 최적화 모델 생성.
+skill_show_math_model: 기존 수학 모델을 다시 표시.
+handle_math_model_confirm: 수학 모델 확정 처리 및 다음 단계 안내.
+
+리팩토링 Step 4c에서 agent.py CrewAgent로부터 추출됨.
+"""
+
+import asyncio
+import json
+import logging
+import re
+from typing import Any, Dict, List, Optional
+
+from domains.crew.session import SessionState, CrewSession, save_session_state
+from domains.crew.utils import (
+    build_facts_summary, build_next_options, clean_report,
+    domain_display, error_response, extract_text_from_llm
+)
+from domains.crew.skills.general import skill_general
+
+from engine.math_model_generator import generate_math_model, summarize_model
+from core.version.model_service import create_model_version
+
+logger = logging.getLogger(__name__)
+
+
+async def skill_math_model(model, session: CrewSession, project_id: str, message: str, params: Dict
+) -> Dict:
+    state = session.state
+
+    if not state.analysis_completed:
+        return {
+            "type": "warning",
+            "text": "⚠️ 아직 데이터 분석이 완료되지 않았습니다. 먼저 '데이터 분석'을 진행해 주세요.",
+            "data": None,
+            "options": [{"label": "📊 분석 시작", "action": "send", "message": "데이터 분석 시작해줘"}],
+        }
+
+    if state.math_model and not state.math_model_confirmed:
+        summary = summarize_model(state.math_model)
+        return {
+            "type": "analysis",
+            "text": "📐 **이전에 생성된 수학 모델입니다.**\n\n확인 후 다음 단계를 진행해 주세요.",
+            "data": {
+                "view_mode": "math_model",
+                "math_model": state.math_model,
+                "math_model_summary": summary,
+            },
+            "options": [
+                {"label": "✅ 모델 확정", "action": "send", "message": "수학 모델 확정"},
+                {"label": "🔄 모델 재생성", "action": "send", "message": "수학 모델 다시 생성해줘"},
+                {"label": "✏️ 목적함수 변경", "action": "send", "message": "목적함수를 비용 최소화로 변경해줘"},
+                {"label": "📊 분석 결과", "action": "send", "message": "분석 결과 보여줘"},
+            ],
+        }
+
+    # 이미 확정된 모델이 있는 경우
+    if state.math_model and state.math_model_confirmed:
+        # 재생성/수정 요청이면 초기화 후 아래 생성 로직으로
+        is_regenerate = any(kw in message for kw in ["다시", "재생성", "regenerate", "바꿔", "변경", "수정"])
+        is_param_action = params and params.get("user_objective")
+        is_param_regen = params and params.get("regenerate")
+        if is_regenerate or is_param_action or is_param_regen:
+            state.reset_from_math_model()
+            save_session_state(project_id, state)
+        else:
+            summary = summarize_model(state.math_model)
+            return {
+                "type": "analysis",
+                "text": "📐 **이미 확정된 수학 모델입니다.**\n\n재생성하려면 '모델 재생성'을 눌러주세요.",
+                "data": {
+                    "view_mode": "math_model",
+                    "math_model": state.math_model,
+                    "math_model_summary": summary,
+                },
+                "options": [
+                    {"label": "⚡ 솔버 추천", "action": "send", "message": "솔버 추천해줘"},
+                    {"label": "🔄 모델 재생성", "action": "send", "message": "수학 모델 다시 생성해줘"},
+                    {"label": "📊 분석 결과", "action": "send", "message": "분석 결과 보여줘"},
+                ],
+            }
+
+    try:
+        # 사용자가 목적함수를 지정했는지 확인
+        # 1순위: LLM이 추출한 구조화된 파라미터
+        user_objective = params.get("user_objective") if params else None
+
+        # 2순위: 메시지에서 키워드 기반 추출 (fallback)
+        if not user_objective:
+            objective_keywords = ["최소화", "최대화", "minimize", "maximize", "공평", "비용", "균등", "운행시간", "인건비"]
+            if any(kw in message for kw in objective_keywords):
+                user_objective = message
+
+        csv_summary = state.csv_summary or ""
+        analysis_report = state.last_analysis_report or ""
+        domain = state.detected_domain or "generic"
+
+        result = await generate_math_model(
+            csv_summary=csv_summary,
+            analysis_report=analysis_report,
+            domain=domain,
+            user_objective=user_objective,
+            data_facts=state.data_facts,
+        )
+
+        if not result["success"]:
+            error_msg = result.get("error", "알 수 없는 오류")
+            warnings = result.get("validation", {}).get("warnings", []) if result.get("validation") else []
+            warning_text = "\n".join([f"  ⚠️ {w}" for w in warnings]) if warnings else ""
+            return error_response(
+                f"수학 모델 생성에 실패했습니다: {error_msg}\n{warning_text}",
+                "수학 모델 생성해줘"
+            )
+
+        model = result["model"]
+        validation = result["validation"]
+
+        # 세션에 저장
+        state.math_model = model
+        state.math_model_confirmed = False
+        state.last_executed_skill = "MathModelSkill"
+
+        # 사용자에게 보여줄 요약
+        summary = summarize_model(model)
+
+        # 검증 경고 표시
+        warning_lines = []
+        if validation.get("warnings"):
+            warning_lines.append("\n### ⚠️ 검증 경고")
+            for w in validation["warnings"]:
+                warning_lines.append(f"- {w}")
+
+        meta = model.get("metadata", {})
+        var_count = meta.get("estimated_variable_count", "?")
+        con_count = meta.get("estimated_constraint_count", "?")
+
+        return {
+            "type": "analysis",
+            "text": (
+                f"📐 **수학 모델이 생성되었습니다.**\n\n"
+                f"추정 변수 수: **{var_count}개**\n"
+                f"추정 제약 수: **{con_count}개**\n\n"
+                f"오른쪽 패널에서 상세 모델을 확인하고, 맞으면 '모델 확정'을 눌러주세요."
+            ),
+            "data": {
+                "view_mode": "math_model",
+                "math_model": model,
+                "math_model_summary": summary + "\n".join(warning_lines)
+            },
+            "options": [
+                {"label": "✅ 모델 확정", "action": "send", "message": "수학 모델 확정"},
+                {"label": "🔄 모델 재생성", "action": "send", "message": "수학 모델 다시 생성해줘"},
+                {"label": "✏️ 목적함수 변경", "action": "send", "message": "목적함수를 변경하고 싶어요"},
+                {"label": "📊 분석 결과", "action": "send", "message": "분석 결과 보여줘"},
+            ],
+        }
+
+    except Exception as e:
+        logger.error(f"MathModelSkill failed: {e}", exc_info=True)
+        return error_response("수학 모델 생성 중 오류가 발생했습니다.", "수학 모델 생성해줘")
+
+
+async def skill_show_math_model(session: CrewSession, project_id: str, message: str, params: Dict
+) -> Dict:
+    state = session.state
+    if state.math_model:
+        summary = summarize_model(state.math_model)
+        if state.math_model_confirmed:
+            return {
+                "type": "analysis",
+                "text": "📐 **확정된 수학 모델입니다.**",
+                "data": {
+                    "view_mode": "math_model",
+                    "math_model": state.math_model,
+                    "math_model_summary": summary,
+                },
+                "options": [
+                    {"label": "⚡ 솔버 추천", "action": "send", "message": "솔버 추천해줘"},
+                    {"label": "🔄 모델 재생성", "action": "send", "message": "수학 모델 다시 생성해줘"},
+                    {"label": "📊 분석 결과", "action": "send", "message": "분석 결과 보여줘"},
+                ],
+            }
+        else:
+            return {
+                "type": "analysis",
+                "text": "📐 **이전에 생성된 수학 모델입니다.**\n\n확인 후 다음 단계를 진행해 주세요.",
+                "data": {
+                    "view_mode": "math_model",
+                    "math_model": state.math_model,
+                    "math_model_summary": summary,
+                },
+                "options": [
+                    {"label": "✅ 모델 확정", "action": "send", "message": "수학 모델 확정"},
+                    {"label": "🔄 모델 재생성", "action": "send", "message": "수학 모델 다시 생성해줘"},
+                    {"label": "📊 분석 결과", "action": "send", "message": "분석 결과 보여줘"},
+                ],
+            }
+    return {
+        "type": "warning",
+        "text": "아직 생성된 수학 모델이 없습니다. 먼저 수학 모델을 생성해 주세요.",
+        "data": None,
+        "options": [
+            {"label": "📐 수학 모델 생성", "action": "send", "message": "수학 모델 생성해줘"},
+        ],
+    }
+
+
+async def handle_math_model_confirm(model, session: CrewSession, project_id: str, message: str, current_tab: Optional[str] = None
+) -> Dict:
+    state = session.state
+    msg = message.lower()
+
+    # 모델 확정
+    if "확정" in msg or "확인" in msg or "맞" in msg:
+        state.math_model_confirmed = True
+        meta = state.math_model.get("metadata", {}) if state.math_model else {}
+
+        # Save model version
+        try:
+            pid = int(project_id)
+            meta = state.math_model.get("metadata", {}) if state.math_model else {}
+            domain = state.domain_override or state.detected_domain
+            obj_func = ""
+            if state.math_model and "formulation" in state.math_model:
+                obj_func = state.math_model["formulation"].get("objective", {}).get("description", "")
+            mv = create_model_version(
+                project_id=pid,
+                dataset_version_id=getattr(state, "current_dataset_version_id", None),
+                model_json=state.math_model,
+                domain_type=domain,
+                objective_type=meta.get("problem_type", "unknown"),
+                objective_summary=obj_func[:200] if obj_func else None,
+                variable_count=meta.get("estimated_variable_count"),
+                constraint_count=meta.get("estimated_constraint_count"),
+                description="모델 확정",
+            )
+            state.current_model_version_id = mv.id
+        except Exception as ve:
+            logger.warning(f"Failed to create model version: {ve}")
+        var_count = meta.get("estimated_variable_count", "?")
+        return {
+            "type": "system",
+            "text": (
+                f"✅ **수학 모델이 확정되었습니다.**\n\n"
+                f"변수 규모({var_count}개)를 기반으로 솔버를 추천합니다."
+            ),
+            "data": None,
+            "options": [
+                {"label": "⚡ 솔버 추천", "action": "send", "message": "솔버 추천해줘"},
+            ],
+        }
+
+    # 재생성 요청
+    if "다시" in msg or "재생성" in msg:
+        state.reset_from_math_model()
+        return await skill_math_model(model, session, project_id, message, {})
+
+    # 목적함수 변경 요청
+    if "목적" in msg or "변경" in msg:
+        state.reset_from_math_model()
+        return await skill_math_model(model, session, project_id, message, {})
+
+    # 기타 → 일반 처리
+    return await skill_general(model, session, project_id, message, {})

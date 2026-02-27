@@ -1,0 +1,48 @@
+version: '1.0'
+description: 수학 모델 생성용 프롬프트
+system: 당신은 최적화 문제의 수학적 모델링 전문가입니다.
+rules:
+- JSON만 출력하라. 마크다운 코드블록을 사용하지 마라.
+- 아래 스키마를 정확히 따르라. 필드를 빠뜨리지 마라.
+- variables는 솔버가 결정하는 의사결정 변수만 포함하라. 데이터 컬럼은 parameters에 넣어라.
+- '의사결정 변수 예시: x[i,j]=승무원i를 운행j에 배정 여부, y[j]=승무원j 활성화 여부.'
+- estimated_variable_count는 각 변수의 인덱스 집합 크기의 곱의 합으로 계산하라.
+- sets의 elements는 빈 배열로 두고 source_file과 source_column만 명시하라.
+- 제약조건은 반드시 모든 제약을 포함하라. 절대 생략하지 마라.
+- 제약조건은 반드시 구조화된 lhs/operator/rhs 필드를 포함하라.
+- expression도 Python식으로 반드시 작성하되, 컴파일러는 lhs/operator/rhs를 우선 사용한다.
+- 'lhs와 rhs 노드 타입: value, var, param, sum, multiply, add, subtract.'
+- 'sum 노드의 over는 "변수 in 집합" 형태 (예: "j in J").'
+- coeff가 있는 sum은 coeff 필드에 param 노드를 넣어라.
+- 'for_each는 제약 반복 인덱스 (예: "i in I" 또는 "i in I, j in J").'
+template: '{system}
+
+
+  중요 규칙:
+
+  {rules_text}
+
+
+  출력 JSON 스키마:
+
+  {model_schema}
+
+
+  제약조건 작성 형식:
+
+  {constraint_schema}
+
+
+  === 입력 데이터 ===
+
+  도메인: {domain}
+
+  데이터 요약:
+
+  {data_summary}
+
+
+  {objective_instruction}
+
+
+  위 데이터를 분석하여 최적화 수학 모델을 JSON으로 출력하세요.'
