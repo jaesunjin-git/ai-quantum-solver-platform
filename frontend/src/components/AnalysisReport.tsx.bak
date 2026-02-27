@@ -1,0 +1,1281 @@
+﻿// ============================================================
+// AnalysisReport.tsx ??v3.0
+// ============================================================
+// v1.0 : 기본 3-view 구조
+// v2.0 : 솔버별 최적 전송, 백엔드 데이터 연동
+// v3.0 :
+//   - 다운로드: window.open + fetch + Blob (로그인 문제 해결)
+//   - projectId를 props로 수신 (URL 파싱 제거)
+//   - actions 구조 통합: {label, message} 객체 처리
+//   - TypeScript 인터페이스 전면 정의 (any 제거)
+//   - file_uploaded view_mode 추가
+//   - OptimizationResultView 다운로드 버튼 동작 해결
+//   - SolverView 미사용 onComplete prop 제거
+// ============================================================
+
+import React, { useState, useEffect } from 'react';
+import '../markdown.css';
+import {
+  Activity, FileText, ArrowRight, Settings, Play, Cpu,
+  CheckCircle, Loader2, Clock, Download, TrendingUp,
+  Users, Upload, BarChart3,
+} from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, Cell,
+} from 'recharts';
+
+// ============================================================
+// 타입 정의
+// ============================================================
+
+interface ActionItem {
+  label: string;
+  message: string;
+}
+
+interface ReportActions {
+  primary?: ActionItem;
+  secondary?: ActionItem;
+}
+
+interface ReportData {
+  report?: string;
+  agent_status?: string;
+  actions?: ReportActions;
+  domain?: string;
+  domain_confidence?: number;
+}
+
+interface Solver {
+  solver_id: string;
+  solver_name: string;
+  solver_type: string;
+  provider: string;
+  category: string;
+  suitability: string;
+  total_score: number;
+  scores: {
+    structure: number;
+    scale: number;
+    cost: number;
+    speed: number;
+  };
+  reasons: string[];
+  warnings: string[];
+  description: string;
+  strengths: string[];
+  weaknesses: string[];
+  typical_time_seconds: number[];
+  estimated_time?: number[];      // 시간 추정
+  estimated_cost?: number[];      // 비용 추정
+}
+
+interface ProblemProfile {
+  variable_count: number;
+  constraint_count: number;
+  variable_types: string[];
+  has_constraints: boolean;
+  problem_classes: string[];
+}
+
+interface SolverData {
+  view_mode: 'solver';
+  problem_profile?: ProblemProfile;
+  recommended_solvers?: Solver[];
+  top_recommendation?: Solver;
+  priority?: string;
+  execution_strategies?: any[];
+  recommended_strategy?: any;
+  model_analysis?: any;
+}
+
+interface ScheduleItem {
+  day?: string;
+  crew_id?: string;
+  shifts?: number;
+  crew?: number;
+  work_hours?: number;
+}
+
+interface OptSummary {
+  total_cost_reduction?: string;
+  schedule_efficiency?: string;
+  constraint_satisfaction?: string;
+  computation_time?: string;
+  coverage_rate?: number;
+  crew_satisfaction_score?: number;
+  total_operation_cost?: number;
+  total_crews_assigned?: number;
+  total_trips_covered?: number;
+  [key: string]: string | number | undefined;
+}
+
+interface OptConstraints {
+  hard_constraints_met?: number;
+  hard_constraints_total?: number;
+  soft_constraints_met?: number;
+  soft_constraints_total?: number;
+}
+
+interface OptResult {
+  summary?: OptSummary;
+  constraints?: OptConstraints;
+  schedule_preview?: ScheduleItem[];
+  solver_used?: string;
+  solver?: string;
+  job_id?: string;
+  execution_time_sec?: number;
+}
+
+interface ResultData {
+  view_mode: 'result';
+  result?: OptResult;
+}
+
+interface FileUploadedData {
+  view_mode: 'file_uploaded';
+  files?: string[];
+  file_count?: number;
+}
+
+interface MathModelData {
+  view_mode: 'math_model';
+  math_model?: {
+    model_version?: string;
+    problem_name?: string;
+    domain?: string;
+    sets?: Record<string, any>;
+    parameters?: Record<string, any>;
+    variables?: any[];
+    objective?: any;
+    constraints?: any[];
+    metadata?: {
+      estimated_variable_count?: number;
+      estimated_constraint_count?: number;
+      variable_types?: string[];
+      recommended_solvers?: string[];
+    };
+  };
+  math_model_summary?: string;
+}
+
+type AnalysisData = ReportData | SolverData | ResultData | FileUploadedData | MathModelData;
+
+interface AnalysisReportProps {
+  data: AnalysisData | null;
+  projectId?: string;
+  onAction?: (type: string, message: string) => void;
+  onComplete?: (result: OptResult) => void;
+}
+
+// ============================================================
+// 다운로드 유틸
+// ============================================================
+
+async function downloadReport(projectId: string, format: 'md' | 'docx'): Promise<void> {
+  try {
+    const token = localStorage.getItem('token') || '';
+    const res = await fetch(
+      `/api/projects/${projectId}/report/download?format=${format}`,
+      {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      },
+    );
+
+    if (!res.ok) {
+      const errText = await res.text();
+      alert(`다운로드 실패: ${errText || res.statusText}`);
+      return;
+    }
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `analysis_report.${format}`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error('Download error:', err);
+        alert('다운로드 중 오류가 발생했습니다.');
+  }
+}
+
+// ============================================================
+// 메인 컴포넌트
+// ============================================================
+
+export default function AnalysisReport({
+  data,
+  projectId,
+  onAction,
+  onComplete,
+}: AnalysisReportProps) {
+  if (!data) {
+    return (
+      <div className="h-full flex items-center justify-center bg-slate-900 text-slate-500">
+        <div className="text-center space-y-3">
+          <BarChart3 size={48} className="mx-auto opacity-30" />
+            <p className="text-sm">분석 결과가 준비될 때까지 대기합니다.</p>
+        </div>
+      </div>
+    );
+  }
+
+  const viewMode = (data as any).view_mode as string | undefined;
+
+  if (viewMode === 'file_uploaded') {
+    return <FileUploadedView data={data as FileUploadedData} onAction={onAction} />;
+  }
+
+  if (viewMode === 'result') {
+    return (
+      <OptimizationResultView
+        data={data as ResultData}
+        projectId={projectId}
+        onComplete={onComplete}
+      />
+    );
+  }
+
+  if (viewMode === 'math_model') {
+    return <MathModelView data={data as MathModelData} onAction={onAction} projectId={projectId} />;
+  }
+
+  if (viewMode === 'solver') {
+    return <SolverView data={data as SolverData} onAction={onAction} />;
+  }
+
+// 기본: ReportView (view_mode 없음)
+  return <ReportView data={data as ReportData} projectId={projectId} onAction={onAction} />;
+}
+
+// ============================================================
+// [View] 수학 모델 상세
+// ============================================================
+
+function MathModelView({
+  data,
+  onAction,
+  projectId,
+}: {
+  data: MathModelData;
+  onAction?: (type: string, message: string) => void;
+  projectId?: string;
+}) {
+  const model = data.math_model || {};
+  const meta = model.metadata || {};
+  const variables = model.variables || [];
+  const constraints = model.constraints || [];
+  const objective = model.objective || {};
+  const sets = model.sets || {};
+
+  const varCount = meta.estimated_variable_count || variables.length || 0;
+  const conCount = meta.estimated_constraint_count || constraints.length || 0;
+  const varTypes = meta.variable_types_used || meta.variable_types || [];
+  const recSolvers = meta.recommended_solvers || [];
+
+  return (
+    <div className="h-full flex flex-col bg-slate-900 overflow-hidden animate-fade-in">
+      {/* 헤더 - 분석 리포트와 파일의 구조 */}
+      <div className="p-6 border-b border-slate-800 bg-slate-900/95 sticky top-0 z-10">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-emerald-500/20 rounded-lg text-emerald-400">
+              <FileText size={20} />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-white">Mathematical Model</h2>
+              <div className="flex items-center gap-2 text-[11px] text-slate-400">
+                <Activity size={14} className="text-emerald-400" />
+                <span>{model.problem_name || '수학 모델'}</span>
+                <span>·</span>
+                <span className="text-slate-200 font-medium">{model.domain || 'general'}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* 다운로드 버튼 */}
+          {projectId && (
+            <div className="flex gap-2">
+              <button
+                onClick={async () => {
+                  try {
+                    const token = localStorage.getItem('token') || '';
+                    const res = await fetch(
+                      `/api/projects/${projectId}/report/download?format=json&type=math_model`,
+                      { headers: token ? { Authorization: `Bearer ${token}` } : {} }
+                    );
+                    if (!res.ok) { alert('다운로드 실패'); return; }
+                    const blob = await res.blob();
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url; a.download = 'math_model.json';
+                    document.body.appendChild(a); a.click();
+                    document.body.removeChild(a); URL.revokeObjectURL(url);
+                  } catch (e) { console.error(e); alert('다운로드 오류'); }
+                }}
+                className="px-3 py-1.5 text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 transition flex items-center gap-1"
+              title="JSON으로 다운로드"
+              >
+                <Download size={14} />
+                <span>.json</span>
+              </button>
+              <button
+                onClick={async () => {
+                  try {
+                    const token = localStorage.getItem('token') || '';
+                    const res = await fetch(
+                      `/api/projects/${projectId}/report/download?format=md&type=math_model`,
+                      { headers: token ? { Authorization: `Bearer ${token}` } : {} }
+                    );
+                    if (!res.ok) { alert('다운로드 실패'); return; }
+                    const blob = await res.blob();
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url; a.download = 'math_model.md';
+                    document.body.appendChild(a); a.click();
+                    document.body.removeChild(a); URL.revokeObjectURL(url);
+                  } catch (e) { console.error(e); alert('다운로드 오류'); }
+                }}
+                className="px-3 py-1.5 text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 transition flex items-center gap-1"
+              title="Markdown으로 다운로드"
+              >
+                <Download size={14} />
+                <span>.md</span>
+              </button>
+              <button
+                onClick={async () => {
+                  try {
+                    const token = localStorage.getItem('token') || '';
+                    const res = await fetch(
+                      `/api/projects/${projectId}/report/download?format=docx&type=math_model`,
+                      { headers: token ? { Authorization: `Bearer ${token}` } : {} }
+                    );
+                    if (!res.ok) { alert('다운로드 실패'); return; }
+                    const blob = await res.blob();
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url; a.download = 'math_model.docx';
+                    document.body.appendChild(a); a.click();
+                    document.body.removeChild(a); URL.revokeObjectURL(url);
+                  } catch (e) { console.error(e); alert('다운로드 오류'); }
+                }}
+                className="px-3 py-1.5 text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 transition flex items-center gap-1"
+              title="Word로 다운로드"
+              >
+                <Download size={14} />
+                <span>.docx</span>
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 본문 - 스크롤 영역 */}
+      <div className="flex-1 overflow-y-auto p-6 custom-scrollbar space-y-6">
+        {/* Summary Cards */}
+        <div className="grid grid-cols-3 gap-3">
+          <div className="bg-slate-800 rounded-xl p-4 text-center">
+            <div className="text-2xl font-bold text-indigo-400">{varCount}</div>
+                <div className="text-[11px] text-slate-400 mt-1">변수 수</div>
+          </div>
+          <div className="bg-slate-800 rounded-xl p-4 text-center">
+            <div className="text-2xl font-bold text-amber-400">{conCount}</div>
+            <div className="text-[11px] text-slate-400 mt-1">제약 조건</div>
+          </div>
+          <div className="bg-slate-800 rounded-xl p-4 text-center">
+            <div className="text-2xl font-bold text-emerald-400">{varTypes.length > 0 ? varTypes.join(', ') : 'binary'}</div>
+            <div className="text-[11px] text-slate-400 mt-1">변수 유형</div>
+          </div>
+        </div>
+
+        {/* Objective Function */}
+        {objective && (objective.description || objective.type) && (
+          <div className="bg-slate-800 rounded-xl p-4 space-y-2">
+          <h3 className="text-sm font-semibold text-white flex items-center gap-2">📊 목적함수</h3>
+            <div className="text-sm text-slate-300">
+              <span className="text-indigo-400 font-mono">{objective.type || 'minimize'}</span>
+              {objective.description && <p className="mt-1">{objective.description}</p>}
+              {objective.expression && (
+                <code className="block mt-2 bg-slate-900 p-2 rounded text-[11px] text-green-400 overflow-x-auto">
+                  {objective.expression}
+                </code>
+              )}
+            </div>
+            {objective.alternatives && objective.alternatives.length > 0 && (
+              <div className="mt-2">
+                <p className="text-[11px] text-slate-500">대안 목적함수:</p>
+                {objective.alternatives.map((alt: any, idx: number) => (
+                  <div key={idx} className="text-[11px] text-slate-400 mt-1">
+                    • {alt.description || alt.expression || JSON.stringify(alt)}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Sets */}
+        {(Array.isArray(sets) ? sets.length > 0 : Object.keys(sets).length > 0) && (
+          <div className="bg-slate-800 rounded-xl p-4 space-y-2">
+          <h3 className="text-sm font-semibold text-white">📊 집합 (Sets)</h3>
+            <div className="space-y-1">
+              {(Array.isArray(sets) ? sets : Object.entries(sets).map(([k, v]) => ({ id: k, ...(typeof v === 'object' ? v : { description: v }) }))).map((s: any, idx: number) => (
+                <div key={idx} className="flex justify-between text-[11px]">
+                  <span className="text-indigo-400 font-mono">{s.id || s.name || idx}</span>
+                  <span className="text-slate-400">{s.description || s.size || ''}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Variables */}
+        {variables.length > 0 && (
+          <div className="bg-slate-800 rounded-xl p-4 space-y-2">
+          <h3 className="text-sm font-semibold text-white">📊 변수 정의</h3>
+            <div className="space-y-1">
+              {variables.slice(0, 10).map((v: any, idx: number) => (
+                <div key={idx} className="flex justify-between text-[11px]">
+                  <span className="text-green-400 font-mono">{v.name || v.id || `x_${idx}`}</span>
+                  <span className="text-slate-400">{v.type || 'binary'} · {v.description || ''}</span>
+                </div>
+              ))}
+              {variables.length > 10 && (
+                 <p className="text-[12px] text-slate-500">... 외 {variables.length - 10}개</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Constraints */}
+        {constraints.length > 0 && (
+          <div className="bg-slate-800 rounded-xl p-4 space-y-2">
+          <h3 className="text-sm font-semibold text-white">🗣️ 제약 조건</h3>
+            <div className="space-y-2">
+              {constraints.slice(0, 8).map((c: any, idx: number) => (
+                <div key={idx} className="bg-slate-900 rounded-lg p-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[11px] font-mono text-amber-400">{c.name || c.id || `c${idx + 1}`}</span>
+                    <span className={`text-[11px] px-2 py-0.5 rounded ${c.category === 'hard' || c.type === 'hard' ? 'bg-red-500/20 text-red-400' : 'bg-yellow-500/20 text-yellow-400'}`}>
+                      {c.category || c.type || 'hard'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-1">{c.description || ''}</p>
+                  {c.expression && (
+                    <code className="text-[11px] text-green-400 mt-1 block">{c.expression}</code>
+                  )}
+                </div>
+              ))}
+              {constraints.length > 8 && (
+                <p className="text-[12px] text-slate-500">... 외 {constraints.length - 8}개</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Recommended Solvers */}
+        {recSolvers.length > 0 && (
+          <div className="bg-slate-800 rounded-xl p-4 space-y-2">
+          <h3 className="text-sm font-semibold text-white">📊 추천 솔버</h3>
+            <div className="flex flex-wrap gap-2">
+              {recSolvers.map((s: string, idx: number) => (
+                <span key={idx} className="px-3 py-1 bg-indigo-500/20 text-indigo-400 rounded-full text-[11px]">{s}</span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 하단 옵션 버튼 - 고정 */}
+      <div className="p-6 border-t border-slate-800 bg-slate-900 sticky bottom-0 z-10">
+        <p className="text-[11px] text-slate-500 mb-3 font-medium uppercase tracking-wider">
+          Suggested Next Steps
+        </p>
+        <div className="flex gap-3">
+          <button
+            onClick={() => onAction?.('send', '수학 모델 확정')}
+            className="flex-1 bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 text-white font-bold py-3.5 rounded-xl transition shadow-lg shadow-emerald-900/20 flex items-center justify-center gap-2"
+          >
+            <Play size={18} className="fill-current" />
+            <span>📐 모델 확정 </span>
+          </button>
+          <button
+            onClick={() => onAction?.('send', '수학 모델 다시 생성해줘')}
+            className="px-6 py-3.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-xl transition border border-slate-700 flex items-center gap-2"
+          >
+            <span>재생성</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// 📄 [View 0] 파일 업로드 완료
+// ============================================================
+
+function FileUploadedView({
+  data,
+  onAction,
+}: {
+  data: FileUploadedData;
+  onAction?: (type: string, message: string) => void;
+}) {
+  const files = data.files || [];
+  const count = data.file_count || files.length;
+
+  return (
+    <div className="h-full flex flex-col bg-slate-900 animate-fade-in">
+        {/* 헤더 */}
+      <div className="p-6 border-b border-slate-800">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-emerald-500/20 rounded-lg text-emerald-400">
+            <Upload size={20} />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-white">파일 업로드 완료</h2>
+              <p className="text-sm text-slate-400">{count}개 파일이 업로드되었습니다</p>
+          </div>
+        </div>
+      </div>
+
+      {/* 파일 목록 */}
+      <div className="flex-1 p-6 overflow-y-auto">
+        <div className="space-y-2">
+          {files.map((filename, idx) => (
+            <div
+              key={idx}
+              className="flex items-center gap-3 p-3 bg-slate-800/50 rounded-lg border border-slate-700"
+            >
+              <FileText size={16} className="text-slate-400 flex-shrink-0" />
+              <span className="text-sm text-slate-300 truncate">{filename}</span>
+              <CheckCircle size={14} className="text-green-400 ml-auto flex-shrink-0" />
+            </div>
+          ))}
+        </div>
+      </div>
+
+        {/* 옵션 */}
+      <div className="p-6 border-t border-slate-800">
+        <p className="text-[8px] text-slate-500 mb-3 uppercase tracking-wider">Next Step</p>
+        <button
+          onClick={() => onAction?.('send', '데이터 분석 시작해줘')}
+          className="w-full bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white font-bold py-3.5 rounded-xl transition shadow-lg shadow-indigo-900/20 flex items-center justify-center gap-2"
+        >
+          <Activity size={18} />
+          <span>데이터 분석 시작</span>
+          <ArrowRight size={16} className="opacity-70" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// 📊 [View 1] 데이터 분석 리포트
+// ============================================================
+
+function ReportView({
+  data,
+  projectId,
+  onAction,
+}: {
+  data: ReportData;
+  projectId?: string;
+  onAction?: (type: string, message: string) => void;
+}) {
+  const report = data.report || '';
+  const status = data.agent_status || 'Analysis Completed';
+  const actions = data.actions;
+
+  return (
+    <div className="h-full flex flex-col bg-slate-900 overflow-hidden animate-fade-in">
+      {/* 헤더 */}
+      <div className="p-6 border-b border-slate-800 bg-slate-900/95 sticky top-0 z-10">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-indigo-500/20 rounded-lg text-indigo-400">
+              <FileText size={20} />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-white">Data Analysis Insight</h2>
+              <div className="flex items-center gap-2 text-[8px] text-slate-400">
+                <Activity size={14} className="text-green-400" />
+                <span>STATUS:</span>
+                <span className="text-slate-200 font-medium">{status}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* 다운로드 버튼 */}
+          {report && projectId && (
+            <div className="flex gap-2">
+              <button
+                onClick={() => downloadReport(projectId, 'md')}
+                className="px-3 py-1.5 text-[8px] bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 transition flex items-center gap-1"
+              title="마크다운으로 다운로드"
+              >
+                <Download size={14} />
+                <span>.md</span>
+              </button>
+              <button
+                onClick={() => downloadReport(projectId, 'docx')}
+                className="px-3 py-1.5 text-[8px] bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 transition flex items-center gap-1"
+              title="Word 파일로 다운로드"
+              >
+                <Download size={14} />
+                <span>.docx</span>
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 본문 */}
+      <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
+        {report ? (
+          <article className="report-content">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{report}</ReactMarkdown>
+          </article>
+        ) : (
+          <div className="flex items-center justify-center h-full text-slate-500">
+          <p>리포트 데이터가 없습니다.</p>
+          </div>
+        )}
+      </div>
+
+      {/* 하단 옵션 버튼 */}
+      {actions && (
+        <div className="p-6 border-t border-slate-800 bg-slate-900 sticky bottom-0 z-10">
+          <p className="text-[8px] text-slate-500 mb-3 font-medium uppercase tracking-wider">
+            Suggested Next Steps
+          </p>
+          <div className="flex gap-3">
+            {actions.primary && (
+              <button
+                onClick={() => onAction?.('send', actions.primary!.message)}
+                className="flex-1 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white font-bold py-3.5 rounded-xl transition shadow-lg shadow-indigo-900/20 flex items-center justify-center gap-2 group"
+              >
+                <Play size={18} className="fill-current" />
+                <span>{actions.primary.label}</span>
+                <ArrowRight
+                  size={16}
+                  className="opacity-70 group-hover:translate-x-1 transition-transform"
+                />
+              </button>
+            )}
+            {actions.secondary && (
+              <button
+                onClick={() => onAction?.('send', actions.secondary!.message)}
+                className="px-6 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-3.5 rounded-xl transition border border-slate-700 flex items-center justify-center gap-2"
+              >
+                <Settings size={18} />
+                <span>{actions.secondary.label}</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// ⚡ [View 2] 솔버 추천 화면
+// ============================================================
+
+function SolverView({
+  data,
+  onAction,
+}: {
+  data: SolverData;
+  onAction?: (type: string, message: string) => void;
+}) {
+  const [step, setStep] = useState(0);
+  const [jobStatus, setJobStatus] = useState<'idle' | 'running'>('idle');
+  const [expandedStrategies, setExpandedStrategies] = useState<Record<number, boolean>>({});
+
+  const solvers = data.recommended_solvers || [];
+  const profile = data.problem_profile || {} as ProblemProfile;
+  const topRec = data.top_recommendation;
+
+  useEffect(() => {
+    setStep(0);
+    setJobStatus('idle');
+    const timer = setInterval(() => {
+      setStep((prev) => (prev < 3 ? prev + 1 : prev));
+    }, 800);
+    return () => clearInterval(timer);
+  }, [data]);
+
+  const handleRun = () => {
+    const topSolver = solvers[0];
+    const solverLabel = topSolver
+      ? `${topSolver.provider} ${topSolver.solver_name}`.trim()
+      : '최적화';
+    onAction?.('execute', `${solverLabel}으로 최적화 실행해줘`);
+    setJobStatus('running');
+  };
+
+  const formatTime = (times?: number[]) => {
+    if (!times || times.length < 2) return '-';
+    const min = times[0];
+    const max = times[1];
+    if (max <= 0) return '-';
+    if (max < 1) return '< 1초';
+    if (max < 60) return `~초`;
+    if (max < 3600) return `~분`;
+    return `~시간`;
+  };
+
+  const formatCost = (costs?: number[]) => {
+    if (!costs || costs.length < 2) return '-';
+    if (costs[0] === 0 && costs[1] === 0) return '무료';
+    if (costs[1] < 0.01) return '< $0.01';
+    if (costs[1] < 1) return `$${costs[0].toFixed(2)}~$${costs[1].toFixed(2)}`;
+    return `$${costs[0].toFixed(2)}~$${costs[1].toFixed(2)}`;
+  };
+
+  const getCategoryLabel = (cat: string) => {
+    const map: Record<string, string> = {
+      quantum_hybrid: '양자 하이브리드',
+      quantum_native: '양자 네이티브',
+      quantum_gate: '양자 게이트',
+      quantum_analog: '양자 아날로그',
+      quantum_simulator: '양자 시뮬레이터',
+      quantum_hybrid: '양자 하이브리드',
+      classical: '클래식',
+      classical: '클래식',
+    };
+    return map[cat] || cat;
+  };
+
+  const getSuitabilityColor = (suit: string) => {
+    if (suit === 'Best Choice') return 'bg-green-500/20 text-green-400';
+    if (suit === 'Recommended') return 'bg-blue-500/20 text-blue-400';
+    if (suit === 'Possible') return 'bg-yellow-500/20 text-yellow-400';
+    if (suit === 'Limited') return 'bg-orange-500/20 text-orange-400';
+    return 'bg-red-500/20 text-red-400';
+  };
+
+  const getPriorityLabel = (p?: string) => {
+    if (p === 'accuracy') return { icon: '🎯', label: '정확성 우선' };
+    if (p === 'speed') return { icon: '⚡', label: '속도 우선' };
+    if (p === 'cost') return { icon: '💰', label: '비용 우선' };
+    return { icon: '🔄', label: '자동 (균형)' };
+  };
+
+  const priority = getPriorityLabel(data.priority);
+
+  return (
+    <div className="h-full flex flex-col bg-slate-900">
+      {/* 고정 헤더 */}
+      <div className="flex-shrink-0 p-6 pb-4 border-b border-slate-800">
+        <div className="flex items-center space-x-3">
+          <div className="p-3 bg-cyan-900/30 rounded-xl border border-cyan-500/30">
+            <Cpu className="text-cyan-400" size={24} />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold text-white">Quantum Solver Engine</h2>
+            <p className="text-sm text-slate-400">
+              {jobStatus === 'running' ? 'Running Hybrid Algorithm...' : 'Solver Recommendation'}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* 스크롤 콘텐츠*/}
+      <div className="flex-1 overflow-y-auto custom-scrollbar p-6 pt-4">
+        {jobStatus === 'running' ? (
+          <div className="flex flex-col items-center justify-center space-y-8 min-h-[300px]">
+            <div className="relative">
+              <div className="absolute inset-0 blur-2xl rounded-full bg-cyan-500/20 animate-pulse" />
+              <Loader2 size={64} className="text-cyan-400 animate-spin relative z-10" />
+            </div>
+            <div className="text-center space-y-2">
+              <h3 className="text-xl font-bold text-white">Optimizing Schedule...</h3>
+              <p className="text-slate-400 text-sm">Please wait for the quantum job to finish.</p>
+            </div>
+            <div className="w-64 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+              <div className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 w-2/3 animate-pulse" />
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="space-y-3 mb-6">
+              <StepItem label="Problem Profiling" status={step > 0 ? 'done' : 'active'} />
+              <StepItem label="Solver Scoring" status={step > 1 ? 'done' : step === 1 ? 'active' : 'wait'} />
+              <StepItem label="Recommendation" status={step > 2 ? 'done' : step === 2 ? 'active' : 'wait'} />
+            </div>
+
+            {step >= 3 && (
+              <div className="space-y-4 animate-in slide-in-from-bottom-4 fade-in duration-500">
+
+                {/* 추천 기준 */}
+                <div className="bg-slate-800/50 rounded-xl border border-slate-700 p-3 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[13px] text-slate-400">추천 기준:</span>
+                    <span className="text-[13px] font-bold text-cyan-400">
+                      {priority.icon} {priority.label}
+                    </span>
+                  </div>
+                  <span className="text-[13px] text-slate-500">
+                {solvers.length}개 솔버 분석됨
+                  </span>
+                </div>
+
+                {/* 문제 프로파일 */}
+                <div className="bg-slate-800/50 rounded-xl border border-slate-700 p-4">
+                  <h4 className="text-[13px] font-bold text-slate-400 uppercase mb-3 flex items-center">
+                    <Activity size={12} className="mr-1 text-blue-400" /> Problem Profile
+                  </h4>
+                  <div className="grid grid-cols-3 gap-2 text-center text-sm">
+                    <div>
+                       <span className="block text-slate-500 text-[13px]">변수</span>
+                      <span className="text-white font-mono">{profile.variable_count?.toLocaleString() ?? '-'}</span>
+                    </div>
+                    <div>
+                <span className="block text-slate-500 text-[13px]">제약조건</span>
+                      <span className="text-white font-mono">{profile.constraint_count ?? '-'}</span>
+                    </div>
+                    <div>
+                      <span className="block text-slate-500 text-[13px]">변수타입</span>
+                      <span className="text-cyan-400 font-mono text-[13px]">{profile.variable_types?.join(', ') ?? '-'}</span>
+                    </div>
+                  </div>
+                  {profile.problem_classes && (
+                    <div className="mt-2 text-center">
+                <span className="text-slate-500 text-[13px]">문제 유형: </span>
+                      <span className="text-slate-300 text-[13px]">{profile.problem_classes.join(', ')}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* 솔버 목록 */}
+                <div className="space-y-2">
+                  <h4 className="text-[13px] font-bold text-slate-400 uppercase">
+                    Recommended ({solvers.length})
+                  </h4>
+                  {solvers.map((svr, idx) => (
+                    <div
+                      key={svr.solver_id || idx}
+                      className={`p-3 rounded-lg border ${idx === 0 ? 'bg-cyan-900/20 border-cyan-500/30' : 'bg-slate-800 border-slate-700'}`}
+                    >
+                {/* 솔버 이름 + 적합도 */}
+                      <div className="flex justify-between items-start">
+                        <div className="flex-1">
+                          <div className="font-bold text-white text-sm">{svr.solver_name}</div>
+                          <div className="text-[13px] text-slate-400">{svr.provider} · {getCategoryLabel(svr.category)}</div>
+                          <div className="text-[13px] text-slate-500 mt-1">{svr.description}</div>
+                        </div>
+                        <div className="text-right flex-shrink-0 ml-3">
+                          <span className={`text-[13px] px-1.5 py-0.5 rounded font-bold ${getSuitabilityColor(svr.suitability)}`}>
+                            {svr.suitability}
+                          </span>
+                          <div className="text-[13px] text-slate-500 mt-1">
+                    점수: {svr.total_score}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* 추정 시간 · 비용 */}
+                      <div className="mt-2 flex gap-3">
+                        <div className="flex items-center gap-1 text-[13px]">
+                          <Clock size={10} className="text-slate-500" />
+                          <span className="text-slate-400">추정 시간:</span>
+                          <span className="text-white font-mono">{formatTime(svr.estimated_time)}</span>
+                        </div>
+                        <div className="flex items-center gap-1 text-[13px]">
+                          <TrendingUp size={10} className="text-slate-500" />
+                          <span className="text-slate-400">추정 비용:</span>
+                          <span className="text-white font-mono">{formatCost(svr.estimated_cost)}</span>
+                        </div>
+                      </div>
+
+                      {/* 점수 바*/}
+                      <div className="mt-2 grid grid-cols-4 gap-1">
+                        {Object.entries(svr.scores || {}).map(([key, val]) => (
+                          <div key={key} className="text-center">
+                            <div className="text-[12px] text-slate-500">
+                {key === 'structure' ? '구조' : key === 'scale' ? '규모' : key === 'cost' ? '비용' : '속도'}
+                            </div>
+                            <div className="w-full h-1 bg-slate-700 rounded-full mt-0.5">
+                              <div className="h-full bg-cyan-500 rounded-full" style={{ width: `${val}%` }} />
+                            </div>
+                            <div className="text-[13px] text-slate-600 mt-0.5">{typeof val === 'number' ? val.toFixed(0) : val}</div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* 추천 근거 */}
+                      {svr.reasons?.length > 0 && (
+                        <div className="mt-2 space-y-0.5">
+                          {svr.reasons.map((r: string, i: number) => (
+                            <div key={i} className="text-[13px] text-green-400">✅ {r}</div>
+                          ))}
+                        </div>
+                      )}
+                      {svr.warnings?.length > 0 && (
+                        <div className="mt-1 space-y-0.5">
+                          {svr.warnings.map((w: string, i: number) => (
+                            <div key={i} className="text-[13px] text-yellow-400">⚠️ {w}</div>
+                          ))}
+                        </div>
+                      )}
+                    {/* 추천 실행 전략 */}
+                    {(() => {
+                      const relatedStrategies = data.execution_strategies?.filter((st: any) =>
+                        st.steps?.some((s: any) => s.solver_name === svr.solver_name)
+                      ) || [];
+                      const bestStrategy = relatedStrategies.find((st: any) =>
+                        data.recommended_strategy?.strategy_id === st.strategy_id
+                      ) || relatedStrategies[0];
+                      const otherStrategies = relatedStrategies.filter((st: any) => st !== bestStrategy);
+                      const isExpanded = expandedStrategies[idx] || false;
+                      if (!bestStrategy) return null;
+                      return (
+                        <div className="mt-3 border-t border-slate-700/50 pt-3">
+                          <div className="p-2.5 rounded-lg border border-cyan-500/20 bg-cyan-900/10">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <span className="text-[12px] text-slate-400">📋 추천 전략:</span>
+                                <span className="text-[12px] font-bold text-cyan-400">{bestStrategy.name}</span>
+                              </div>
+                              <span className="text-[12px] font-bold text-cyan-400">{bestStrategy.confidence} 신뢰도</span>
+                            </div>
+                            <div className="text-[13px] text-slate-400 mt-1">{bestStrategy.description}</div>
+                            <div className="flex gap-1 mt-1.5 flex-wrap">
+                              {bestStrategy.steps?.map((step: any, si: number) => (
+                                <span key={si} className="text-[13px] px-1.5 py-0.5 rounded bg-slate-700/50 text-slate-300">
+                                  {si > 0 && " → "}{step.solver_name}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                          {otherStrategies.length > 0 && (
+                            <div className="mt-2">
+                              <button
+                                onClick={() => setExpandedStrategies(prev => ({...prev, [idx]: !prev[idx]}))}
+                                className="text-[13px] text-slate-500 hover:text-slate-300 transition flex items-center gap-1"
+                              >
+                                <span>{isExpanded ? "▼" : "▶"}</span>
+                                다른 {otherStrategies.length}개 전략 {isExpanded ? "숨기기" : "보기"}
+                              </button>
+                              {isExpanded && otherStrategies.map((st: any, oi: number) => (
+                                <div key={oi} className="mt-2 p-2 rounded-lg border border-slate-700/30 bg-slate-800/30">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[13px] font-bold text-slate-400">{st.name}</span>
+                                    <span className="text-[13px] text-slate-500">{st.confidence} 신뢰도</span>
+                                  </div>
+                                  <div className="text-[13px] text-slate-500 mt-1">{st.description}</div>
+                                  <div className="flex gap-1 mt-1 flex-wrap">
+                                    {st.steps?.map((step: any, si: number) => (
+                                      <span key={si} className="text-[12px] px-1 py-0.5 rounded bg-slate-700/30 text-slate-400">
+                                        {si > 0 && " → "}{step.solver_name}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* 고정 하단 버튼 */}
+      {jobStatus === 'idle' && step >= 3 && (
+        <div className="flex-shrink-0 p-4 border-t border-slate-800">
+          <button
+            onClick={handleRun}
+            className="w-full py-3 rounded-xl font-bold text-white bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 transition flex items-center justify-center gap-2"
+          >
+            <span>⚡</span> Run Optimization Simulation
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// 🏆 [View 3] 최적화 결과 화면
+// ============================================================
+
+function OptimizationResultView({
+  data,
+  projectId,
+  onComplete,
+}: {
+  data: ResultData;
+  projectId?: string;
+  onComplete?: (result: OptResult) => void;
+}) {
+  const result = data.result || {};
+  const summary = result.summary || {};
+  const schedule = result.schedule_preview || [];
+  const solverUsed = result.solver_used || result.solver || 'D-Wave Hybrid';
+  const hasReal = Object.keys(summary).length > 0;
+
+  // onComplete 호출 (한 번만)
+  useEffect(() => {
+    if (hasReal && onComplete) {
+      onComplete(result);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasReal]);
+
+  // KPI
+  const kpiData = hasReal
+    ? [
+        {
+          name: 'Coverage',
+          value: summary.coverage_rate ?? summary.total_cost_reduction ?? '-',
+          unit: typeof summary.coverage_rate === 'number' ? '%' : '',
+          color: 'text-green-400',
+        },
+        {
+          name: 'Efficiency',
+          value: summary.crew_satisfaction_score ?? summary.schedule_efficiency ?? '-',
+          unit: typeof summary.crew_satisfaction_score === 'number' ? '%' : '',
+          color: 'text-blue-400',
+        },
+        {
+          name: 'Time',
+          value: summary.computation_time ?? summary.total_operation_cost ?? '-',
+          unit: '',
+          color: 'text-cyan-400',
+        },
+      ]
+    : [
+        { name: 'Cost', value: 3800, unit: '$', color: 'text-green-400' },
+        { name: 'Fairness', value: 95, unit: 'pts', color: 'text-blue-400' },
+        { name: 'Overtime', value: 15, unit: 'hrs', color: 'text-cyan-400' },
+      ];
+
+  // 차트
+  const chartData =
+    hasReal && schedule.length > 0
+      ? schedule.slice(0, 7).map((s, i) => ({
+          name: s.day || s.crew_id || `C${i + 1}`,
+          value: s.work_hours || s.shifts || s.crew || 0,
+        }))
+      : [
+          { name: 'Mon', value: 85 },
+          { name: 'Tue', value: 92 },
+          { name: 'Wed', value: 88 },
+          { name: 'Thu', value: 95 },
+          { name: 'Fri', value: 90 },
+          { name: 'Sat', value: 98 },
+          { name: 'Sun', value: 82 },
+        ];
+
+  const chartLabel = hasReal ? 'Crew Work Hours' : 'Shift Coverage Rate';
+
+  return (
+    <div className="h-full flex flex-col p-6 bg-slate-900 overflow-y-auto custom-scrollbar animate-fade-in">
+          {/* 헤더 */}
+      <div className="flex items-center justify-between mb-6 pb-4 border-b border-slate-800">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-green-500/20 rounded-lg text-green-400">
+            <CheckCircle size={24} />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-white">Optimization Success</h2>
+            <p className="text-sm text-slate-400">
+              {result.job_id ? `Job ID: ${result.job_id}` : 'Job ID: #Q82-991'}
+                  {' · '}
+              {solverUsed}
+                  {result.execution_time_sec ? ` · s` : ''}
+            </p>
+          </div>
+        </div>
+
+        {/* 다운로드 */}
+        {projectId && (
+          <div className="flex gap-2">
+            <button
+              onClick={() => downloadReport(projectId, 'md')}
+              className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 transition"
+              title="MD 다운로드"
+            >
+              <Download size={18} />
+            </button>
+            <button
+              onClick={() => downloadReport(projectId, 'docx')}
+              className="px-3 py-1.5 text-[8px] bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 transition flex items-center gap-1"
+              title="DOCX 다운로드"
+            >
+              <Download size={14} />
+              <span>.docx</span>
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* KPI 카드 */}
+      <div className="grid grid-cols-3 gap-3 mb-6">
+        {kpiData.map((item, idx) => (
+          <div key={idx} className="bg-slate-800 p-3 rounded-xl border border-slate-700">
+            <p className="text-[8px] text-slate-400 mb-1">{item.name}</p>
+            <div className="flex items-end gap-1">
+              <span className={`text-lg font-bold ${item.color}`}>
+                {typeof item.value === 'number' ? item.value.toLocaleString() : item.value}
+              </span>
+              {item.unit && <span className="text-[8px] text-slate-500">{item.unit}</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+
+          {/* 제약 충족 (백엔드 데이터가 있을 때) */}
+      {result.constraints && (
+        <div className="bg-slate-800/50 rounded-xl border border-slate-700 p-4 mb-6">
+          <h4 className="text-[8px] font-bold text-slate-400 uppercase mb-2">Constraint Satisfaction</h4>
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            <div>
+              <span className="text-slate-500">Hard: </span>
+              <span className="font-bold text-white">
+                {result.constraints.hard_constraints_met ?? '-'}/
+                {result.constraints.hard_constraints_total ?? '-'}
+              </span>
+            </div>
+            <div>
+              <span className="text-slate-500">Soft: </span>
+              <span className="font-bold text-white">
+                {result.constraints.soft_constraints_met ?? '-'}/
+                {result.constraints.soft_constraints_total ?? '-'}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+          {/* 그래프 */}
+      <div className="bg-slate-800/50 rounded-xl border border-slate-700 p-4 mb-6 flex-1 min-h-[250px]">
+        <h3 className="text-sm font-bold text-slate-300 mb-4 flex items-center gap-2">
+          <TrendingUp size={16} className="text-blue-400" /> {chartLabel}
+        </h3>
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={chartData}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+            <XAxis
+              dataKey="name"
+              stroke="#94a3b8"
+              fontSize={12}
+              tickLine={false}
+              axisLine={false}
+            />
+            <YAxis stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
+            <Tooltip
+              contentStyle={{
+                backgroundColor: '#0f172a',
+                borderColor: '#334155',
+                color: '#fff',
+              }}
+              cursor={{ fill: '#1e293b' }}
+            />
+            <Bar dataKey="value" fill="#6366f1" radius={[4, 4, 0, 0]}>
+              {chartData.map((_entry, index) => (
+                <Cell
+                  key={`cell-${index}`}
+                  fill={_entry.value > 90 ? '#10b981' : '#6366f1'}
+                />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+          {/* 요약 */}
+      <div className="p-4 bg-slate-800 rounded-xl border border-slate-700 text-sm text-slate-300">
+        <p className="mb-2 font-bold text-white flex items-center gap-2">
+          <Users size={16} className="text-purple-400" /> Summary
+        </p>
+        {hasReal ? (
+          <p className="opacity-80 leading-relaxed">
+            {summary.total_crews_assigned != null && (
+              <>
+                    총 <span className="text-white font-bold">{summary.total_crews_assigned}명</span>의
+                    승무원이{' '}
+              </>
+            )}
+            {summary.total_trips_covered != null && (
+              <>
+                    <span className="text-white font-bold">{summary.total_trips_covered}개</span> 운행을
+                    배정되었습니다{' '}
+              </>
+            )}
+            {summary.coverage_rate != null && (
+              <>
+                  커버리지{' '}
+                <span className="text-green-400 font-bold">{summary.coverage_rate}%</span>.{' '}
+              </>
+            )}
+            {summary.total_cost_reduction && (
+              <>
+                    비용 절감{' '}
+                <span className="text-green-400 font-bold">{summary.total_cost_reduction}</span>.{' '}
+              </>
+            )}
+            {summary.schedule_efficiency && (
+              <>
+                    스케줄 효율{' '}
+                <span className="text-blue-400 font-bold">{summary.schedule_efficiency}</span>.
+              </>
+            )}
+          </p>
+        ) : (
+          <p className="opacity-80 leading-relaxed">
+                  총 142명의 승무원에 대한 스케줄링이 완료되었습니다. 기존 대비{' '}
+                <span className="text-green-400 font-bold">비용이 15% 절감</span>되었으며, 근무
+                  공평성이 <span className="text-blue-400 font-bold">95점</span>으로 향상되었습니다
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Step 표시 컴포넌트
+// ============================================================
+
+function StepItem({ label, status }: { label: string; status: 'wait' | 'active' | 'done' }) {
+  return (
+    <div
+      className={`flex items-center justify-between p-3 rounded-lg border transition-all ${
+        status === 'active'
+          ? 'bg-slate-800 border-blue-500/50'
+          : status === 'done'
+            ? 'bg-slate-800/50 border-green-500/30'
+            : 'border-slate-800 opacity-50'
+      }`}
+    >
+      <span className={`text-sm ${status === 'done' ? 'text-slate-300' : 'text-white'}`}>
+        {label}
+      </span>
+      {status === 'active' ? (
+        <Clock size={16} className="text-blue-400 animate-spin" />
+      ) : status === 'done' ? (
+        <CheckCircle size={16} className="text-green-400" />
+      ) : null}
+    </div>
+  );
+}

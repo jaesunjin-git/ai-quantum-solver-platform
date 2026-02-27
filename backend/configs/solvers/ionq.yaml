@@ -1,0 +1,32 @@
+provider: IonQ
+api_config:
+  endpoint: https://api.ionq.co/v0.3
+  auth_type: api_key
+  env_key: IONQ_API_KEY
+
+solvers:
+  - id: ionq_aria
+    name: Aria (Trapped-Ion)
+    description: 이온 트랩 기반 고정밀 양자 컴퓨터
+    category: quantum_gate
+    model_type: circuit
+    supported_variable_types: [binary]
+    supports_constraints: false
+    max_variables: 25
+    max_constraints: 0
+    problem_classes: [VQE, QAOA, simulation, small_optimization]
+    strengths:
+      - 높은 게이트 충실도
+      - 올-투-올 큐빗 연결성
+    weaknesses:
+      - 큐빗 수 매우 제한 (25)
+      - 느린 게이트 속도
+      - 매우 높은 비용
+    solution_guarantee: heuristic
+    cost_per_minute: 3.00
+    time_profile:
+      reference_variables: 10
+      base_time_seconds: [60, 180]
+      scaling_model: exponential
+      scaling_factor: 1.8
+      max_time_seconds: 600
