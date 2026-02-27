@@ -1,0 +1,615 @@
+# ============================================================
+# engine/pre_decision.py — v3.0
+# ============================================================
+# Pre-Decision Engine: 수학 모델 기반 솔버 추천 + 실행 전략 추천
+# - Solver Registry에서 솔버 정보 로드
+# - Problem Profile 기반 Scoring Engine으로 솔버 추천
+# - 수학 모델 특성 분석 → 실행 전략(Execution Strategy) 생성
+# ============================================================
+
+import logging
+from typing import Dict, Optional, List
+from .solver_registry import (
+    recommend_solvers,
+    build_problem_profile,
+    SolverRegistry,
+    estimate_time,
+    estimate_cost,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# 메인 진입점
+# ============================================================
+async def run_pre_decision_analysis(
+    math_model: Dict,
+    priority: str = "auto",
+    data_facts: Optional[Dict] = None,
+    project_id: Optional[str] = None,
+) -> Dict:
+    """
+    확정된 수학 모델을 기반으로 최적 솔버 + 실행 전략을 추천
+
+    Returns:
+        problem_profile, recommended_solvers, top_recommendation,
+        execution_strategies, recommended_strategy
+    """
+    logger.info(f"Pre-Decision analysis started (priority={priority})")
+
+    # 1. 솔버 레지스트리 로드
+    solvers = SolverRegistry.get_all()
+    logger.info(f"Loaded {len(solvers)} solvers from registry")
+
+    # 2. DB에서 활성화된 솔버 조회
+    enabled_ids = _get_enabled_solver_ids()
+    if enabled_ids is not None:
+        logger.info(f"Enabled solvers: {enabled_ids}")
+
+    # 3. 솔버 추천 실행
+    result = recommend_solvers(
+        math_model=math_model,
+        priority=priority,
+        data_facts=data_facts,
+        enabled_solver_ids=enabled_ids,
+    )
+
+    # 4. 로그
+    profile = result.get("problem_profile", {})
+    top = result.get("top_recommendation")
+    logger.info(
+        f"Problem profile: vars={profile.get('variable_count')}, "
+        f"constraints={profile.get('constraint_count')}, "
+        f"types={profile.get('variable_types')}"
+    )
+    if top:
+        logger.info(
+            f"Top recommendation: {top['provider']} {top['solver_name']} "
+            f"(score={top['total_score']}, suitability={top['suitability']})"
+        )
+
+    # 5. 솔버 목록 포맷팅
+    recommendations = result.get("recommendations", [])
+    formatted_solvers = []
+    for rec in recommendations:
+        if rec["total_score"] < 20:
+            continue
+        formatted_solvers.append({
+            "solver_id": rec["solver_id"],
+            "provider": rec["provider"],
+            "solver_name": rec["solver_name"],
+            "solver_type": rec.get("model_type", ""),
+            "category": rec["category"],
+            "suitability": rec["suitability"],
+            "total_score": rec["total_score"],
+            "scores": rec["scores"],
+            "reasons": rec["reasons"],
+            "warnings": rec["warnings"],
+            "description": rec["description"],
+            "strengths": rec.get("strengths", []),
+            "weaknesses": rec.get("weaknesses", []),
+            "typical_time_seconds": rec.get("typical_time_seconds", []),
+            "estimated_time": rec.get("estimated_time", []),
+            "estimated_cost": rec.get("estimated_cost", []),
+        })
+
+    # 6. 실행 전략 생성
+    model_analysis = _analyze_math_model(math_model)
+    strategies = _generate_execution_strategies(
+        model_analysis=model_analysis,
+        profile=profile,
+        solvers=formatted_solvers,
+        priority=priority,
+    )
+
+    # 7. 최적 전략 선택
+    recommended_strategy = strategies[0] if strategies else None
+
+    logger.info(
+        f"Generated {len(strategies)} execution strategies. "
+        f"Recommended: {recommended_strategy['strategy_id'] if recommended_strategy else 'none'}"
+    )
+
+    return {
+        "problem_profile": profile,
+        "priority": priority,
+        "recommended_solvers": formatted_solvers,
+        "top_recommendation": formatted_solvers[0] if formatted_solvers else None,
+        "execution_strategies": strategies,
+        "recommended_strategy": recommended_strategy,
+        "model_analysis": model_analysis,
+        "summary": _build_summary(profile, formatted_solvers, recommended_strategy),
+    }
+
+
+# ============================================================
+# 수학 모델 특성 분석
+# ============================================================
+def _analyze_math_model(math_model: Dict) -> Dict:
+    """수학 모델을 분석하여 전략 결정에 필요한 특성을 추출"""
+
+    metadata = math_model.get("metadata", {})
+    variables = math_model.get("variables", [])
+    constraints = math_model.get("constraints", [])
+    objective = math_model.get("objective", {})
+
+    # 변수 타입 분석
+    var_types = set()
+    has_binary = False
+    has_integer = False
+    has_continuous = False
+    for v in variables:
+        vtype = v.get("type", "").lower()
+        var_types.add(vtype)
+        if vtype == "binary":
+            has_binary = True
+        elif vtype == "integer":
+            has_integer = True
+        elif vtype == "continuous":
+            has_continuous = True
+
+    # 제약조건 분석
+    hard_constraints = [c for c in constraints if c.get("category") == "hard"]
+    soft_constraints = [c for c in constraints if c.get("category") == "soft"]
+
+    # 변수 규모
+    var_count = metadata.get("estimated_variable_count", 0)
+    constraint_count = metadata.get("estimated_constraint_count", 0)
+
+    # 문제 복잡도 판단
+    is_pure_binary = has_binary and not has_integer and not has_continuous
+    is_mixed = (has_binary or has_integer) and has_continuous
+    is_large_scale = var_count > 10000
+    is_very_large = var_count > 100000
+    has_many_constraints = constraint_count > 50
+
+    # QUBO 변환 가능성
+    qubo_convertible = is_pure_binary and not has_many_constraints
+    qubo_with_penalty = has_binary and len(hard_constraints) <= 20
+
+    # 문제 분할 가능성 (인덱스 구조 분석)
+    decomposable = False
+    decomposition_hint = None
+    for v in variables:
+        indices = v.get("indices", [])
+        if len(indices) >= 2:
+            decomposable = True
+            decomposition_hint = f"변수 '{v['id']}'의 인덱스 {indices}를 기준으로 서브문제 분할 가능"
+            break
+
+    return {
+        "variable_types": list(var_types),
+        "has_binary": has_binary,
+        "has_integer": has_integer,
+        "has_continuous": has_continuous,
+        "is_pure_binary": is_pure_binary,
+        "is_mixed": is_mixed,
+        "variable_count": var_count,
+        "constraint_count": constraint_count,
+        "hard_constraint_count": len(hard_constraints),
+        "soft_constraint_count": len(soft_constraints),
+        "is_large_scale": is_large_scale,
+        "is_very_large": is_very_large,
+        "qubo_convertible": qubo_convertible,
+        "qubo_with_penalty": qubo_with_penalty,
+        "decomposable": decomposable,
+        "decomposition_hint": decomposition_hint,
+        "objective_type": objective.get("type", "minimize"),
+        "has_alternatives": bool(objective.get("alternatives")),
+    }
+
+
+# ============================================================
+# 실행 전략 생성
+# ============================================================
+def _generate_execution_strategies(
+    model_analysis: Dict,
+    profile: Dict,
+    solvers: List[Dict],
+    priority: str,
+) -> List[Dict]:
+    """수학 모델 분석 결과를 기반으로 실행 전략 후보를 생성"""
+
+    strategies = []
+    solver_map = {s["solver_id"]: s for s in solvers}
+
+    # 활성화된 솔버 카테고리 확인
+    has_classical = any("classical" in s.get("category", "") for s in solvers)
+    has_quantum_hybrid = any("quantum_hybrid" in s.get("category", "") for s in solvers)
+    has_quantum_native = any("quantum_native" in s.get("category", "") for s in solvers)
+    has_gpu = any("gpu" in s.get("category", "") for s in solvers)
+
+    var_count = model_analysis["variable_count"]
+    is_mixed = model_analysis["is_mixed"]
+    is_pure_binary = model_analysis["is_pure_binary"]
+    is_large_scale = model_analysis["is_large_scale"]
+    decomposable = model_analysis["decomposable"]
+
+    # ──────────────────────────────────────────────
+    # Strategy A: 단일 솔버 (최고 점수 솔버)
+    # ──────────────────────────────────────────────
+    if solvers:
+        top = solvers[0]
+        strategies.append({
+            "strategy_id": "single_best",
+            "strategy_type": "single",
+            "name": f"단일 솔버: {top['solver_name']}",
+            "description": f"최고 점수 솔버 {top['solver_name']}으로 전체 문제를 직접 해결합니다.",
+            "pros": ["구현 단순", "오버헤드 없음", f"적합도: {top['suitability']}"],
+            "cons": _get_single_cons(top, model_analysis),
+            "estimated_time": top.get("estimated_time", []),
+            "estimated_cost": top.get("estimated_cost", []),
+            "confidence": top["total_score"],
+            "steps": [
+                {
+                    "step_id": "step_1",
+                    "step_order": 1,
+                    "solver_id": top["solver_id"],
+                    "solver_name": top["solver_name"],
+                    "provider": top["provider"],
+                    "role": "main_solver",
+                    "input_type": "full_problem",
+                    "description": f"{top['solver_name']}으로 전체 문제 해결",
+                    "parallel_group": None,
+                }
+            ],
+        })
+
+    # ──────────────────────────────────────────────
+    # Strategy B: 순차적 하이브리드 (CPU/GPU 전처리 + QPU)
+    # ──────────────────────────────────────────────
+    if has_classical and has_quantum_hybrid and is_large_scale:
+        cpu_solver = _find_solver(solvers, "classical")
+        qpu_solver = _find_solver(solvers, "quantum_hybrid")
+
+        if cpu_solver and qpu_solver:
+            strategies.append({
+                "strategy_id": "sequential_hybrid_cpu_qpu",
+                "strategy_type": "sequential_hybrid",
+                "name": f"순차 하이브리드: {cpu_solver['solver_name']} → {qpu_solver['solver_name']}",
+                "description": (
+                    f"1단계: {cpu_solver['solver_name']}으로 초기해를 빠르게 구합니다. "
+                    f"2단계: {qpu_solver['solver_name']}으로 양자 최적화를 통해 해를 정제합니다."
+                ),
+                "pros": [
+                    "초기해로 탐색 공간 축소",
+                    "양자 어닐링의 전역 최적화 능력 활용",
+                    "대규모 문제에 효과적",
+                ],
+                "cons": [
+                    "2단계 실행으로 총 시간 증가",
+                    "단계 간 데이터 변환 필요",
+                ],
+                "estimated_time": _combine_times(cpu_solver, qpu_solver, var_count),
+                "estimated_cost": _combine_costs(cpu_solver, qpu_solver, var_count),
+                "confidence": round((cpu_solver["total_score"] + qpu_solver["total_score"]) / 2 * 0.95, 1),
+                "steps": [
+                    {
+                        "step_id": "step_1",
+                        "step_order": 1,
+                        "solver_id": cpu_solver["solver_id"],
+                        "solver_name": cpu_solver["solver_name"],
+                        "provider": cpu_solver["provider"],
+                        "role": "preprocessor",
+                        "input_type": "full_problem",
+                        "description": f"{cpu_solver['solver_name']}으로 초기해 생성 (LP Relaxation + Heuristic)",
+                        "parallel_group": None,
+                    },
+                    {
+                        "step_id": "step_2",
+                        "step_order": 2,
+                        "solver_id": qpu_solver["solver_id"],
+                        "solver_name": qpu_solver["solver_name"],
+                        "provider": qpu_solver["provider"],
+                        "role": "main_solver",
+                        "input_type": "initial_solution",
+                        "description": f"{qpu_solver['solver_name']}으로 양자 최적화 정제",
+                        "parallel_group": None,
+                    },
+                ],
+            })
+
+    # ──────────────────────────────────────────────
+    # Strategy C: 순차적 하이브리드 (GPU + QPU)
+    # ──────────────────────────────────────────────
+    if has_gpu and has_quantum_hybrid and is_large_scale:
+        gpu_solver = _find_solver(solvers, "classical_gpu")
+        qpu_solver = _find_solver(solvers, "quantum_hybrid")
+
+        if gpu_solver and qpu_solver:
+            strategies.append({
+                "strategy_id": "sequential_hybrid_gpu_qpu",
+                "strategy_type": "sequential_hybrid",
+                "name": f"순차 하이브리드: {gpu_solver['solver_name']} → {qpu_solver['solver_name']}",
+                "description": (
+                    f"1단계: {gpu_solver['solver_name']}의 GPU 병렬 처리로 초기해를 빠르게 구합니다. "
+                    f"2단계: {qpu_solver['solver_name']}으로 양자 최적화를 통해 해를 정제합니다."
+                ),
+                "pros": [
+                    "GPU 가속으로 빠른 초기해",
+                    "양자 어닐링으로 전역 최적화",
+                    "대규모 문제에 최적",
+                ],
+                "cons": [
+                    "GPU 인프라 필요",
+                    "2단계 실행으로 복잡도 증가",
+                ],
+                "estimated_time": _combine_times(gpu_solver, qpu_solver, var_count),
+                "estimated_cost": _combine_costs(gpu_solver, qpu_solver, var_count),
+                "confidence": round((gpu_solver["total_score"] + qpu_solver["total_score"]) / 2 * 0.95, 1),
+                "steps": [
+                    {
+                        "step_id": "step_1",
+                        "step_order": 1,
+                        "solver_id": gpu_solver["solver_id"],
+                        "solver_name": gpu_solver["solver_name"],
+                        "provider": gpu_solver["provider"],
+                        "role": "preprocessor",
+                        "input_type": "full_problem",
+                        "description": f"{gpu_solver['solver_name']}으로 GPU 가속 초기해 생성",
+                        "parallel_group": None,
+                    },
+                    {
+                        "step_id": "step_2",
+                        "step_order": 2,
+                        "solver_id": qpu_solver["solver_id"],
+                        "solver_name": qpu_solver["solver_name"],
+                        "provider": qpu_solver["provider"],
+                        "role": "main_solver",
+                        "input_type": "initial_solution",
+                        "description": f"{qpu_solver['solver_name']}으로 양자 최적화 정제",
+                        "parallel_group": None,
+                    },
+                ],
+            })
+
+    # ──────────────────────────────────────────────
+    # Strategy D: 변수 분리 하이브리드 (혼합 변수 문제)
+    # ──────────────────────────────────────────────
+    if is_mixed and has_classical and has_quantum_hybrid:
+        cpu_solver = _find_solver(solvers, "classical")
+        qpu_solver = _find_solver(solvers, "quantum_hybrid")
+
+        if cpu_solver and qpu_solver:
+            strategies.append({
+                "strategy_id": "variable_decomposition",
+                "strategy_type": "sequential_hybrid",
+                "name": f"변수 분리: 연속변수({cpu_solver['solver_name']}) + 이진변수({qpu_solver['solver_name']})",
+                "description": (
+                    f"혼합 변수 문제를 분리합니다. "
+                    f"1단계: 연속변수(시간 등)는 {cpu_solver['solver_name']} LP로 해결. "
+                    f"2단계: 이진변수(할당)는 {qpu_solver['solver_name']}으로 양자 최적화. "
+                    f"3단계: 결과를 통합하여 최종해 생성."
+                ),
+                "pros": [
+                    "각 변수 타입에 최적화된 솔버 사용",
+                    "연속변수 → LP (정확), 이진변수 → 양자 (전역 탐색)",
+                    "혼합 문제에 효과적",
+                ],
+                "cons": [
+                    "변수 간 결합도가 높으면 분리 품질 저하",
+                    "통합 단계에서 추가 최적화 필요",
+                ],
+                "estimated_time": _combine_times(cpu_solver, qpu_solver, var_count),
+                "estimated_cost": _combine_costs(cpu_solver, qpu_solver, var_count),
+                "confidence": round((cpu_solver["total_score"] + qpu_solver["total_score"]) / 2 * 0.90, 1),
+                "steps": [
+                    {
+                        "step_id": "step_1",
+                        "step_order": 1,
+                        "solver_id": cpu_solver["solver_id"],
+                        "solver_name": cpu_solver["solver_name"],
+                        "provider": cpu_solver["provider"],
+                        "role": "sub_solver",
+                        "input_type": "sub_problem_continuous",
+                        "description": "연속변수(시간 계산) LP Relaxation 해결",
+                        "parallel_group": "group_A",  # ← 향후 병렬 실행 가능
+                    },
+                    {
+                        "step_id": "step_2",
+                        "step_order": 1,  # 같은 order = 병렬 가능
+                        "solver_id": qpu_solver["solver_id"],
+                        "solver_name": qpu_solver["solver_name"],
+                        "provider": qpu_solver["provider"],
+                        "role": "sub_solver",
+                        "input_type": "sub_problem_binary",
+                        "description": "이진변수(승무원 할당) 양자 최적화",
+                        "parallel_group": "group_A",  # ← 향후 병렬 실행 가능
+                    },
+                    {
+                        "step_id": "step_3",
+                        "step_order": 2,
+                        "solver_id": cpu_solver["solver_id"],
+                        "solver_name": cpu_solver["solver_name"],
+                        "provider": cpu_solver["provider"],
+                        "role": "validator",
+                        "input_type": "merged_solution",
+                        "description": "서브 결과 통합 및 제약조건 검증",
+                        "parallel_group": None,
+                    },
+                ],
+            })
+
+    # ──────────────────────────────────────────────
+    # Strategy E: 문제 분할 병렬 (대규모 + 분할 가능)
+    # ──────────────────────────────────────────────
+    if decomposable and is_large_scale and has_quantum_hybrid:
+        qpu_solver = _find_solver(solvers, "quantum_hybrid")
+        cpu_solver = _find_solver(solvers, "classical")
+
+        if qpu_solver and cpu_solver:
+            hint = model_analysis.get("decomposition_hint", "")
+            strategies.append({
+                "strategy_id": "problem_partitioning",
+                "strategy_type": "sequential_hybrid",  # 현재는 순차, 향후 parallel_hybrid
+                "name": f"문제 분할: 서브문제 분할 → {qpu_solver['solver_name']} → 병합",
+                "description": (
+                    f"대규모 문제를 서브문제로 분할하여 처리합니다. "
+                    f"{hint} "
+                    f"각 서브문제를 {qpu_solver['solver_name']}으로 해결한 후 "
+                    f"{cpu_solver['solver_name']}으로 결과를 병합·검증합니다."
+                ),
+                "pros": [
+                    "대규모 문제를 QPU 처리 가능 규모로 축소",
+                    "서브문제 간 병렬 처리 가능 (향후)",
+                    f"분할 기준: {hint}",
+                ],
+                "cons": [
+                    "분할 경계에서 최적성 손실 가능",
+                    "병합 단계에서 추가 최적화 필요",
+                    "분할 알고리즘 품질에 의존",
+                ],
+                "estimated_time": _combine_times(cpu_solver, qpu_solver, var_count),
+                "estimated_cost": _combine_costs(cpu_solver, qpu_solver, var_count),
+                "confidence": round((cpu_solver["total_score"] + qpu_solver["total_score"]) / 2 * 0.85, 1),
+                "steps": [
+                    {
+                        "step_id": "step_1",
+                        "step_order": 1,
+                        "solver_id": cpu_solver["solver_id"],
+                        "solver_name": cpu_solver["solver_name"],
+                        "provider": cpu_solver["provider"],
+                        "role": "preprocessor",
+                        "input_type": "full_problem",
+                        "description": "문제 분석 및 서브문제 분할",
+                        "parallel_group": None,
+                    },
+                    {
+                        "step_id": "step_2",
+                        "step_order": 2,
+                        "solver_id": qpu_solver["solver_id"],
+                        "solver_name": qpu_solver["solver_name"],
+                        "provider": qpu_solver["provider"],
+                        "role": "main_solver",
+                        "input_type": "sub_problems",
+                        "description": f"서브문제별 {qpu_solver['solver_name']} 양자 최적화",
+                        "parallel_group": "group_B",  # ← 향후 서브문제 간 병렬
+                    },
+                    {
+                        "step_id": "step_3",
+                        "step_order": 3,
+                        "solver_id": cpu_solver["solver_id"],
+                        "solver_name": cpu_solver["solver_name"],
+                        "provider": cpu_solver["provider"],
+                        "role": "validator",
+                        "input_type": "sub_solutions",
+                        "description": "서브문제 결과 병합 및 전체 최적화 검증",
+                        "parallel_group": None,
+                    },
+                ],
+            })
+
+    # ──────────────────────────────────────────────
+    # 전략 정렬: confidence 기준 내림차순
+    # ──────────────────────────────────────────────
+    strategies.sort(key=lambda s: s["confidence"], reverse=True)
+
+    return strategies
+
+
+# ============================================================
+# 헬퍼 함수
+# ============================================================
+def _find_solver(solvers: List[Dict], category_keyword: str) -> Optional[Dict]:
+    """카테고리에 해당하는 최고 점수 솔버를 찾기"""
+    for s in solvers:
+        cat = s.get("category", "")
+        if category_keyword == "classical" and cat == "classical":
+            return s
+        elif category_keyword == "classical_gpu" and cat == "classical_gpu":
+            return s
+        elif category_keyword == "quantum_hybrid" and "quantum_hybrid" in cat:
+            return s
+        elif category_keyword == "quantum_native" and cat == "quantum_native":
+            return s
+    return None
+
+
+def _get_single_cons(solver: Dict, analysis: Dict) -> List[str]:
+    """단일 솔버 전략의 단점 생성"""
+    cons = []
+    if analysis["is_mixed"] and "quantum" in solver.get("category", ""):
+        cons.append("혼합 변수(binary+continuous) 처리 시 변환 필요")
+    if analysis["is_very_large"]:
+        cons.append("대규모 문제로 처리 시간이 길어질 수 있음")
+    if analysis["is_large_scale"] and "quantum_native" in solver.get("category", ""):
+        cons.append("QPU 큐빗 수 제한으로 문제 임베딩 필요")
+    if not cons:
+        cons.append("특별한 단점 없음")
+    return cons
+
+
+def _combine_times(solver1: Dict, solver2: Dict, var_count: int) -> List[float]:
+    """두 솔버의 예상 시간 합산"""
+    t1 = solver1.get("estimated_time", [0, 0])
+    t2 = solver2.get("estimated_time", [0, 0])
+    if not t1 or len(t1) < 2:
+        t1 = [0, 0]
+    if not t2 or len(t2) < 2:
+        t2 = [0, 0]
+    return [round(t1[0] + t2[0], 1), round(t1[1] + t2[1], 1)]
+
+
+def _combine_costs(solver1: Dict, solver2: Dict, var_count: int) -> List[float]:
+    """두 솔버의 예상 비용 합산"""
+    c1 = solver1.get("estimated_cost", [0, 0])
+    c2 = solver2.get("estimated_cost", [0, 0])
+    if not c1 or len(c1) < 2:
+        c1 = [0, 0]
+    if not c2 or len(c2) < 2:
+        c2 = [0, 0]
+    return [round(c1[0] + c2[0], 4), round(c1[1] + c2[1], 4)]
+
+
+def _build_summary(profile: Dict, solvers: list, strategy: Optional[Dict] = None) -> str:
+    """추천 결과 요약 텍스트 생성"""
+    lines = []
+
+    var_count = profile.get("variable_count", 0)
+    constraint_count = profile.get("constraint_count", 0)
+    var_types = profile.get("variable_types", [])
+    problem_classes = profile.get("problem_classes", [])
+
+    lines.append(f"변수 {var_count:,}개, 제약조건 {constraint_count}개")
+    lines.append(f"변수 타입: {', '.join(var_types)}")
+    lines.append(f"문제 유형: {', '.join(problem_classes)}")
+
+    if solvers:
+        top = solvers[0]
+        lines.append("")
+        lines.append(f"최적 솔버: {top['provider']} — {top['solver_name']}")
+        lines.append(f"적합도: {top['suitability']} (점수: {top['total_score']})")
+
+    if strategy:
+        lines.append("")
+        lines.append(f"추천 전략: {strategy['name']}")
+        lines.append(f"전략 유형: {strategy['strategy_type']}")
+        lines.append(f"실행 단계: {len(strategy['steps'])}단계")
+
+    return "\n".join(lines)
+
+
+# ============================================================
+# DB 헬퍼
+# ============================================================
+def _get_enabled_solver_ids() -> Optional[List[str]]:
+    """DB에서 활성화된 솔버 ID 목록 조회"""
+    try:
+        from core.database import SessionLocal
+        from core import models
+
+        db = SessionLocal()
+        try:
+            rows = db.query(models.SolverSettingDB).all()
+            if not rows:
+                return None
+            enabled = [r.solver_id for r in rows if r.enabled]
+            if not enabled:
+                return None
+            return enabled
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Failed to load solver settings: {e}")
+        return None

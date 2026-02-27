@@ -1,0 +1,378 @@
+# config/domain_profiles.yaml
+# ============================================================
+# 각 도메인의 특성, 용어, 제약 조건 템플릿을 정의
+# 새 도메인 추가 시 이 파일에 항목만 추가하면 됨
+# ============================================================
+
+aviation:
+  display_name: "항공 승무원 스케줄링"
+  icon: "✈️"
+  description: "항공사 객실/운항 승무원의 비행 스케줄 최적화"
+
+  # 도메인 감지용 키워드 (컬럼명, 시트명, 데이터 내용에서 탐색)
+  detection_keywords:
+    - "flight"
+    - "비행"
+    - "airport"
+    - "공항"
+    - "cabin"
+    - "객실"
+    - "운항"
+    - "편명"
+    - "flight_no"
+    - "departure"
+    - "arrival"
+    - "layover"
+    - "체류"
+    - "pairing"
+    - "페어링"
+    - "duty_time"
+    - "block_time"
+    - "deadhead"
+
+  # 도메인 특화 용어 매핑
+  terminology:
+    crew: "승무원 (객실/운항)"
+    shift: "페어링 (Pairing) / 듀티 (Duty)"
+    route: "노선 (Route / Leg)"
+    rest: "체류 (Layover) / 휴식"
+    base: "베이스 공항 (Home Base)"
+
+  # 일반적인 제약 조건 템플릿
+  typical_constraints:
+    hard:
+      - "연속 비행 시간 제한 (Flight Time Limitation)"
+      - "듀티 타임 상한 (Max Duty Time)"
+      - "최소 휴식 시간 (Minimum Rest Period)"
+      - "자격 요건 (Aircraft Type Qualification)"
+      - "베이스 출발/복귀 (Base Return)"
+    soft:
+      - "선호 노선 배정"
+      - "공평한 비행 시간 분배"
+      - "시차 고려 (Jet Lag Minimization)"
+      - "연속 야간 비행 최소화"
+
+  # 일반적인 목적 함수
+  typical_objectives:
+    - "총 인건비 최소화"
+    - "데드헤드(Deadhead) 최소화"
+    - "비행 시간 공평 분배"
+    - "체류 비용 최소화"
+
+  # 관련 규정
+  regulations:
+    - "항공안전법 (Aviation Safety Act)"
+    - "ICAO FTL (Flight Time Limitations)"
+    - "국토교통부 승무원 근무시간 기준"
+
+
+railway:
+  display_name: "철도 승무원 스케줄링"
+  icon: "🚄"
+  description: "철도/도시철도 기관사·승무사 스케줄 최적화"
+  detection_keywords:
+    # 영문 — 일반
+    - train
+    - railway
+    - rail
+    - railroad
+    - locomotive
+    - conductor
+    - engineer
+    - station
+    - platform
+    - depot
+    - terminal
+    - roster
+    - diagram
+    - dia
+    # 영문 — 컬럼명/파일명 패턴
+    - trip
+    - train_trip
+    - train_trips
+    - trip_id
+    - from_station
+    - to_station
+    - departure_time
+    - arrival_time
+    - required_drivers
+    - required_conductors
+    - max_continuous_work
+    - min_connection_time
+    - min_rest_time
+    - max_work_hours
+    - crew_master
+    - crew_preferences
+    - work_rules
+    - night_allowed
+    # 한국어 — 일반 철도
+    - 열차
+    - 기관사
+    - 기관차
+    - 차장
+    - 철도
+    - 역
+    - 출발역
+    - 도착역
+    - 정거장
+    - 운행
+    - 운행도
+    - 운행표
+    - 교번
+    - 승무교번
+    - 승무소
+    - 차량기지
+    - KTX
+    - SRT
+    - 무궁화
+    - 새마을
+    - ITX
+    # 한국어 — 도시철도 / 지하철
+    - 도시철도
+    - 지하철
+    - 전동차
+    - 경전철
+    - 호선
+    - 1호선
+    - 2호선
+    - 3호선
+    - 4호선
+    - 5호선
+    - 6호선
+    - 7호선
+    - 8호선
+    - 9호선
+    - line1
+    - line2
+    - line3
+    - line4
+    - line_1
+    - line_2
+    - line_3
+    - line_4
+    # 한국어 — 승무/근무
+    - 승무사
+    - 승무원
+    - 운전사
+    - 근무인원
+    - 근로시간
+    - 야간사업
+    - 야간근무
+    - 사업
+    - 주간사업
+    - 새벽사업
+    # 한국어 — DIA / 다이아그램
+    - 다이아
+    - 다이어그램
+    - 일다이아
+    - 준비시간
+    - 대기시간
+    - 정리시간
+    - 승무시간
+    - 운전시간
+    - 퇴근시간
+    # 한국어 — 교통공사 등 특정 키워드
+    - 교통공사
+    - 부산교통공사
+    - 서울교통공사
+    - 운수사업
+    - 동력차
+    - 전기동차
+  terminology:
+    crew: "승무사/기관사"
+    schedule: "승무교번"
+    shift: "사업"
+    diagram: "DIA (운행 다이어그램)"
+  typical_constraints:
+    hard:
+      - "최대 근무시간 제한"
+      - "최소 휴식시간 보장"
+      - "최소 연결시간 준수"
+      - "필수 인원 충족 (운전사/기관사)"
+    soft:
+      - "선호 출발시간 반영"
+      - "기피 노선 회피"
+      - "야간근무 가능 여부"
+      - "최대 연속 근무시간 제한"
+  typical_objectives:
+    - "총 운행시간 최소화"
+    - "승무원 만족도 최대화"
+    - "근무시간 균등 배분"
+
+
+bus:
+  display_name: "버스 승무원 스케줄링"
+  icon: "🚌"
+  description: "시내/시외/고속 버스 운전기사의 운행 스케줄 최적화"
+
+  detection_keywords:
+    - "bus"
+    - "버스"
+    - "운전기사"
+    - "기사"
+    - "노선번호"
+    - "정류장"
+    - "배차"
+    - "차고지"
+    - "운행횟수"
+    - "첫차"
+    - "막차"
+    - "운수"
+    - "고속"
+    - "시외"
+    - "시내"
+
+  terminology:
+    crew: "운전기사"
+    shift: "교번 / 운행 스케줄"
+    route: "노선 (Route)"
+    rest: "휴식 / 대기"
+    base: "차고지 (Depot)"
+
+  typical_constraints:
+    hard:
+      - "일일 최대 운전 시간"
+      - "연속 운전 후 최소 휴식"
+      - "노선별 면허 요건"
+    soft:
+      - "선호 노선 배정"
+      - "근무 공평성"
+      - "출퇴근 편의 (거주지 근접 차고지)"
+
+  typical_objectives:
+    - "운행 비용 최소화"
+    - "배차 효율 최대화"
+    - "기사 근무 공평성"
+
+  regulations:
+    - "여객자동차운수사업법"
+    - "교통안전법"
+
+
+logistics:
+  display_name: "물류 배송 스케줄링"
+  icon: "📦"
+  description: "물류/택배 배송 기사의 배송 스케줄 및 경로 최적화"
+
+  detection_keywords:
+    - "delivery"
+    - "배송"
+    - "택배"
+    - "물류"
+    - "warehouse"
+    - "창고"
+    - "hub"
+    - "허브"
+    - "package"
+    - "화물"
+    - "배달"
+    - "집하"
+    - "권역"
+
+  terminology:
+    crew: "배송 기사"
+    shift: "배송 라운드"
+    route: "배송 경로 (Delivery Route)"
+    rest: "휴식"
+    base: "허브/물류센터"
+
+  typical_constraints:
+    hard:
+      - "일일 최대 근무 시간"
+      - "차량 적재 용량"
+      - "배송 시간 윈도우 (Time Window)"
+    soft:
+      - "배송 권역 일관성"
+      - "근무 공평성"
+
+  typical_objectives:
+    - "총 배송 거리 최소화"
+    - "배송 완료율 최대화"
+    - "차량 운용 대수 최소화"
+
+  regulations:
+    - "근로기준법"
+    - "화물자동차운수사업법"
+
+
+hospital:
+  display_name: "병원 간호사 스케줄링"
+  icon: "🏥"
+  description: "병원 간호 인력의 교대 근무 스케줄 최적화"
+
+  detection_keywords:
+    - "nurse"
+    - "간호"
+    - "병동"
+    - "ward"
+    - "day_shift"
+    - "night_shift"
+    - "주간"
+    - "야간"
+    - "off_duty"
+    - "비번"
+    - "응급"
+    - "ICU"
+    - "수간호사"
+    - "3교대"
+
+  terminology:
+    crew: "간호 인력"
+    shift: "교대 근무 (Day/Evening/Night)"
+    route: "병동 / 부서"
+    rest: "비번 / 휴무"
+    base: "소속 병동"
+
+  typical_constraints:
+    hard:
+      - "최소 인원 배치 (병동별)"
+      - "연속 야간 근무 제한"
+      - "최소 휴식 시간"
+      - "자격 요건 (전문 병동)"
+    soft:
+      - "근무 선호도 반영"
+      - "주말 근무 공평 분배"
+      - "연차/휴가 반영"
+
+  typical_objectives:
+    - "간호 인력 배치 최적화"
+    - "초과 근무 최소화"
+    - "근무 만족도 최대화"
+
+  regulations:
+    - "의료법"
+    - "간호인력 배치기준"
+    - "근로기준법"
+
+
+generic:
+  display_name: "일반 인력 스케줄링"
+  icon: "👥"
+  description: "범용 인력 배치 및 교대 근무 스케줄 최적화"
+
+  detection_keywords: []  # 다른 도메인에 매칭되지 않을 때 기본값
+
+  terminology:
+    crew: "인력 / 작업자"
+    shift: "교대 / 시프트"
+    route: "작업 / 태스크"
+    scheule: "스케줄"
+    rest: "휴식"
+    base: "소속 부서"
+
+  typical_constraints:
+    hard:
+      - "최대 근무 시간 제한"
+      - "최소 휴식 시간"
+      - "자격 요건"
+    soft:
+      - "근무 선호도"
+      - "공평성"
+
+  typical_objectives:
+    - "인건비 최소화"
+    - "인력 활용률 최대화"
+    - "근무 공평성"
+
+  regulations:
+    - "근로기준법"

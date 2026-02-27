@@ -1,0 +1,33 @@
+provider: IBM
+api_config:
+  endpoint: https://quantum-computing.ibm.com
+  auth_type: api_token
+  env_key: IBM_QUANTUM_TOKEN
+
+solvers:
+  - id: ibm_qiskit
+    name: Qiskit Runtime (Gate Model)
+    description: 초전도 기반 범용 양자 게이트 컴퓨터
+    category: quantum_gate
+    model_type: circuit
+    supported_variable_types: [binary]
+    supports_constraints: false
+    max_variables: 127
+    max_constraints: 0
+    problem_classes: [VQE, QAOA, simulation, small_optimization]
+    strengths:
+      - 범용 양자 알고리즘 실행 가능
+      - 활발한 오픈소스 생태계 (Qiskit)
+    weaknesses:
+      - 큐빗 수 제한 (127)
+      - 디코히어런스로 인한 노이즈
+      - 대규모 최적화에 부적합
+      - 매우 높은 비용 ($1.60/초)
+    solution_guarantee: heuristic
+    cost_per_minute: 96.00
+    time_profile:
+      reference_variables: 10
+      base_time_seconds: [30, 60]
+      scaling_model: exponential
+      scaling_factor: 1.5
+      max_time_seconds: 600
