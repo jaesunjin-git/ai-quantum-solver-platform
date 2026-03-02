@@ -13,7 +13,6 @@ from typing import Any, Dict, List, Optional
 from engine.compiler import get_compiler
 from engine.compiler.base import DataBinder, CompileResult
 from engine.executor import get_executor
-from engine.gates.gate3_compile_check import run as run_gate3
 from engine.executor.base import ExecuteResult
 
 logger = logging.getLogger(__name__)
@@ -125,38 +124,6 @@ class SolverPipeline:
                 success=False, phase="compile", solver_id=solver_id,
                 error=f"Compilation error: {str(e)}"
             )
-
-        #  Gate 3: Compile Result Validation
-        try:
-            gate3_input = {
-                "variable_count": compile_result.variable_count,
-                "constraint_count": compile_result.constraint_count,
-                "warnings": compile_result.warnings or [],
-                "compile_time": round(compile_time, 3),
-            }
-            gate3_result = run_gate3(gate3_input, math_model=math_model)
-            logger.info(
-                f"Gate3: pass={gate3_result['pass']}, "
-                f"errors={len(gate3_result['errors'])}, "
-                f"warnings={len(gate3_result['warnings'])}, "
-                f"stats={gate3_result.get('stats', {})}"
-            )
-
-            if not gate3_result["pass"]:
-                gate3_errors = "; ".join(gate3_result["errors"])
-                logger.error(f"Gate3 BLOCKED execution: {gate3_errors}")
-                return PipelineResult(
-                    success=False, phase="gate3", solver_id=solver_id,
-                    compile_result=compile_result,
-                    compile_time_sec=round(compile_time, 3),
-                    error=f"Gate3 validation failed: {gate3_errors}"
-                )
-
-            if gate3_result["warnings"]:
-                for gw in gate3_result["warnings"]:
-                    logger.warning(f"Gate3 warning: {gw}")
-        except Exception as g3e:
-            logger.warning(f"Gate3 check failed (non-blocking): {g3e}")
 
         #  Phase 3: Execute 
         try:
