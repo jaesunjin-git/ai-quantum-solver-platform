@@ -429,7 +429,6 @@ async def generate_math_model(
     domain: str,
     user_objective: Optional[str] = None,
     data_facts: Optional[dict] = None,
-    retry_feedback: str = "",
 ) -> Dict[str, Any]:
     """
     LLM을 호출하여 수학 모델 JSON을 생성하고 검증한다.
@@ -458,15 +457,6 @@ async def generate_math_model(
             user_objective=user_objective,
             data_facts=data_facts,
         )
-
-        # ★ 재시도 피드백이 있으면 프롬프트에 추가
-        if retry_feedback:
-            prompt += (
-                "\n\n---\n## 이전 모델 검증 결과 (재생성 요청)\n"
-                "아래 문제를 수정하여 모델을 다시 생성하세요:\n\n"
-                f"{retry_feedback}\n"
-            )
-            logger.info(f"Retry feedback added to prompt ({len(retry_feedback)} chars)")
 
         logger.info(f"Generating math model for domain={domain}, prompt_len={len(prompt)}")
 

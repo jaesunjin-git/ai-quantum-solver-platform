@@ -102,108 +102,38 @@ async def skill_math_model(model, session: CrewSession, project_id: str, message
         analysis_report = state.last_analysis_report or ""
         domain = state.detected_domain or "generic"
 
-        # ★ 재시도 루프: Gate 2 검증 실패 시 최대 3회 재생성
-        MAX_RETRIES = 3
-        retry_feedback = ""
-        final_model = None
-        final_validation = None
-        final_gate2 = None
+        result = await generate_math_model(
+            csv_summary=csv_summary,
+            analysis_report=analysis_report,
+            domain=domain,
+            user_objective=user_objective,
+            data_facts=state.data_facts,
+        )
 
-        for attempt in range(1, MAX_RETRIES + 1):
-            logger.info(f"Math model generation attempt {attempt}/{MAX_RETRIES}")
-
-            result = await generate_math_model(
-                csv_summary=csv_summary,
-                analysis_report=analysis_report,
-                domain=domain,
-                user_objective=user_objective,
-                data_facts=state.data_facts,
-                retry_feedback=retry_feedback,
+        if not result["success"]:
+            error_msg = result.get("error", "알 수 없는 오류")
+            warnings = result.get("validation", {}).get("warnings", []) if result.get("validation") else []
+            warning_text = "\n".join([f"  ⚠️ {w}" for w in warnings]) if warnings else ""
+            return error_response(
+                f"수학 모델 생성에 실패했습니다: {error_msg}\n{warning_text}",
+                "수학 모델 생성해줘"
             )
 
-            if not result["success"]:
-                error_msg = result.get("error", "알 수 없는 오류")
-                warnings = result.get("validation", {}).get("warnings", []) if result.get("validation") else []
-                warning_text = "\n".join([f"  ⚠️ {w}" for w in warnings]) if warnings else ""
-                if attempt < MAX_RETRIES:
-                    retry_feedback = f"모델 생성 실패: {error_msg}"
-                    continue
-                return error_response(
-                    f"수학 모델 생성에 실패했습니다 ({MAX_RETRIES}회 시도): {error_msg}\n{warning_text}",
-                    "수학 모델 생성해줘"
-                )
+        model = result["model"]
+        validation = result["validation"]
 
-            model = result["model"]
-            validation = result["validation"]
-
-            # ★ Gate 2: 모델 유효성 검증
-            from engine.compiler.base import DataBinder
-            binder = DataBinder(project_id)
-            binder.load_files()
-            from engine.gates.gate1_data_profile import run as run_gate1
-            data_profile = run_gate1(binder._dataframes)
-            gate2_result = run_gate2(model, data_profile=data_profile, dataframes=binder._dataframes)
-            logger.info(
-                f"Gate2 (attempt {attempt}): valid={gate2_result['valid']}, "
-                f"errors={len(gate2_result['errors'])}, "
-                f"warnings={len(gate2_result['warnings'])}, "
-                f"actual_vars={gate2_result['actual_variable_count']}"
-            )
-
-            # 재생성 필요 여부 판단
-            needs_retry = False
-            retry_reasons = []
-
-            # 조건 1: 치명적 오류
-            if gate2_result.get("errors"):
-                needs_retry = True
-                retry_reasons.extend(gate2_result["errors"])
-
-            # 조건 2: 경고 과다 (10개 이상)
-            if len(gate2_result.get("warnings", [])) >= 10:
-                needs_retry = True
-                retry_reasons.append(
-                    f"검증 경고 {len(gate2_result['warnings'])}개 — 모델 품질 부족"
-                )
-
-            # 조건 3: 변수 수 비정상 (1000 미만이면 set 매핑 오류 가능성)
-            actual_vars = gate2_result.get("actual_variable_count", 0)
-            if actual_vars < 1000:
-                needs_retry = True
-                retry_reasons.append(
-                    f"변수 수 {actual_vars}개로 비정상적으로 적음 — set 매핑 오류 가능성"
-                )
-
-            # 조건 4: set 크기 0
-            for sid, size in gate2_result.get("actual_set_sizes", {}).items():
-                if size == 0:
-                    needs_retry = True
-                    retry_reasons.append(f"Set '{sid}' 크기가 0 — 데이터 매핑 실패")
-
-            if needs_retry and attempt < MAX_RETRIES:
-                retry_feedback = (
-                    "이전 모델에 다음 문제가 있어 재생성합니다:\n"
-                    + "\n".join(f"- {r}" for r in retry_reasons)
-                    + "\n\n수정 요청:\n"
-                    + "- 운행 집합 I는 line3.xlsx의 열번 컬럼(160개)을 사용하세요\n"
-                    + "- 승무원 집합 J는 source_type: range, size: 96으로 설정하세요\n"
-                    + "- 파라미터는 실제 데이터 파일에 존재하는 컬럼만 참조하세요\n"
-                    + "- DIA 요약 데이터는 DIA_tables_from_indices1.xlsx::DIA__summary에서 참조 가능합니다"
-                )
-                logger.warning(
-                    f"Gate2 triggered retry (attempt {attempt}): {retry_reasons}"
-                )
-                continue
-
-            # 검증 통과 또는 최대 재시도 도달
-            final_model = model
-            final_validation = validation
-            final_gate2 = gate2_result
-            break
-
-        model = final_model
-        validation = final_validation
-        gate2_result = final_gate2
+        # ★ Gate 2: 모델 유효성 검증
+        from engine.compiler.base import DataBinder
+        binder = DataBinder(project_id)
+        binder.load_files()
+        # Gate 1 프로파일 재생성 (규칙 기반이므로 항상 동일)
+        from engine.gates.gate1_data_profile import run as run_gate1
+        data_profile = run_gate1(binder._dataframes)
+        gate2_result = run_gate2(model, data_profile=data_profile, dataframes=binder._dataframes)
+        logger.info(f"Gate2: valid={gate2_result['valid']}, "
+                     f"errors={len(gate2_result['errors'])}, "
+                     f"warnings={len(gate2_result['warnings'])}, "
+                     f"actual_vars={gate2_result['actual_variable_count']}")
 
         # 교정된 변수 수를 validation에 추가
         if gate2_result.get("corrections"):
@@ -218,7 +148,7 @@ async def skill_math_model(model, session: CrewSession, project_id: str, message
                 validation["warnings"] = []
             validation["warnings"].extend(gate2_result["warnings"])
 
-        # Gate 2 오류가 있으면 사용자에게 알림
+        # Gate 2 오류가 있으면 사용자에게 알림 (모델은 저장하되 경고 표시)
         if gate2_result.get("errors"):
             if not validation.get("errors"):
                 validation["errors"] = []

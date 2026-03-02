@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import os
 import logging
-from engine.gates.block_parser import parse_blocks, integrate_with_databinder
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -92,101 +91,8 @@ class DataBinder:
             except Exception as e:
                 logger.error(f"Failed to load {fpath.name}: {e}")
 
-        # ★ 비정형 블록 구조 자동 파싱
-        self._parse_non_tabular_sheets()
-
         self._loaded = True
         logger.info(f"DataBinder loaded {len(self._dataframes)} dataframes")
-
-
-    def _parse_non_tabular_sheets(self) -> None:
-        """비정형 블록 구조 시트를 감지하고 파싱하여 요약 테이블 추가"""
-        keys_to_parse = []
-        parsed_files = set()
-        for key, df in list(self._dataframes.items()):
-            # 이미 파싱된 요약/블록 테이블은 스킵
-            if "__summary" in key or "__DIA" in key or "__Block" in key:
-                continue
-            # :: 없는 키(파일명 전용 단축 키)는 중복이므로 스킵
-            if "::" not in key:
-                continue
-            if self._is_non_tabular(df):
-                keys_to_parse.append(key)
-
-        for key in keys_to_parse:
-            try:
-                df = self._dataframes[key]
-                # header=None으로 다시 읽어야 하므로 원본 파일에서 재로드
-                raw_df = self._reload_without_header(key)
-                if raw_df is None:
-                    continue
-
-                result = parse_blocks(raw_df)
-                if result["block_count"] > 0:
-                    integrate_with_databinder(result, self._dataframes, key)
-                    # 파싱 완료된 키 기록 (중복 방지)
-                    parsed_files.add(key)
-                    logger.info(
-                        f"BlockParser: '{key}' -> {result['block_count']} blocks, "
-                        f"summary added as '{key}__summary'"
-                    )
-            except Exception as e:
-                logger.warning(f"BlockParser failed for '{key}': {e}")
-
-    def _is_non_tabular(self, df: pd.DataFrame) -> bool:
-        """비정형 블록 구조인지 간단히 판단"""
-        if len(df) < 10 or len(df.columns) < 3:
-            return False
-
-        # 블록 파서가 생성한 테이블은 정형
-        if hasattr(df, 'attrs') and df.attrs.get('_parsed_by_block_parser'):
-            return False
-
-        # 첫 번째 컬럼에 헤더 값이 반복되는지 체크
-        first_col = df.iloc[:, 0].astype(str)
-        if len(first_col) == 0:
-            return False
-
-        # NaN 비율이 높으면 비정형 가능성
-        null_ratio = df.isna().sum().sum() / (len(df) * len(df.columns))
-        if null_ratio > 0.3:
-            return True
-
-        # 첫 번째 컬럼에서 동일 값이 3회 이상 반복
-        value_counts = first_col.value_counts()
-        if len(value_counts) > 0 and value_counts.iloc[0] >= 3:
-            top_val = value_counts.index[0]
-            if top_val != "nan":
-                return True
-
-        return False
-
-    def _reload_without_header(self, key: str) -> pd.DataFrame:
-        """시트를 header=None으로 다시 로드"""
-        try:
-            if "::" in key:
-                fname, sheet = key.split("::", 1)
-            else:
-                fname = key
-                sheet = 0
-
-            fpath = self.upload_dir / fname
-            if not fpath.exists():
-                # 파일명 부분 매칭
-                for p in self.upload_dir.iterdir():
-                    if fname in p.name:
-                        fpath = p
-                        break
-
-            if not fpath.exists():
-                logger.warning(f"Cannot reload '{key}': file not found")
-                return None
-
-            engine = "openpyxl" if str(fpath).endswith(".xlsx") else "xlrd"
-            return pd.read_excel(fpath, sheet_name=sheet, header=None, engine=engine)
-        except Exception as e:
-            logger.warning(f"Failed to reload '{key}' without header: {e}")
-            return None
 
     def get_dataframe(self, source_file: str) -> Optional[pd.DataFrame]:
         """파일명으로 DataFrame 반환"""

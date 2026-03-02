@@ -53,6 +53,11 @@ def run(dataframes: Dict[str, pd.DataFrame],
     }
 
     for sheet_key, df in dataframes.items():
+        # 블록 파서가 생성한 개별 블록 테이블은 프로파일에서 제외
+        # (요약 테이블 __summary만 포함)
+        if "__DIA " in sheet_key or "__Block" in sheet_key:
+            continue
+
         sheet_profile = _profile_sheet(sheet_key, df)
         profile["files"][sheet_key] = sheet_profile
         profile["summary"]["total_sheets"] += 1
@@ -220,6 +225,10 @@ def _detect_non_tabular(df: pd.DataFrame) -> bool:
     """
     if len(df) < 10 or len(df.columns) < 3:
         return False
+
+    # 블록 파서가 생성한 요약 테이블은 정형
+    # (외부에서 호출 시 sheet_key를 모르므로, 행 수가 적고 컬럼이 정리된 경우 정형 판단)
+    # 이 함수는 sheet_key를 받지 않으므로 DataBinder 쪽에서 처리
 
     first_col = df.iloc[:, 0].astype(str)
 
