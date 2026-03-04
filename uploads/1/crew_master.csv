@@ -1,9 +1,0 @@
-crew_id,name,role,home_depot,available_lines,max_work_hours,night_allowed
-C01,Kim,Driver,Depot_A,L1|L2,8,Y
-C02,Lee,Driver,Depot_A,L1,8,N
-C03,Park,Driver,Depot_B,L2,9,Y
-C04,Choi,Driver,Depot_B,L1|L2,8,Y
-C05,Jung,Conductor,Depot_A,L1,8,Y
-C06,Han,Conductor,Depot_A,L1|L2,8,N
-C07,Lim,Conductor,Depot_B,L2,9,Y
-C08,Yoo,Conductor,Depot_B,L1|L2,8,Y

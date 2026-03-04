@@ -1,14 +1,9 @@
-// src/components/analysis/FlowStepBar.tsx
-import { BarChart3, Braces, Cpu, Target } from 'lucide-react';
+﻿// src/components/analysis/FlowStepBar.tsx
+import { BarChart3, ClipboardList, Database, Braces, Cpu, Target } from 'lucide-react';
 
-type StepId = 'analysis' | 'math_model' | 'solver' | 'result';
+type StepId = 'analysis' | 'problem_def' | 'normalization' | 'math_model' | 'solver' | 'result';
 
-interface FlowStep {
-  id: StepId;
-  label: string;
-  icon: React.ReactNode;
-}
-
+interface FlowStep { id: StepId; label: string; icon: React.ReactNode; }
 interface FlowStepBarProps {
   currentStep: StepId;
   completedSteps: Set<StepId>;
@@ -16,10 +11,12 @@ interface FlowStepBarProps {
 }
 
 const STEPS: FlowStep[] = [
-  { id: 'analysis',   label: '데이터 분석', icon: <BarChart3 size={14} /> },
-  { id: 'math_model', label: '수학 모델',   icon: <Braces size={14} /> },
-  { id: 'solver',     label: '솔버',       icon: <Cpu size={14} /> },
-  { id: 'result',     label: '결과',       icon: <Target size={14} /> },
+  { id: 'analysis',      label: '\uBD84\uC11D',       icon: <BarChart3 size={14} /> },
+  { id: 'problem_def',   label: '\uBB38\uC81C\uC815\uC758', icon: <ClipboardList size={14} /> },
+  { id: 'normalization', label: '\uC815\uADDC\uD654',     icon: <Database size={14} /> },
+  { id: 'math_model',    label: '\uBAA8\uB378',       icon: <Braces size={14} /> },
+  { id: 'solver',        label: '\uC194\uBC84',       icon: <Cpu size={14} /> },
+  { id: 'result',        label: '\uACB0\uACFC',       icon: <Target size={14} /> },
 ];
 
 export function FlowStepBar({ currentStep, completedSteps, onStepClick }: FlowStepBarProps) {
@@ -29,7 +26,6 @@ export function FlowStepBar({ currentStep, completedSteps, onStepClick }: FlowSt
         const isActive = step.id === currentStep;
         const isDone = completedSteps.has(step.id);
         const isLocked = !isActive && !isDone;
-
         return (
           <div key={step.id} className="flex items-center">
             {idx > 0 && (
@@ -51,9 +47,7 @@ export function FlowStepBar({ currentStep, completedSteps, onStepClick }: FlowSt
                 }
               `}
             >
-              <span className={`
-                ${isActive ? 'text-cyan-400' : isDone ? 'text-emerald-400' : 'text-slate-700'}
-              `}>
+              <span className={isActive ? 'text-cyan-400' : isDone ? 'text-emerald-400' : 'text-slate-700'}>
                 {step.icon}
               </span>
               <span>{step.label}</span>

@@ -1,4 +1,4 @@
-# engine/compiler/base.py
+﻿# engine/compiler/base.py
 # ============================================================
 # Model Compiler Base: IR JSON -> Solver-specific model
 # ============================================================
@@ -329,6 +329,19 @@ class DataBinder:
                         if param_def.get("value") is not None:
                             return param_def["value"]
                         return None
+                # param_name 컬럼이 있으면 파라미터 id로 필터링하여 스칼라 반환
+                if "param_name" in df.columns and source_col == "value":
+                    pid = param_def.get("id", "")
+                    matched = df[df["param_name"] == pid]
+                    if len(matched) == 1:
+                        val = matched.iloc[0][source_col]
+                        _logger.info(f"Parameter {pid!r}: scalar {val} from param_name lookup")
+                        return val
+                    elif len(matched) > 1:
+                        val = matched.iloc[0][source_col]
+                        _logger.warning(f"Parameter {pid!r}: multiple matches ({len(matched)}), using first: {val}")
+                        return val
+                    # param_name에 없으면 전체 컬럼 반환 (기존 동작)
                 return df[source_col].tolist()
 
         # 3) 소스가 없을 때: default_value > value 순서로 반환
@@ -440,6 +453,46 @@ class DataBinder:
 
             bound["sets"][sid] = values
             bound["set_sizes"][sid] = len(values)
+
+
+        # ── Auto-bind: 제약조건에서 source_file/source_column이 있는 param 참조를 자동 바인딩 ──
+        def _scan_params(node, found):
+            """제약조건 트리를 재귀 스캔하여 source_file이 있는 param 노드 수집"""
+            if isinstance(node, dict):
+                if "param" in node and isinstance(node["param"], dict):
+                    p = node["param"]
+                    sf = p.get("source_file", "")
+                    sc = p.get("source_column", "")
+                    pname = p.get("name", "")
+                    if sf and sc and pname and pname not in found:
+                        found[pname] = {"source_file": sf, "source_column": sc}
+                for v in node.values():
+                    _scan_params(v, found)
+            elif isinstance(node, list):
+                for item in node:
+                    _scan_params(item, found)
+
+        ref_params = {}
+        for con in math_model.get("constraints", []):
+            _scan_params(con, ref_params)
+        _scan_params(math_model.get("objective", {}), ref_params)
+
+        for pname, pinfo in ref_params.items():
+            if pname in bound["parameters"]:
+                continue
+            sf = pinfo["source_file"]
+            sc = pinfo["source_column"]
+            df = self.get_dataframe(sf)
+            if df is None:
+                logger.warning(f"Auto-bind: file {sf!r} not found for param {pname!r}")
+                continue
+            if sc not in df.columns:
+                logger.warning(f"Auto-bind: column {sc!r} not in {sf!r} for param {pname!r}")
+                continue
+            values = df[sc].tolist()
+            values = self._convert_time_values(values)
+            bound["parameters"][pname] = values
+            logger.info(f"Auto-bind: {pname!r} <- {sf}::{sc} ({len(values)} values)")
 
         return bound
 

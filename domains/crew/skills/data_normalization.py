@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 """
 domains/crew/skills/data_normalization.py
 
@@ -44,6 +44,7 @@ class DataNormalizationSkill:
     def __init__(self):
         self.config = _load_yaml("prompts/data_normalization.yaml")
         self.confidence_threshold = self.config.get("confidence_threshold", 0.8)
+        self.data_detection = _load_yaml("knowledge/data_detection.yaml")
 
     # ──────────────────────────────────────
     # public entry point

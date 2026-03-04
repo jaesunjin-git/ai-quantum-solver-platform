@@ -38,8 +38,8 @@ export interface Solver {
   strengths: string[];
   weaknesses: string[];
   typical_time_seconds: number[];
-  estimated_time?: number[];      // 시간 추정
-  estimated_cost?: number[];      // 비용 추정
+  estimated_time?: number[];
+  estimated_cost?: number[];
 }
 
 export interface ProblemProfile {
@@ -101,7 +101,6 @@ export interface OptResult {
 
 export interface ResultData {
   view_mode: string;
-  // solve API response fields
   status?: string;
   objective_value?: number;
   solver_id?: string;
@@ -121,7 +120,6 @@ export interface ResultData {
   solver_info?: Record<string, any>;
   compile_warnings?: string[];
   compare_mode?: boolean;
-  // legacy fields for backward compatibility
   result?: any;
 }
 
@@ -152,8 +150,74 @@ export interface MathModelData {
   math_model_summary?: string;
 }
 
-export type AnalysisData = ReportData | SolverData | ResultData | FileUploadedData | MathModelData;
+// -- Problem Definition --
 
+export interface ProblemParameter {
+  name: string;
+  value: string | number | null;
+  unit?: string;
+  source?: string;
+}
+
+export interface ProblemConstraint {
+  id: string;
+  description: string;
+  type: 'hard' | 'soft';
+  enabled: boolean;
+  weight?: number;
+  weight_range?: number[];
+}
+
+export interface ProblemDefinitionData {
+  view_mode: 'problem_definition';
+  problem_name?: string;
+  domain?: string;
+  objective?: {
+    type?: string;
+    target?: string;
+    description?: string;
+    alternatives?: Array<{ target: string; description: string }>;
+  };
+  parameters?: ProblemParameter[];
+  hard_constraints?: ProblemConstraint[];
+  soft_constraints?: ProblemConstraint[];
+  status?: 'draft' | 'confirmed';
+  stage?: string;
+  variant?: string;
+  detected_data_types?: string[];
+}
+
+// -- Data Normalization --
+
+export interface ColumnMapping {
+  target_table: string;
+  source_file: string;
+  source_sheet?: string;
+  transform_type?: string;
+  confidence: number;
+  reason?: string;
+  column_mapping?: Record<string, string>;
+}
+
+export interface NormalizationData {
+  view_mode: 'normalization';
+  mappings?: ColumnMapping[];
+  auto_confirmed?: ColumnMapping[];
+  needs_review?: ColumnMapping[];
+  results?: string[];
+  errors?: string[];
+  status?: 'proposed' | 'confirmed' | 'complete' | 'error';
+  warnings?: string[];
+}
+
+export type AnalysisData =
+  | ReportData
+  | SolverData
+  | ResultData
+  | FileUploadedData
+  | MathModelData
+  | ProblemDefinitionData
+  | NormalizationData;
 
 export interface AnalysisReportProps {
   data: AnalysisData;

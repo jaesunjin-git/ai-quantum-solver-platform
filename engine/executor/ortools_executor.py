@@ -1,4 +1,4 @@
-# engine/executor/ortools_executor.py
+﻿# engine/executor/ortools_executor.py
 from __future__ import annotations
 
 import time
@@ -14,7 +14,7 @@ class ORToolsExecutor(BaseExecutor):
 
     def execute(self, compile_result, **kwargs) -> ExecuteResult:
         solver_type = compile_result.solver_type
-        time_limit = kwargs.get("time_limit_sec", 300)
+        time_limit = kwargs.get("time_limit_sec", 900)
 
         if solver_type == "ortools_cp":
             return self._execute_cp_sat(compile_result, time_limit)

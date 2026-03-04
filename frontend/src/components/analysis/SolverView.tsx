@@ -1,4 +1,4 @@
-// src/components/analysis/SolverView.tsx
+﻿// src/components/analysis/SolverView.tsx
 import { useState, useEffect, useCallback } from 'react';
 import { Cpu, Loader2, Clock, TrendingUp, Activity, Play, GitCompare, ListChecks, CheckCircle, XCircle } from 'lucide-react';
 import { API_BASE_URL } from '../../config';
@@ -56,7 +56,7 @@ export function SolverView({
           project_id: projectId,
           solver_id: solver.solver_id,
           solver_name: `${solver.provider} ${solver.solver_name}`.trim(),
-          time_limit_sec: 300,
+          time_limit_sec: 900,
         }),
       });
       if (!res.ok) { const t = await res.text(); throw new Error(t); }
@@ -80,7 +80,14 @@ export function SolverView({
       const solver = solvers[selectedSolver];
       const label = `${solver?.provider || ''} ${solver?.solver_name || ''}`.trim();
       // 결과 화면으로 전환
-      const resultView = { view_mode: 'result', ...result.summary, solver_id: result.solver_id, solver_name: result.solver_name };
+      const resultView = {
+            view_mode: 'result',
+            ...result.summary,
+            solver_id: result.solver_id,
+            solver_name: result.solver_name,
+            compile_summary: result.summary?.compile_summary,
+            execute_summary: result.summary?.execute_summary,
+          };
       onResultReady?.(resultView);
       // LLM에게 맥락 전달
       onAction?.('execute_done', `${label}으로 최적화 실행이 완료되었습니다. 결과를 설명해주세요.`);
@@ -147,7 +154,13 @@ export function SolverView({
     // 비교 결과 전환 (첫 번째 성공 결과 사용)
     const firstSuccess = Object.values(compareResults).find((r: any) => r?.success);
     if (firstSuccess) {
-      const resultView = { view_mode: 'result', ...(firstSuccess as any).summary, compare_mode: true };
+      const resultView = {
+          view_mode: 'result',
+          ...(firstSuccess as any).summary,
+          compare_mode: true,
+          compile_summary: (firstSuccess as any).summary?.compile_summary,
+          execute_summary: (firstSuccess as any).summary?.execute_summary,
+        };
       onResultReady?.(resultView);
     }
     onAction?.('execute_done', `${indices.length}개 솔버 비교 실행이 완료되었습니다.`);
@@ -652,3 +665,5 @@ export function SolverView({
     </div>
   );
 }
+
+

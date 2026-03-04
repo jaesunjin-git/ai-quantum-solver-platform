@@ -1,4 +1,4 @@
-"""
+﻿"""
 Structured Constraint Builder
 =============================
 구조화된 제약 JSON (lhs/operator/rhs)을 솔버별 제약으로 변환.
@@ -51,6 +51,14 @@ class BuildContext:
                     return float(val)
                 except ValueError:
                     return val
+        try:
+            import numpy as np
+            if isinstance(val, (np.integer, np.floating)):
+                val = int(val) if float(val) == int(float(val)) else float(val)
+        except ImportError:
+            pass
+        if isinstance(val, float) and val == int(val):
+            return int(val)
         return val
     def get_param_indexed(self, name: str, key) -> Any:
         val = self.param_map.get(name)
@@ -92,7 +100,17 @@ class BuildContext:
                                     return int(result) if isinstance(result, float) and result == int(result) else result
                                 return result
                         except (ValueError, IndexError):
-                            continue
+                            # 타입 변환 후 재시도 (str->int 또는 int->str)
+                            try:
+                                converted_key = int(key) if isinstance(key, str) else str(key)
+                                idx = list(set_vals).index(converted_key)
+                                if idx < len(val):
+                                    result = val[idx]
+                                    if isinstance(result, (int, float)):
+                                        return int(result) if isinstance(result, float) and result == int(result) else result
+                                    return result
+                            except (ValueError, IndexError, TypeError):
+                                continue
                 # 3) key를 int로 변환 시도
                 try:
                     int_key = int(key)

@@ -1,13 +1,15 @@
-// ============================================================
-// AnalysisReport.tsx v5.0 - Flow Step Navigation
+﻿// ============================================================
+// AnalysisReport.tsx v6.0 - 6-Step Flow Navigation
 // ============================================================
 
 import '../markdown.css';
 import { useAnalysis } from '../context/AnalysisContext';
+import type { StepId } from '../context/AnalysisContext';
 import { FlowStepBar } from './analysis/FlowStepBar';
 import type {
   AnalysisReportProps,
   ReportData, SolverData, ResultData, FileUploadedData, MathModelData,
+  ProblemDefinitionData, NormalizationData,
 } from './analysis/types';
 
 import { MathModelView } from './analysis/MathModelView';
@@ -15,15 +17,14 @@ import { FileUploadedView } from './analysis/FileUploadedView';
 import { ReportView } from './analysis/ReportView';
 import { SolverView } from './analysis/SolverView';
 import { OptimizationResultView } from './analysis/OptimizationResultView';
-
-type StepId = 'analysis' | 'math_model' | 'solver' | 'result';
+import { ProblemDefinitionView } from './analysis/ProblemDefinitionView';
+import { NormalizationView } from './analysis/NormalizationView';
 
 export default function AnalysisReport({
   projectId,
   onAction,
 }: Omit<AnalysisReportProps, 'data'>) {
   const { analysisData: data, setAnalysisData, completedSteps, switchToStep } = useAnalysis();
-  console.log('🔍 AnalysisReport render: view_mode=' + ((data as any)?.view_mode || 'NONE') + ', keys=' + (data ? Object.keys(data).join(',') : 'null'));
 
   if (!data) return (
     <div className="flex-1 flex flex-col items-center justify-center text-slate-500 p-8 text-center select-none">
@@ -32,7 +33,7 @@ export default function AnalysisReport({
       </div>
       <h3 className="text-xl font-semibold text-slate-300 mb-2">Analysis Workspace</h3>
       <p className="text-sm opacity-60 max-w-xs leading-relaxed">
-        좌측 채팅창에 데이터를 업로드하거나<br/>질문을 입력하면 이곳에 분석 결과가 표시됩니다.
+        {'\uC88C\uCE21 \uCC44\uD305\uCC3D\uC5D0 \uB370\uC774\uD130\uB97C \uC5C5\uB85C\uB4DC\uD558\uAC70\uB098'}<br/>{'\uC9C8\uBB38\uC744 \uC785\uB825\uD558\uBA74 \uBD84\uC11D \uACB0\uACFC\uAC00 \uD45C\uC2DC\uB429\uB2C8\uB2E4'}
       </p>
     </div>
   );
@@ -40,16 +41,22 @@ export default function AnalysisReport({
   const viewMode = (data as any).view_mode as string | undefined;
 
   const currentStep: StepId =
-    viewMode === 'file_uploaded' || viewMode === 'report' ? 'analysis' :
-    viewMode === 'math_model' ? 'math_model' :
-    viewMode === 'solver' ? 'solver' :
-    viewMode === 'result' ? 'result' :
-    'analysis';
+    viewMode === 'file_uploaded' || viewMode === 'report'
+      ? 'analysis'
+    : viewMode === 'problem_definition' || viewMode === 'problem_defined'
+      ? 'problem_def'
+    : viewMode === 'normalization' || viewMode === 'normalization_mapping' || viewMode === 'normalization_complete'
+      ? 'normalization'
+    : viewMode === 'math_model'
+      ? 'math_model'
+    : viewMode === 'solver'
+      ? 'solver'
+    : viewMode === 'result'
+      ? 'result'
+    : 'analysis';
 
   const handleStepClick = (step: StepId) => {
-    if (completedSteps.has(step)) {
-      switchToStep(step);
-    }
+    if (completedSteps.has(step)) switchToStep(step);
   };
 
   const showFlowBar = completedSteps.size > 0;
@@ -58,6 +65,13 @@ export default function AnalysisReport({
     switch (viewMode) {
       case 'file_uploaded':
         return <FileUploadedView data={data as FileUploadedData} onAction={onAction} />;
+      case 'problem_definition':
+      case 'problem_defined':
+        return <ProblemDefinitionView data={data as ProblemDefinitionData} onAction={onAction} />;
+      case 'normalization':
+      case 'normalization_mapping':
+      case 'normalization_complete':
+        return <NormalizationView data={data as NormalizationData} onAction={onAction} />;
       case 'math_model':
         return <MathModelView data={data as MathModelData} onAction={onAction} />;
       case 'solver':

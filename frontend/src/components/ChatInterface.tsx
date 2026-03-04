@@ -38,7 +38,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   triggerMessage,
   onTriggerComplete,
 }) => {
-  const { setAnalysisData, switchToStep } = useAnalysis();
+  const { setAnalysisData } = useAnalysis();
 
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -237,7 +237,15 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       // 오른쪽 패널 업데이트
       if (data.data) {
         console.log('📊 Analysis Data Received:', data.data);
-        setAnalysisData(data.data);
+        // 채팅 응답의 간략 데이터(4개 키)가 SolverView에서 설정한 상세 데이터(13개 키)를
+        // 덮어쓰지 않도록 방지: 같은 view_mode의 상세 데이터가 이미 있으면 스킵
+        const incoming = data.data;
+        const isMinimalResult = incoming.view_mode === 'result' && !incoming.compile_summary && !incoming.status;
+        if (isMinimalResult) {
+          console.log('⏭️ Skipping minimal result data (detailed data already set by SolverView)');
+        } else {
+          setAnalysisData(incoming);
+        }
 
         // target_tab은 view_mode를 통해 자동 반영됨
         // setAnalysisData가 view_mode 기반으로 stepCache와 completedSteps를 갱신하므로

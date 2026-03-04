@@ -1,4 +1,4 @@
-# engine/solver_pipeline.py
+﻿# engine/solver_pipeline.py
 # ============================================================
 # Solver Pipeline: 수학 모델 IR -> 컴파일 -> 실행 -> 결과 통합
 # ============================================================
@@ -64,7 +64,7 @@ class SolverPipeline:
         solver_id: str,
         project_id: str,
         solver_name: str = "",
-        time_limit_sec: int = 300,
+        time_limit_sec: int = 900,
         **kwargs,
     ) -> PipelineResult:
         """전체 파이프라인 실행"""

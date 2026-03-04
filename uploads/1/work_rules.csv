@@ -1,6 +1,0 @@
-rule_name,value,unit
-min_connection_time,20,minutes
-max_continuous_work,4,hours
-min_rest_time,10,hours
-night_start,22:00,time
-night_end,05:00,time
