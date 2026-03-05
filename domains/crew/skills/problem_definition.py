@@ -419,6 +419,13 @@ class ProblemDefinitionSkill:
             effective_detected = set(detected_data_types)
             if phase1_data.get("has_trips"):
                 effective_detected.add("timetable")
+            # Phase 1에서 파라미터가 추출되었으면 work_regulations 존재
+            if phase1_data.get("params_raw") and len(phase1_data["params_raw"]) > 0:
+                effective_detected.add("work_regulations")
+                # 텍스트 파일에서 추출된 파라미터가 있으면 crew_info도 추가
+                text_params = [p for p in phase1_data["params_raw"] if "text:" in str(p.get("source",""))]
+                if text_params:
+                    effective_detected.add("crew_info")
 
             missing = [r for r in required if r not in effective_detected]
             if missing:
