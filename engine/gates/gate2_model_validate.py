@@ -1203,7 +1203,7 @@ def _fuzzy_match_column(target: str, available: set) -> Optional[str]:
         if overlap > best_score:
             best_score = overlap
             best_col = col
-        if best_score >= 2:
+    if best_score >= 2:
         return best_col
 
     return None
