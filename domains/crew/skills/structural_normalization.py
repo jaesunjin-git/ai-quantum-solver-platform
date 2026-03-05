@@ -515,7 +515,16 @@ class StructuralNormalizationSkill:
                     file_entry.update(self._process_excel(fp, all_trips, all_params))
                 elif ext == ".csv":
                     file_entry.update(self._process_csv(fp, all_trips, all_params))
-                elif ext in (".txt", ".md", ".text"):
+                elif ext == ".tsv":
+                file_entry.update(self._process_csv(fp, all_trips, all_params, sep="\t"))
+            elif ext == ".json":
+                file_entry.update(self._process_json(fp, all_params))
+            elif ext == ".ods":
+                file_entry.update(self._process_excel(fp, all_trips, all_params))
+            elif ext in (".hwp", ".hwpx", ".doc"):
+                file_entry["structure"] = "document_skipped"
+                file_entry["note"] = "문서 파일은 Phase 1에서 구조 변환 불가. 문제 정의에서 LLM으로 처리."
+            elif ext in (".txt", ".md", ".text"):
                     file_entry.update(self._process_text(fp, all_params))
                 elif ext == ".pdf":
                     file_entry["structure"] = "pdf_skipped"
@@ -603,7 +612,7 @@ class StructuralNormalizationSkill:
 
         return result
 
-    def _process_csv(self, fp: Path, all_trips: list, all_params: list) -> dict:
+    def _process_csv(self, fp: Path, all_trips: list, all_params: list, sep: str = ",") -> dict:
         df = _read_file(fp)
         if df is None or df.empty:
             return {"structure": "empty"}
@@ -623,6 +632,31 @@ class StructuralNormalizationSkill:
             result["params_extracted"] = len(params)
 
         return result
+
+    def _process_json(self, fp: Path, all_params: list) -> dict:
+        """JSON 파일에서 파라미터 추출"""
+        try:
+            text = _read_text_safe(fp)
+            if not text:
+                return {"structure": "json_empty"}
+            data = __import__("json").loads(text)
+            if isinstance(data, dict):
+                params = []
+                for key, val in data.items():
+                    if isinstance(val, (int, float)):
+                        params.append({
+                            "param_name": str(key),
+                            "value": val,
+                            "unit": "raw",
+                            "source": fp.name,
+                        })
+                all_params.extend(params)
+                return {"structure": "json_kv", "params_extracted": len(params)}
+            elif isinstance(data, list) and data and isinstance(data[0], dict):
+                return {"structure": "json_array", "rows": len(data), "keys": list(data[0].keys())[:10]}
+            return {"structure": "json_other"}
+        except Exception as e:
+            return {"structure": "json_error", "error": str(e)}
 
     def _process_text(self, fp: Path, all_params: list) -> dict:
         params = ParameterExtractor.from_text(fp)
@@ -706,3 +740,4 @@ async def skill_structural_normalization(
 ) -> Dict:
     skill = get_skill()
     return await skill.handle(session, project_id, message, params)
+
