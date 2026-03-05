@@ -23,6 +23,56 @@ logger = logging.getLogger(__name__)
 VALID_OPERATORS = {"==", "<=", ">=", "<", ">", "!="}
 
 
+# ──────────────────────────────────────────────
+# Alias Map: constraints.yaml hints → param IDs
+# ──────────────────────────────────────────────
+def _build_param_alias_map():
+    """constraints.yaml의 detection_hints.ko → parameter(s) 매핑 생성.
+    Returns: dict mapping Korean hint keywords to English param IDs.
+    Example: {"최대승무시간": "max_driving_minutes", "준비시간": "prep_time_minutes"}
+    """
+    import os
+    alias_map = {}
+    try:
+        import yaml
+        base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        # Try folder-based domain first
+        for domain_name in os.listdir(os.path.join(base, "knowledge", "domains")):
+            cpath = os.path.join(base, "knowledge", "domains", domain_name, "constraints.yaml")
+            if not os.path.isfile(cpath):
+                continue
+            with open(cpath, "r", encoding="utf-8") as f:
+                cdata = yaml.safe_load(f) or {}
+            for section in ["hard", "soft"]:
+                for cid, cdef in (cdata.get(section) or {}).items():
+                    if not isinstance(cdef, dict):
+                        continue
+                    hints_ko = (cdef.get("detection_hints") or {}).get("ko", [])
+                    # single_param
+                    param_id = cdef.get("parameter")
+                    if param_id and hints_ko:
+                        for hint in hints_ko:
+                            alias_map[hint.strip()] = param_id
+                        # Also generate concatenated hint keys
+                        if len(hints_ko) >= 2:
+                            alias_map["".join(h.strip() for h in hints_ko)] = param_id
+                    # compound params
+                    params_dict = cdef.get("parameters") or {}
+                    if params_dict and hints_ko:
+                        for pid in params_dict:
+                            # Map each sub-param by its name parts
+                            alias_map[pid] = pid
+                            # Also try Korean name parts from the name_ko
+                            name_ko = cdef.get("name_ko", "")
+                            if name_ko:
+                                alias_map[name_ko] = pid
+        logger.info(f"Param alias map built: {len(alias_map)} entries")
+    except Exception as e:
+        logger.warning(f"Failed to build param alias map: {e}")
+    return alias_map
+
+
+
 
 
 # ──────────────────────────────────────────────
@@ -579,6 +629,62 @@ def run(math_model: Dict,
 
             logger.info(f"Direct-bind complete: {_bound_count} params bound from normalized/parameters.csv")
 
+            # ── Phase 2: Alias-based binding (Korean hints → English param IDs) ──
+            _alias_map = _build_param_alias_map()
+            if _alias_map:
+                # Build reverse map: param_id → list of Korean hints
+                _pid_to_hints = {}
+                for _hint, _target_pid in _alias_map.items():
+                    _pid_to_hints.setdefault(_target_pid, []).append(_hint)
+
+                # Scan normalized parameters for alias matches
+                for p in _all_model_params:
+                    pid = p.get("id", "")
+                    pname = p.get("name", "")
+                    sf = p.get("source_file") or ""
+                    dv = p.get("default_value", p.get("default"))
+                    if (sf and sf != "None") or dv is not None:
+                        continue  # already bound
+
+                    # Get Korean hints for this param ID
+                    hints_for_pid = _pid_to_hints.get(pid, []) + _pid_to_hints.get(pname, [])
+                    if not hints_for_pid:
+                        continue
+
+                    # Search parameters.csv rows for hint matches
+                    best_match_val = None
+                    best_match_key = None
+                    best_score = 0
+                    for _, _row in _norm_params_df.iterrows():
+                        _pn = str(_row["param_name"]).strip()
+                        _pv = _row["value"]
+                        if not _pn:
+                            continue
+                        for _hint in hints_for_pid:
+                            if _hint in _pn or _pn in _hint:
+                                _score = len(_hint)
+                                if _score > best_score:
+                                    best_score = _score
+                                    best_match_val = _pv
+                                    best_match_key = f"{_pn} (alias: {_hint})"
+
+                    if best_match_val is not None:
+                        try:
+                            p["default_value"] = float(best_match_val)
+                        except (ValueError, TypeError):
+                            p["default_value"] = best_match_val
+                        p["auto_bound"] = True
+                        p["auto_bound_source"] = "normalized/parameters.csv (alias)"
+                        if "user_input_required" in p:
+                            del p["user_input_required"]
+                        corrections.setdefault("alias_bind", []).append(
+                            f"{pid or pname} = {best_match_val} (via {best_match_key})"
+                        )
+                        _bound_count += 1
+                        logger.info(f"Alias-bind: {pid or pname} = {best_match_val} ({best_match_key})")
+
+            logger.info(f"Direct+Alias bind complete: {_bound_count} params bound")
+
             # unbound_params 재계산 (검증3 결과 갱신)
             unbound_params = []
             for p in _all_model_params:
@@ -647,6 +753,63 @@ def run(math_model: Dict,
                 if not sf2 and not sc2 and dv2 is None:
                     unbound_params.append(pn)
             logger.info(f"CP-bind: {_cp_bound} bound, {len(unbound_params)} still unbound: {unbound_params}")
+
+    # --- reference_ranges.yaml fallback (midpoint of typical range) ---
+    if unbound_params:
+        try:
+            import os as _os
+            import yaml as _yaml
+            _base = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+            _ref_path = _os.path.join(_base, "knowledge", "domains", "railway", "reference_ranges.yaml")
+            if _os.path.isfile(_ref_path):
+                with open(_ref_path, "r", encoding="utf-8") as _rf:
+                    _ref_data = _yaml.safe_load(_rf) or {}
+                # Flatten all sub-domain ranges into a single lookup
+                _ref_flat = {}
+                for _subdomain, _subdata in _ref_data.items():
+                    if not isinstance(_subdata, dict):
+                        continue
+                    for _rk, _rv in _subdata.items():
+                        if isinstance(_rv, dict) and "range" in _rv:
+                            _rng = _rv["range"]
+                            if isinstance(_rng, list) and len(_rng) == 2:
+                                _midpoint = round((_rng[0] + _rng[1]) / 2, 2)
+                                if _rk not in _ref_flat:
+                                    _ref_flat[_rk] = _midpoint
+                _ref_bound = 0
+                _all_model_params3 = math_model.get("parameters", [])
+                for p in _all_model_params3:
+                    pid = p.get("id", "")
+                    pname = p.get("name", "")
+                    dv = p.get("default_value", p.get("default"))
+                    sf = p.get("source_file") or ""
+                    if (sf and sf != "None") or dv is not None:
+                        continue
+                    for candidate in [pid, pname, pid.lower(), pname.lower()]:
+                        if candidate and candidate in _ref_flat:
+                            p["default_value"] = _ref_flat[candidate]
+                            p["auto_bound"] = True
+                            p["auto_bound_source"] = f"reference_ranges.yaml (midpoint)"
+                            if "user_input_required" in p:
+                                del p["user_input_required"]
+                            corrections.setdefault("ref_range_bind", []).append(
+                                f"{pid or pname} = {_ref_flat[candidate]} (reference midpoint)"
+                            )
+                            _ref_bound += 1
+                            logger.info(f"Ref-range bind: {pid or pname} = {_ref_flat[candidate]}")
+                            break
+                # Update unbound list
+                unbound_params = []
+                for p in _all_model_params3:
+                    pn = p.get("name", p.get("id", ""))
+                    sf2 = p.get("source_file") or ""
+                    sc2 = p.get("source_column") or ""
+                    dv2 = p.get("default_value", p.get("default"))
+                    if not sf2 and not sc2 and dv2 is None:
+                        unbound_params.append(pn)
+                logger.info(f"Ref-range bind: {_ref_bound} bound, {len(unbound_params)} still unbound: {unbound_params}")
+        except Exception as _e:
+            logger.warning(f"Reference range fallback failed: {_e}")
 
     # --- 범용 자동 바인딩 시도 ---
     if unbound_params and dataframes:
