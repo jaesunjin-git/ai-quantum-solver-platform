@@ -157,8 +157,13 @@ class CrewAgent:
                 logger.info(f"[{project_id}] Analysis not completed — redirecting to ANALYZE")
                 return await self._execute_skill(session, project_id, "ANALYZE", message, {})
 
-            # ★ Phase1.5: 분석 완료 but 문제 미정의 시 문제정의로 리다이렉트
-            if session.state.analysis_completed and not session.state.problem_defined:
+            # ★ Phase1.5: 분석 완료 but 구조 정규화 미완료 시 Phase 1 리다이렉트
+            if session.state.analysis_completed and not session.state.structural_normalization_done:
+                logger.info(f"[{project_id}] Structural normalization not done — redirecting to STRUCTURAL_NORMALIZATION")
+                return await self._execute_skill(session, project_id, "STRUCTURAL_NORMALIZATION", message, {})
+
+            # ★ Phase1.7: 구조 정규화 완료 but 문제 미정의 시 문제정의로 리다이렉트
+            if session.state.structural_normalization_done and not session.state.problem_defined:
                 logger.info(f"[{project_id}] Problem not defined — redirecting to PROBLEM_DEFINITION")
                 return await self._execute_skill(session, project_id, "PROBLEM_DEFINITION", message, {})
 

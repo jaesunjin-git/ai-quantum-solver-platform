@@ -1,4 +1,4 @@
-﻿"""
+"""
 domains/crew/session.py
 ───────────────────────
 세션 상태 관리 모듈.
@@ -49,6 +49,10 @@ class SessionState:
     # ── Structural Normalization Phase 1 ──
     structural_normalization_done: bool = False
     phase1_summary: Optional[Dict] = None
+
+    # ── Constraint Confirmation (TASK 3) ──
+    constraints_confirmed: bool = False
+    confirmed_constraints: Optional[Dict] = None
 
 
 
@@ -103,6 +107,8 @@ class SessionState:
 
         self.structural_normalization_done = False
         self.phase1_summary = None
+        self.constraints_confirmed = False
+        self.confirmed_constraints = None
 
     def context_string(self) -> str:
         parts = []
@@ -244,6 +250,10 @@ def save_session_state(project_id: str, state: SessionState):
         row.structural_normalization_done = getattr(state, 'structural_normalization_done', False)
         row.phase1_summary = json.dumps(state.phase1_summary, ensure_ascii=False) if getattr(state, 'phase1_summary', None) else None
 
+        # Constraints
+        row.constraints_confirmed = getattr(state, 'constraints_confirmed', False)
+        row.confirmed_constraints = json.dumps(state.confirmed_constraints, ensure_ascii=False) if getattr(state, 'confirmed_constraints', None) else None
+
         row.data_facts = json.dumps(state.data_facts, ensure_ascii=False) if state.data_facts else None
 
         # Version pointers
@@ -305,6 +315,10 @@ def load_session_state(project_id: str) -> Optional[SessionState]:
         # Structural Normalization Phase 1
         state.structural_normalization_done = getattr(row, 'structural_normalization_done', False) or False
         state.phase1_summary = json.loads(row.phase1_summary) if getattr(row, 'phase1_summary', None) else None
+
+        # Constraints
+        state.constraints_confirmed = getattr(row, 'constraints_confirmed', False) or False
+        state.confirmed_constraints = json.loads(row.confirmed_constraints) if getattr(row, 'confirmed_constraints', None) else None
 
 
         # Version pointers

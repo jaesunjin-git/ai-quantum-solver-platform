@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 """
 domains/crew/skills/structural_normalization.py
 
@@ -516,15 +516,15 @@ class StructuralNormalizationSkill:
                 elif ext == ".csv":
                     file_entry.update(self._process_csv(fp, all_trips, all_params))
                 elif ext == ".tsv":
-                file_entry.update(self._process_csv(fp, all_trips, all_params, sep="\t"))
-            elif ext == ".json":
-                file_entry.update(self._process_json(fp, all_params))
-            elif ext == ".ods":
-                file_entry.update(self._process_excel(fp, all_trips, all_params))
-            elif ext in (".hwp", ".hwpx", ".doc"):
-                file_entry["structure"] = "document_skipped"
-                file_entry["note"] = "문서 파일은 Phase 1에서 구조 변환 불가. 문제 정의에서 LLM으로 처리."
-            elif ext in (".txt", ".md", ".text"):
+                    file_entry.update(self._process_csv(fp, all_trips, all_params, sep="\t"))
+                elif ext == ".json":
+                    file_entry.update(self._process_json(fp, all_params))
+                elif ext == ".ods":
+                    file_entry.update(self._process_excel(fp, all_trips, all_params))
+                elif ext in (".hwp", ".hwpx", ".doc"):
+                    file_entry["structure"] = "document_skipped"
+                    file_entry["note"] = "문서 파일은 Phase 1에서 구조 변환 불가. 문제 정의에서 LLM으로 처리."
+                elif ext in (".txt", ".md", ".text"):
                     file_entry.update(self._process_text(fp, all_params))
                 elif ext == ".pdf":
                     file_entry["structure"] = "pdf_skipped"

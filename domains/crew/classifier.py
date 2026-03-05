@@ -53,11 +53,13 @@ class InputClassifier:
         cls._keywords = {
             "analysis": ["분석", "analyze", "데이터 분석", "리포트"],
             "analysis_result": ["분석 결과", "분석결과", "리포트 보여"],
+            "structural_normalization": ["구조 정규화", "구조정규화", "structural normalization", "Phase 1", "phase1", "구조 변환"],
             "data_normalization": ["데이터 정규화", "정규화", "normalization", "데이터 변환", "매핑"],
             "problem_definition": ["문제 정의", "문제정의", "problem definition", "문제 유형", "어떤 문제", "what to optimize", "최적화 문제 정의"],
             "math_model": ["수학 모델", "수학모델", "모델링", "modeling", "수식", "변수 정의", "제약 정의"],
             "pre_decision": ["솔버", "solver", "추천", "recommend", "시뮬레이션", "정확도 우선", "속도 우선", "비용 우선"],
             "execution": ["실행", "execute", "run", "최적화 실행"],
+            "show_math_model": ["수학 모델 보여", "모델 보여", "모델 확인", "현재 모델"],
             "show_result": ["결과", "result", "결과 보여"],
             "show_solver": ["솔버 결과", "추천 결과"],
             "show_opt_result": ["최적화 결과", "최종 결과"],
@@ -138,6 +140,7 @@ class InputClassifier:
         # 1순위: 메시지에 명시적 대상 + 실행 동사
         tab_keyword_map = {
             "analysis": ["분석", "데이터 분석", "리포트", "analyze"],
+            "structural_normalization": ["구조 정규화", "구조정규화", "structural normalization", "Phase 1", "phase1", "구조 변환"],
             "data_normalization": ["데이터 정규화", "정규화", "normalization", "데이터 변환", "매핑"],
             "problem_definition": ["문제 정의", "문제정의", "problem definition"],
             "math_model": ["수학 모델", "수학모델", "모델링", "목적함수", "제약조건", "변수", "수식"],
@@ -192,6 +195,7 @@ SKILL_TO_INTENT = {
     "FileReceivedSkill": "FILE_UPLOAD",
     "AnalyzeDataSkill": "ANALYZE",
     "ProblemDefinitionSkill": "PROBLEM_DEFINITION",
+    "StructuralNormalizationSkill": "STRUCTURAL_NORMALIZATION",
     "DataNormalizationSkill": "DATA_NORMALIZATION",
     "PreDecisionSkill": "PRE_DECISION",
     "MathModelSkill": "MATH_MODEL",
