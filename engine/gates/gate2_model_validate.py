@@ -1156,15 +1156,56 @@ def _check_node_refs(node: Any, cname: str, side: str,
 
 
 def _fuzzy_match_column(target: str, available: set) -> Optional[str]:
-    """유사 컬럼명 매칭"""
+    """유사 컬럼명 매칭 (exact -> substring -> token overlap)"""
     target_low = target.strip().lower()
-    for col in available:
+
+    # Semantic aliases: LLM이 자주 사용하는 이름 -> 실제 컬럼명
+    _semantic_aliases = {
+        "travel_time": "trip_duration",
+        "travel_time_min": "trip_duration",
+        "travel_time_minutes": "trip_duration",
+        "run_time": "trip_duration",
+        "running_time": "trip_duration",
+        "dep_time": "trip_dep_time",
+        "dep_time_min": "trip_dep_time",
+        "departure_time": "trip_dep_time",
+        "arr_time": "trip_arr_time",
+        "arr_time_min": "trip_arr_time",
+        "arrival_time": "trip_arr_time",
+    }
+    alias_match = _semantic_aliases.get(target_low)
+    if alias_match and alias_match in [c.strip().lower() for c in avail_list]:
+        for col in avail_list:
+            if col.strip().lower() == alias_match:
+                return col
+
+    avail_list = [c for c in available if c]
+
+    # 1. exact match
+    for col in avail_list:
         if col.strip().lower() == target_low:
             return col
-    # 부분 매칭
-    for col in available:
-        if target_low in col.strip().lower() or col.strip().lower() in target_low:
+
+    # 2. substring match
+    for col in avail_list:
+        cl = col.strip().lower()
+        if target_low in cl or cl in target_low:
             return col
+
+    # 3. token overlap (split by _ and compare)
+    import re as _re
+    target_tokens = set(_re.split(r"[_\s]+", target_low))
+    best_col = None
+    best_score = 0
+    for col in avail_list:
+        col_tokens = set(_re.split(r"[_\s]+", col.strip().lower()))
+        overlap = len(target_tokens & col_tokens)
+        if overlap > best_score:
+            best_score = overlap
+            best_col = col
+        if best_score >= 2:
+        return best_col
+
     return None
 
 
