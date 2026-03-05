@@ -1158,6 +1158,7 @@ def _check_node_refs(node: Any, cname: str, side: str,
 def _fuzzy_match_column(target: str, available: set) -> Optional[str]:
     """유사 컬럼명 매칭 (exact -> substring -> token overlap)"""
     target_low = target.strip().lower()
+    avail_list = [c for c in available if c]
 
     # Semantic aliases: LLM이 자주 사용하는 이름 -> 실제 컬럼명
     _semantic_aliases = {
@@ -1179,7 +1180,6 @@ def _fuzzy_match_column(target: str, available: set) -> Optional[str]:
             if col.strip().lower() == alias_match:
                 return col
 
-    avail_list = [c for c in available if c]
 
     # 1. exact match
     for col in avail_list:
