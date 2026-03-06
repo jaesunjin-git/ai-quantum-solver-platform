@@ -43,16 +43,17 @@ except Exception as e:
 
 # ── 도메인 YAML 로더 ──
 def _load_domain_yaml(domain: str) -> dict:
-    """knowledge/domains/{domain}.yaml 로드"""
+    """knowledge/domains/{domain}.yaml 또는 하위폴더에서 로드"""
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     domain_dir = os.path.join(base, "knowledge", "domains")
     if not os.path.isdir(domain_dir):
         return {}
+    import yaml as _yaml
+    # 1) 직하 파일 탐색
     for fname in os.listdir(domain_dir):
         if fname.endswith(".yaml"):
             fpath = os.path.join(domain_dir, fname)
             try:
-                import yaml as _yaml
                 with open(fpath, "r", encoding="utf-8") as f:
                     data = _yaml.safe_load(f) or {}
                 if data.get("domain") == domain:
@@ -60,6 +61,20 @@ def _load_domain_yaml(domain: str) -> dict:
                     return data
             except Exception:
                 pass
+    # 2) 하위폴더 탐색 (knowledge/domains/railway/constraints.yaml 등)
+    sub_dir = os.path.join(domain_dir, domain)
+    if os.path.isdir(sub_dir):
+        for fname in os.listdir(sub_dir):
+            if fname.endswith(".yaml"):
+                fpath = os.path.join(sub_dir, fname)
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        data = _yaml.safe_load(f) or {}
+                    if data.get("domain") == domain or data.get("constraint_templates"):
+                        logger.info(f"Domain YAML loaded (subfolder): {fpath}")
+                        return data
+                except Exception:
+                    pass
     return {}
 
 def _get_model_schema() -> str:
@@ -279,26 +294,31 @@ def _build_modeling_prompt(
     data_guide: str = "",
     confirmed_problem=None,
 ) -> str:
-    """LLM에게 수학 모델 JSON 생성을 요청하는 프롬프트를 조립 (YAML 기반)"""
+    """LLM에게 수학 모델 JSON 생성을 요청하는 프롬프트를 조립 (YAML 기반 v2)"""
+    import json as _json
 
-    # YAML에서 프롬프트 설정 로드
+    # YAML 프롬프트 설정 로드
     config = load_yaml_prompt("crew", "math_model")
-    system = config.get("system", "당신은 최적화 문제의 수학적 모델링 전문가입니다.")
+    system = config.get("system", "")
     rules = config.get("rules", [])
     rules_text = "\n".join(f"  {i+1}. {r}" for i, r in enumerate(rules))
 
-    # 제약 스키마 텍스트
-    constraint_schema_text = get_constraint_schema_text()
+    soft_rules = config.get("soft_constraint_rules", [])
+    soft_rules_text = "\n".join(f"  - {r}" for r in soft_rules)
 
-    # 모델 스키마
+    obj_rules = config.get("objective_rules", [])
+    obj_rules_text = "\n".join(f"  - {r}" for r in obj_rules)
+
+    constraint_schema_text = get_constraint_schema_text()
     model_schema = _get_model_schema()
+    sections = config.get("sections", {})
 
     # 목적함수 지시
     if user_objective:
         objective_instruction = (
             "[사용자 지정 목적함수]\n"
-            f"사용자가 다음과 같은 최적화 목표를 요청했습니다: \"{user_objective}\"\n"
-            "이 목표를 objective의 기본값으로 설정하고, 다른 목표는 alternatives에 넣으세요."
+            f"사용자가 다음 최적화 목표를 요청했습니다: \"{user_objective}\"\n"
+            "이 목표를 objective 기본값으로 설정하고, 다른 목표는 alternatives에 넣으세요."
         )
     else:
         objective_instruction = (
@@ -307,24 +327,19 @@ def _build_modeling_prompt(
             "데이터와 도메인 특성을 분석하여 가장 적절한 목적함수를 추론하세요."
         )
 
-    # 확정된 문제 정의 섹션
+    # ── confirmed_problem 섹션 조립 ──
     confirmed_section = ""
     if confirmed_problem:
-        import json as _json
-
-        # 1계층 파라미터 목록
+        # 파라미터 목록
         _cp_params = confirmed_problem.get("parameters", {})
         _param_lines = []
         for _pid, _pval in _cp_params.items():
-            if isinstance(_pval, dict):
-                _v = _pval.get("default", _pval.get("value", ""))
-            else:
-                _v = _pval
+            _v = _pval.get("default", _pval.get("value", "")) if isinstance(_pval, dict) else _pval
             _param_lines.append(f"  - {_pid} (value: {_v})")
         _param_list_text = "\n".join(_param_lines) if _param_lines else "  (none)"
         _param_ids = ", ".join(_cp_params.keys())
 
-        # ★ 도메인 YAML에서 constraint_templates 로드
+        # 도메인 YAML에서 constraint_templates 로드
         _domain_yaml = _load_domain_yaml(domain)
         _ct = _domain_yaml.get("constraint_templates", {})
 
@@ -333,46 +348,29 @@ def _build_modeling_prompt(
         _obj_template = None
 
         for _tid, _tdata in _ct.items():
-            if _tid == "_note":
+            if _tid == "_note" or not isinstance(_tdata, dict):
                 continue
-            if not isinstance(_tdata, dict):
-                continue
-            # 목적함수 템플릿 분리
             if _tdata.get("_type") == "objective_template":
                 _obj_template = _tdata
                 continue
-            # 제약 템플릿 -> JSON 텍스트
-            _clean = {k: v for k, v in _tdata.items()
-                      if k not in ("_note", "requires_variables")}
+            _clean = {k: v for k, v in _tdata.items() if k not in ("_note", "requires_variables")}
             _template_json_lines.append(
                 f"  // {_tdata.get('description', _tid)}\n"
                 f"  {_json.dumps(_clean, ensure_ascii=False)}"
             )
-            # 필요 변수 수집
             for _rv in _tdata.get("requires_variables", []):
                 if _rv not in _required_vars:
                     _required_vars.append(_rv)
 
-        if _template_json_lines:
-            _templates_text = (
-                "아래 JSON 제약 구조를 constraints 배열에 **그대로** 넣으세요.\n"
-                "이름, 변수명, 파라미터명을 임의로 바꾸지 마세요.\n"
-                "필요시 추가 제약은 같은 JSON 구조로 작성할 수 있습니다.\n\n"
-                + "\n\n".join(_template_json_lines)
-            )
-        else:
-            _templates_text = ""
+        _templates_text = (
+            "아래 JSON 제약 구조를 constraints 배열에 그대로 넣으세요.\n"
+            "이름, 변수명, 파라미터명을 임의로 바꾸지 마세요.\n\n"
+            + "\n\n".join(_template_json_lines)
+        ) if _template_json_lines else "(없음)"
 
-        # 필요 변수 지시
-        _req_vars_text = ""
-        if _required_vars:
-            _req_vars_text = (
-                "\n\n[필수 추가 변수]\n"
-                "아래 변수를 variables 배열에 반드시 포함하세요:\n"
-                + "\n".join(f"  - {rv}" for rv in _required_vars)
-            )
+        _req_vars_text = "\n".join(f"  - {rv}" for rv in _required_vars) if _required_vars else ""
 
-        # 목적함수 지시
+        # 목적함수 텍스트
         _obj_text = "  (추론 필요)"
         if _obj_template:
             _obj_text = (
@@ -389,75 +387,123 @@ def _build_modeling_prompt(
             _obj_info = confirmed_problem["objective"]
             _obj_text = f"  방향: {_obj_info.get('type', 'minimize')}\n  대상: {_obj_info.get('description', _obj_info.get('target', ''))}"
 
-        # 데이터 컬럼 참조 지시
+        # 데이터 컬럼
         _data_cols = _domain_yaml.get("data_columns", {})
-        _data_col_text = ""
+        _dc_lines = []
         if _data_cols:
-            _dc_lines = ["아래는 파라미터가 아닌 데이터 컬럼입니다. parameters 배열에 넣지 마세요.",
-                         "sum의 coeff.param에서 source_column/source_file로 참조하세요."]
             for _src_key, _src_info in _data_cols.items():
                 if not isinstance(_src_info, dict):
                     continue
                 _sf = _src_info.get("source_file", "")
                 _cols = _src_info.get("columns", {})
-                if _cols:
-                    for _cn, _cd in _cols.items():
-                        _dc_lines.append(f"  - {_cn}: {_cd} (source_file: {_sf})")
-                _note = _src_info.get("note", _src_info.get("description", ""))
-                if _note:
-                    _dc_lines.append(f"  참고: {str(_note).strip()}")
-            _data_col_text = "\n[데이터 컬럼 (파라미터 아님)]\n" + "\n".join(_dc_lines)
+                for _cn, _cd in _cols.items():
+                    _dc_lines.append(f"  - {_cn}: {_cd} (source_file: {_sf})")
 
-        confirmed_section = (
-            f"\n[확정된 문제 정의]\n"
-            f"문제 단계: {confirmed_problem.get('stage', '')}\n"
-            f"세부 유형: {confirmed_problem.get('variant', '')}\n"
-            f"\n[확정된 목적함수]\n"
-            + _obj_text
-            + f"\n\n[제약조건 JSON 템플릿 — 반드시 이 구조를 사용]\n"
-            + (_templates_text if _templates_text else "  (없음)")
-            + _req_vars_text
-            + _data_col_text
-            + f"\n\n[1계층 파라미터 (시스템 자동 주입)]\n"
-            + f"아래 {len(_cp_params)}개 파라미터는 시스템이 자동 주입합니다:\n"
-            + _param_list_text
-            + f"\n(id 목록: {_param_ids})\n\n"
+        # ★ 하드 제약 목록
+        _hard_constraints = confirmed_problem.get("hard_constraints", {})
+        _hard_lines = []
+        for _hid, _hdata in _hard_constraints.items():
+            if isinstance(_hdata, dict):
+                _desc = _hdata.get("name_ko", _hdata.get("description", _hid))
+                _type = _hdata.get("type", "")
+                _hard_lines.append(f"  - {_hid}: {_desc} [type={_type}]")
+            else:
+                _hard_lines.append(f"  - {_hid}")
+        _hard_list_text = "\n".join(_hard_lines) if _hard_lines else "  (없음)"
+
+        # ★ 소프트 제약 목록
+        _soft_constraints = confirmed_problem.get("soft_constraints", {})
+        _soft_lines = []
+        for _sid, _sdata in _soft_constraints.items():
+            if isinstance(_sdata, dict):
+                _desc = _sdata.get("name_ko", _sdata.get("description", _sid))
+                _weight = _sdata.get("weight", 1.0)
+                _type = _sdata.get("type", "")
+                _soft_lines.append(f"  - {_sid}: {_desc} [weight={_weight}, type={_type}]")
+            else:
+                _soft_lines.append(f"  - {_sid}")
+        _soft_list_text = "\n".join(_soft_lines) if _soft_lines else "  (없음)"
+
+        _hard_count = len(_hard_constraints)
+        _soft_count = len(_soft_constraints)
+        _total_count = _hard_count + _soft_count
+
+        # 섹션별 텍스트 조립
+        _parts = []
+        _parts.append(sections.get("confirmed_problem", "").format(
+            stage=confirmed_problem.get("stage", ""),
+            variant=confirmed_problem.get("variant", ""),
+        ))
+        _parts.append(sections.get("objective", "").format(objective_text=_obj_text))
+        _parts.append(sections.get("hard_constraints", "").format(
+            hard_count=_hard_count, hard_constraint_list=_hard_list_text
+        ))
+        _parts.append(sections.get("soft_constraints", "").format(
+            soft_count=_soft_count, soft_constraint_list=_soft_list_text
+        ))
+        if _templates_text:
+            _parts.append(sections.get("constraint_templates", "").format(templates_text=_templates_text))
+        if _req_vars_text:
+            _parts.append(sections.get("required_variables", "").format(required_vars_text=_req_vars_text))
+        if _dc_lines:
+            _parts.append(sections.get("data_columns", "").format(
+                data_columns_text="\n".join(_dc_lines)
+            ))
+        _parts.append(sections.get("parameters", "").format(
+            param_count=len(_cp_params),
+            param_list_text=_param_list_text,
+            param_ids=_param_ids,
+        ))
+
+        confirmed_section = "\n".join(_parts)
+
+        # 목적함수 지시 업데이트
+        if _obj_template or confirmed_problem.get("objective"):
+            objective_instruction = f"[확정된 목적함수 — 아래를 따르세요]\n{_obj_text}"
+
+    # ── 최종 프롬프트 조립 (YAML template 사용) ──
+    template = config.get("template", "")
+    checklist = config.get("checklist", "")
+    if confirmed_problem:
+        _hard_count = len(confirmed_problem.get("hard_constraints", {}))
+        _soft_count = len(confirmed_problem.get("soft_constraints", {}))
+        _total_count = _hard_count + _soft_count
+        checklist = checklist.format(
+            hard_count=_hard_count, soft_count=_soft_count, total_count=_total_count
         )
 
-    prompt = f"""{system}
+    prompt = template.format(
+        system=system,
+        rules_text=rules_text,
+        soft_rules_text=soft_rules_text,
+        objective_rules_text=obj_rules_text,
+        model_schema=model_schema,
+        constraint_schema=constraint_schema_text,
+        objective_instruction=objective_instruction,
+        data_facts=_format_facts_for_model(data_facts),
+        confirmed_section=confirmed_section,
+        data_guide=data_guide,
+        csv_summary=csv_summary[:4000],
+        analysis_report=analysis_report[:3000],
+        domain=domain,
+    )
 
-중요 규칙:
-{rules_text}
+    if checklist:
+        prompt += "\n\n" + checklist
 
-출력 JSON 스키마:
-{model_schema}
 
-제약조건 작성 형식 (반드시 이 형식을 따르세요):
-{constraint_schema_text}
+    # === DEBUG: 프롬프트 저장 ===
+    import os as _dbg_os
+    _dbg_dir = _dbg_os.path.join('uploads', '94')
+    _dbg_os.makedirs(_dbg_dir, exist_ok=True)
+    with open(_dbg_os.path.join(_dbg_dir, 'debug_prompt.txt'), 'w', encoding='utf-8') as _dbg_f:
+        _dbg_f.write(prompt)
+    logger.info(f"DEBUG: prompt saved to uploads/94/debug_prompt.txt ({len(prompt)} chars)")
+    # === END DEBUG ===
 
-{objective_instruction}
-
-[검증된 데이터 팩트]
-{_format_facts_for_model(data_facts)}
-
-[사용 가능한 데이터 소스 - 반드시 참조]
-{confirmed_section}{data_guide}
-
-[데이터 요약]
-{csv_summary[:4000]}
-
-[분석 리포트]
-{analysis_report[:3000]}
-
-[도메인]
-{domain}
-
-위 스키마의 모든 필드를 채워서 순수 JSON으로 반환하세요."""
     return prompt
 
-
-# ============================================================
-# JSON 파싱 유틸
+# 유틸
 # ============================================================
 
 def _repair_truncated_json(text: str) -> Optional[str]:

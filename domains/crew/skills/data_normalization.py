@@ -585,7 +585,7 @@ Each mapping must have: target_table, source_file, source_sheet, transform_type,
                                 if pname in _p1_values:
                                     value = _p1_values[pname]
                                     src = "phase1_fallback"
-                            rows.append({"param_name": pname, "value": value, "unit": "minutes", "source": src})
+                            rows.append({"param_name": pname, "value": value, "unit": "minutes", "source": src, "semantic_id": pname})
                         if rows:
                             df = pd.DataFrame(rows)
                             out_path = norm_dir / "parameters.csv"
@@ -981,7 +981,7 @@ Each mapping must have: target_table, source_file, source_sheet, transform_type,
             for pname, pinfo in params.items():
                 value = pinfo.get("value") if isinstance(pinfo, dict) else pinfo
                 src = pinfo.get("source", "confirmed") if isinstance(pinfo, dict) else "confirmed"
-                rows.append({"param_name": pname, "value": value, "unit": "minutes", "source": src})
+                rows.append({"param_name": pname, "value": value, "unit": "minutes", "source": src, "semantic_id": pname})
             return pd.DataFrame(rows) if rows else None
 
         file_path = upload_dir / source_file

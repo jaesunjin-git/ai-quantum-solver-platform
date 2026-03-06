@@ -47,7 +47,13 @@ def _build_param_alias_map():
                 for cid, cdef in (cdata.get(section) or {}).items():
                     if not isinstance(cdef, dict):
                         continue
-                    hints_ko = (cdef.get("detection_hints") or {}).get("ko", [])
+                    _raw_hints = cdef.get("detection_hints") or {}
+                    if isinstance(_raw_hints, list):
+                        hints_ko = _raw_hints
+                    elif isinstance(_raw_hints, dict):
+                        hints_ko = _raw_hints.get("ko", [])
+                    else:
+                        hints_ko = []
                     # single_param
                     param_id = cdef.get("parameter")
                     if param_id and hints_ko:
@@ -57,7 +63,12 @@ def _build_param_alias_map():
                         if len(hints_ko) >= 2:
                             alias_map["".join(h.strip() for h in hints_ko)] = param_id
                     # compound params
-                    params_dict = cdef.get("parameters") or {}
+                    params_raw = cdef.get("parameters") or {}
+                    # list인 경우 dict로 변환
+                    if isinstance(params_raw, list):
+                        params_dict = {p: {} for p in params_raw if isinstance(p, str)}
+                    else:
+                        params_dict = params_raw
                     if params_dict and hints_ko:
                         for pid in params_dict:
                             # Map each sub-param by its name parts
@@ -573,6 +584,85 @@ def run(math_model: Dict,
         if not src_file and not src_col and default_val is None:
             unbound_params.append(pname)
     
+    # ★ 데이터 컬럼 보호: trips.csv 컬럼은 절대 user_input_required 금지
+    _protected_columns = set()
+    if dataframes:
+        for _dk, _dv in dataframes.items():
+            if "trips" in _dk.lower():
+                _protected_columns.update(str(c).strip() for c in _dv.columns)
+    logger.info(f"Protected data columns: {_protected_columns}")
+
+    # ★ Phase 0: confirmed_problem 우선 바인딩 (이름 유사도 매칭 포함)
+    _all_model_params = math_model.get("parameters", [])
+    if confirmed_problem:
+        _cp_params = confirmed_problem.get("parameters", {})
+        if isinstance(_cp_params, dict) and _cp_params:
+            _cp_map = {}
+            for _cpk, _cpv in _cp_params.items():
+                _val = _cpv.get("value") if isinstance(_cpv, dict) else _cpv
+                if _val is not None:
+                    _cp_map[_cpk] = _val
+                    _cp_map[_cpk.lower()] = _val
+
+            _cp_bound_phase0 = 0
+            for p in _all_model_params:
+                pid = p.get("id", "")
+                pname = p.get("name", "")
+                sf = p.get("source_file") or ""
+                dv = p.get("default_value", p.get("default"))
+                if (sf and sf != "None") or dv is not None:
+                    continue
+                # 데이터 컬럼이면 스킵
+                if pid in _protected_columns or pname in _protected_columns:
+                    continue
+
+                # 정확 매칭
+                matched_val = None
+                matched_via = None
+                for candidate in [pid, pname, pid.lower(), pname.lower()]:
+                    if candidate and candidate in _cp_map:
+                        matched_val = _cp_map[candidate]
+                        matched_via = candidate
+                        break
+
+                # 유사도 매칭 (토큰 기반)
+                if matched_val is None and (pid or pname):
+                    best_score = 0
+                    for cpk, cpv in _cp_map.items():
+                        for candidate in [pid.lower(), pname.lower()]:
+                            if not candidate:
+                                continue
+                            score = _token_similarity(candidate, cpk.lower())
+                            if score > best_score and score >= 0.4:
+                                best_score = score
+                                matched_val = cpv
+                                matched_via = f"{cpk} (similarity={score:.2f})"
+
+                if matched_val is not None:
+                    try:
+                        p["default_value"] = float(matched_val)
+                    except (ValueError, TypeError):
+                        p["default_value"] = matched_val
+                    p["auto_bound"] = True
+                    p["auto_bound_source"] = "confirmed_problem"
+                    p.pop("user_input_required", None)
+                    _cp_bound_phase0 += 1
+                    logger.info(f"Phase0-CP-bind: {pid or pname} = {matched_val} (via {matched_via})")
+            logger.info(f"Phase0 confirmed_problem bind: {_cp_bound_phase0} params")
+
+    # ★ Phase 0b: 데이터 컬럼 파라미터 자동 해결
+    for p in _all_model_params:
+        pid = p.get("id", "")
+        pname = p.get("name", "")
+        if pid in _protected_columns or pname in _protected_columns:
+            # 이 파라미터는 데이터 컬럼이므로 source 설정
+            col_name = pid if pid in _protected_columns else pname
+            if not p.get("source_file"):
+                p["source_file"] = "normalized/trips.csv"
+                p["source_column"] = col_name
+                p.pop("user_input_required", None)
+                logger.info(f"Phase0b-column-bind: {pid or pname} -> trips.csv/{col_name}")
+
     # --- 정규화 파라미터에서 직접 바인딩 ---
     if dataframes:
         _norm_params_df = None
@@ -590,7 +680,6 @@ def run(math_model: Dict,
                 _available[_pn.lower()] = _pv
 
             # 모델 파라미터에서 id, name 모두 수집하여 매핑 테이블 구축
-            _all_model_params = math_model.get("parameters", [])
             _bound_count = 0
 
             for p in _all_model_params:
@@ -697,7 +786,7 @@ def run(math_model: Dict,
             logger.info(f"Direct-bind: {len(unbound_params)} params still unbound: {unbound_params}")
 
 
-    # --- confirmed_problem 기반 fallback 매핑 ---
+    # --- confirmed_problem 기반 fallback 매핑 (Phase0에서 이미 처리, 잔여분만) ---
     if unbound_params and confirmed_problem:
         _cp_params = confirmed_problem.get("parameters", {})
         if isinstance(_cp_params, dict) and _cp_params:
@@ -825,6 +914,17 @@ def run(math_model: Dict,
             )
         unbound_params = remaining_unbound  # 갱신
 
+
+    # ★ 최종 보호: 데이터 컬럼 파라미터의 user_input_required 제거
+    for p in math_model.get("parameters", []):
+        pid = p.get("id", "")
+        pname = p.get("name", "")
+        if (pid in _protected_columns or pname in _protected_columns) and p.get("user_input_required"):
+            p.pop("user_input_required", None)
+            if not p.get("source_file"):
+                p["source_file"] = "normalized/trips.csv"
+                p["source_column"] = pid if pid in _protected_columns else pname
+            logger.info(f"Final-protect: {pid or pname} removed from user_input_required")
 
     # ★ 동적 중복 검출: 1계층(auto_injected) 파라미터 기준
     _layer1_ids = set()
@@ -1106,7 +1206,14 @@ def _validate_set(set_def: Dict,
                 # 대소문자 무시 매칭
                 for col in df.columns:
                     if col.strip().lower() == source_col.strip().lower():
+                        set_def["source_column"] = col  # 자동 교정
                         return int(df[col].dropna().nunique())
+                # ★ fuzzy match: dep_station -> start_station 등
+                fuzzy = _fuzzy_match_column(source_col, set(df.columns))
+                if fuzzy:
+                    logger.info(f"Set fuzzy fix: '{source_col}' -> '{fuzzy}'")
+                    set_def["source_column"] = fuzzy
+                    return int(df[fuzzy].dropna().nunique())
 
     # 5. data_profile에서 추정
     if data_profile and source_file and source_col:
@@ -1452,8 +1559,23 @@ def _fix_constraint_structure(model: Dict, corrections: Dict, warnings: List[str
         for c in constraints:
             cname = c.get("name", "")
             fe = c.get("for_each", "")
-            loop_vars = [v.strip().split()[0] for v in fe.split(",") if " in " in v]
-            if len(loop_vars) >= 3 and "i" in loop_vars and "j" in loop_vars:
+            # 괄호 내부 comma를 무시하는 파싱
+            _fe_segments = []
+            _buf = ""
+            _pdepth = 0
+            for _ch in fe + ",":
+                if _ch == "(": _pdepth += 1; _buf += _ch
+                elif _ch == ")": _pdepth -= 1; _buf += _ch
+                elif _ch == "," and _pdepth == 0:
+                    if _buf.strip(): _fe_segments.append(_buf.strip())
+                    _buf = ""
+                else: _buf += _ch
+            loop_vars = []
+            for _seg in _fe_segments:
+                _m = re.match(r"\(?([^)]*?)\)?\s+in\s+(\w+)", _seg.strip())
+                if _m:
+                    loop_vars.append(_m.group(1).split(",")[0].strip())
+            if any("overlap" in _seg for _seg in _fe_segments) or (len(loop_vars) >= 3 and "i" in loop_vars and "j" in loop_vars):
                 # uploads/ 하위에서 overlap_pairs.json 탐색
                 op_found = False
                 _op_dirs = [f"uploads/{project_id}/normalized", f"uploads/{project_id}/phase1"] if project_id else []

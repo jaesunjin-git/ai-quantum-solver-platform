@@ -1,142 +1,365 @@
-﻿# knowledge/domains/railway/templates.yaml
-# ============================================================
-# 수학 모델 제약조건 템플릿
-# 용도: 수학 모델 생성 단계에서 IR JSON 구성
-# 참조 시점: 수학 모델 생성 (MATH_MODEL)
-#
-# 원칙:
-#   - 하드코딩된 값 없음, param 참조만 존재
-#   - 실제 값은 confirmed_problem에서 바인딩
-# ============================================================
-
-version: "2.0"
-
-objective_templates:
-
-  minimize_duties:
-    type: minimize
-    description: "사용되는 듀티 수 최소화"
-    expression:
-      sum: {var: u, index: "[d]", over: "d in D"}
-    requires_variables:
-      - {name: u, type: binary, indices: [D], description: "듀티 d 활성화 여부"}
-
-  minimize_total_work:
-    type: minimize
-    description: "총 근무시간 최소화"
-    expression:
-      sum:
-        var: w
-        index: "[d]"
-        over: "d in D"
-        subtract: {var: z, index: "[d]"}
-
-  minimize_deadhead:
-    type: minimize
-    description: "총 공차회송시간 최소화"
-    expression:
-      sum: {var: dh, index: "[d]", over: "d in D"}
-    requires_variables:
-      - {name: dh, type: continuous, indices: [D], description: "듀티 d의 공차회송시간"}
-
 constraint_templates:
 
   trip_coverage:
-    name: trip_coverage
-    for_each: "t in T"
-    lhs: {sum: {var: y, index: "[t,d]", over: "d in D"}}
-    operator: "=="
-    rhs: {value: 1}
-    category: hard
-    expression: "sum(y[t,d] for d in D) == 1"
+    description: "모든 운행이 정확히 하나의 근무에 배정"
+    variables: ["x[i,d]"]
+    expression: "sum(x[i,d] for d in D) = 1, for all i in T"
+    structured:
+      for_each: "i in T"
+      lhs:
+        type: sum
+        over: "d in D"
+        expression:
+          type: var
+          name: "x"
+          index: ["i", "d"]
+      operator: "=="
+      rhs:
+        type: value
+        value: 1
 
   duty_activation:
-    name: duty_activation
-    for_each: "t in T, d in D"
-    lhs: {var: {name: y, index: "[t,d]"}}
-    operator: "<="
-    rhs: {var: {name: u, index: "[d]"}}
-    category: hard
-    expression: "y[t,d] <= u[d]"
-    requires_variables:
-      - {name: u, type: binary, indices: [D]}
+    description: "근무(duty) 활성화"
+    variables: ["x[i,d]", "u[d]"]
+    expression: "x[i,d] <= u[d], for all i in T, d in D"
+    structured:
+      for_each: "i in T, d in D"
+      lhs:
+        type: var
+        name: "x"
+        index: ["i", "d"]
+      operator: "<="
+      rhs:
+        type: var
+        name: "u"
+        index: ["d"]
 
   max_driving_time:
-    name: max_driving_time
-    for_each: "d in D"
-    lhs:
-      sum:
-        var: y
-        index: "[t,d]"
-        over: "t in T"
-        coeff: {param: {name: trip_duration, index: "[t]", source: "trips.trip_duration"}}
-    operator: "<="
-    rhs: {param: {name: max_driving_minutes}}
-    category: hard
-    expression: "sum(trip_duration[t] * y[t,d] for t in T) <= max_driving_minutes"
+    description: "근무 내 총 운전시간 상한"
+    variables: ["x[i,d]"]
+    parameters: ["duration[i]", "max_driving_minutes"]
+    expression: "sum(duration[i] * x[i,d] for i in T) <= max_driving_minutes, for all d in D"
+    structured:
+      for_each: "d in D"
+      lhs:
+        type: sum
+        over: "i in T"
+        expression:
+          type: multiply
+          terms:
+            - { type: param, name: "duration", index: ["i"] }
+            - { type: var,   name: "x",        index: ["i", "d"] }
+      operator: "<="
+      rhs:
+        type: param
+        name: "max_driving_minutes"
 
   max_work_time:
-    name: max_work_time
-    for_each: "d in D"
-    lhs:
-      add:
-        - sum:
-            var: y
-            index: "[t,d]"
-            over: "t in T"
-            coeff: {param: {name: trip_duration, index: "[t]", source: "trips.trip_duration"}}
-        - param: {name: prep_time_minutes}
-        - param: {name: cleanup_time_minutes}
-    operator: "<="
-    rhs: {param: {name: max_work_minutes}}
-    category: hard
-    expression: "sum(duration[t]*y[t,d]) + prep + cleanup <= max_work_minutes"
+    description: "근무 내 총 구속시간 상한"
+    variables: ["x[i,d]", "u[d]"]
+    parameters: ["duration[i]", "max_work_minutes", "preparation_minutes", "cleanup_minutes"]
+    expression: "sum(duration[i]*x[i,d] for i in T) + preparation_minutes*u[d] + cleanup_minutes*u[d] <= max_work_minutes, for all d in D"
+    structured:
+      for_each: "d in D"
+      lhs:
+        type: add
+        terms:
+          - type: sum
+            over: "i in T"
+            expression:
+              type: multiply
+              terms:
+                - { type: param, name: "duration", index: ["i"] }
+                - { type: var,   name: "x",        index: ["i", "d"] }
+          - type: multiply
+            terms:
+              - { type: param, name: "preparation_minutes" }
+              - { type: var,   name: "u", index: ["d"] }
+          - type: multiply
+            terms:
+              - { type: param, name: "cleanup_minutes" }
+              - { type: var,   name: "u", index: ["d"] }
+      operator: "<="
+      rhs:
+        type: param
+        name: "max_work_minutes"
 
   max_total_stay_time:
-    name: max_total_stay_time
-    for_each: "d in D"
-    lhs: {subtract: [{var: {name: w, index: "[d]"}}, {var: {name: z, index: "[d]"}}]}
-    operator: "<="
-    rhs: {param: {name: max_total_stay_minutes}}
-    category: hard
-    expression: "w[d] - z[d] <= max_total_stay_minutes"
-    requires_variables:
-      - {name: z, type: integer, indices: [D], description: "듀티 시작시각"}
-      - {name: w, type: integer, indices: [D], description: "듀티 종료시각"}
+    description: "근무 내 총 체재시간 상한"
+    variables: ["x[i,d]", "u[d]"]
+    parameters: ["max_total_stay_minutes"]
+    expression: "duty_end[d] - duty_start[d] <= max_total_stay_minutes, for all d in D"
 
-  duty_start_time:
-    name: duty_start_time
-    for_each: "d in D, t in T"
-    lhs: {var: {name: z, index: "[d]"}}
-    operator: "<="
-    rhs:
-      add:
-        - param: {name: trip_dep_time, index: "[t]", source: "trips.trip_dep_time"}
-        - multiply: [-1, {param: {name: prep_time_minutes}}]
-        - multiply: [{param: {name: M}}, {subtract: [1, {var: {name: y, index: "[t,d]"}}]}]
-    category: hard
-    expression: "z[d] <= dep_time[t] - prep + M*(1-y[t,d])"
+  duty_start_bigm:
+    description: "근무 시작시각 Big-M 선형화"
+    variables: ["x[i,d]", "s[d]"]
+    parameters: ["departure_time[i]", "big_m", "preparation_minutes"]
+    expression: "s[d] <= departure_time[i] - preparation_minutes + big_m*(1-x[i,d]), for all i in T, d in D"
+    structured:
+      for_each: "i in T, d in D"
+      lhs:
+        type: var
+        name: "s"
+        index: ["d"]
+      operator: "<="
+      rhs:
+        type: add
+        terms:
+          - type: subtract
+            terms:
+              - { type: param, name: "departure_time", index: ["i"] }
+              - { type: param, name: "preparation_minutes" }
+          - type: multiply
+            terms:
+              - { type: param, name: "big_m" }
+              - type: subtract
+                terms:
+                  - { type: value, value: 1 }
+                  - { type: var,   name: "x", index: ["i", "d"] }
 
-  duty_end_time:
-    name: duty_end_time
-    for_each: "d in D, t in T"
-    lhs: {var: {name: w, index: "[d]"}}
-    operator: ">="
-    rhs:
-      subtract:
-        - add:
-            - param: {name: trip_arr_time, index: "[t]", source: "trips.trip_arr_time"}
-            - param: {name: cleanup_time_minutes}
-        - multiply: [{param: {name: M}}, {subtract: [1, {var: {name: y, index: "[t,d]"}}]}]
-    category: hard
-    expression: "w[d] >= arr_time[t] + cleanup - M*(1-y[t,d])"
+  duty_end_bigm:
+    description: "근무 종료시각 Big-M 선형화"
+    variables: ["x[i,d]", "e[d]"]
+    parameters: ["arrival_time[i]", "big_m", "cleanup_minutes"]
+    expression: "e[d] >= arrival_time[i] + cleanup_minutes - big_m*(1-x[i,d]), for all i in T, d in D"
+    structured:
+      for_each: "i in T, d in D"
+      lhs:
+        type: var
+        name: "e"
+        index: ["d"]
+      operator: ">="
+      rhs:
+        type: subtract
+        terms:
+          - type: add
+            terms:
+              - { type: param, name: "arrival_time", index: ["i"] }
+              - { type: param, name: "cleanup_minutes" }
+          - type: multiply
+            terms:
+              - { type: param, name: "big_m" }
+              - type: subtract
+                terms:
+                  - { type: value, value: 1 }
+                  - { type: var,   name: "x", index: ["i", "d"] }
 
   time_compatibility:
-    name: time_compatibility
-    for_each: "d in D, (i,j) in incompatible_pairs"
-    lhs: {add: [{var: {name: y, index: "[i,d]"}}, {var: {name: y, index: "[j,d]"}}]}
-    operator: "<="
-    rhs: {value: 1}
-    category: hard
-    expression: "y[i,d] + y[j,d] <= 1"
-    note: "incompatible_pairs는 pairwise computation에서 자동 생성"
+    description: "시간 겨침 운행은 같은 근무 불가"
+    variables: ["x[i,d]"]
+    parameters: ["overlap_pairs"]
+    expression: "x[i,d] + x[j,d] <= 1, for all (i,j) in overlap_pairs, d in D"
+    structured:
+      for_each: "(i,j) in overlap_pairs, d in D"
+      lhs:
+        type: add
+        terms:
+          - { type: var, name: "x", index: ["i", "d"] }
+          - { type: var, name: "x", index: ["j", "d"] }
+      operator: "<="
+      rhs:
+        type: value
+        value: 1
+
+  minimize_duties:
+    description: "목적함수 - 근무 수 최소화"
+    type: objective
+    sense: minimize
+    expression: "sum(u[d] for d in D)"
+    structured:
+      type: sum
+      over: "d in D"
+      expression:
+        type: var
+        name: "u"
+        index: ["d"]
+
+  max_single_wait_time:
+    description: "연속 운행 간 1회 대기시간 상한"
+    variables: ["x[i,d]", "x[j,d]"]
+    parameters: ["departure_time[j]", "arrival_time[i]", "max_single_wait_minutes", "big_m"]
+    prerequisite: sequential_pairs
+    expression: "departure_time[j]-arrival_time[i] <= max_single_wait_minutes + big_m*(2-x[i,d]-x[j,d]), for all (i,j) in sequential_pairs, d in D"
+    structured:
+      for_each: "(i,j) in sequential_pairs, d in D"
+      lhs:
+        type: subtract
+        terms:
+          - { type: param, name: "departure_time", index: ["j"] }
+          - { type: param, name: "arrival_time",   index: ["i"] }
+      operator: "<="
+      rhs:
+        type: add
+        terms:
+          - { type: param, name: "max_single_wait_minutes" }
+          - type: multiply
+            terms:
+              - { type: param, name: "big_m" }
+              - type: subtract
+                terms:
+                  - { type: value, value: 2 }
+                  - type: add
+                    terms:
+                      - { type: var, name: "x", index: ["i", "d"] }
+                      - { type: var, name: "x", index: ["j", "d"] }
+
+  day_night_classification_upper:
+    description: "야간 근무 판정 - 종료시각이 기준 초과 시 야간"
+    variables: ["e[d]", "is_night[d]"]
+    parameters: ["night_threshold", "big_m"]
+    expression: "e[d] - night_threshold <= big_m * is_night[d], for all d in D"
+    _companion: day_night_classification_lower
+    structured:
+      for_each: "d in D"
+      lhs:
+        type: subtract
+        terms:
+          - { type: var,   name: "e", index: ["d"] }
+          - { type: param, name: "night_threshold" }
+      operator: "<="
+      rhs:
+        type: multiply
+        terms:
+          - { type: param, name: "big_m" }
+          - { type: var,   name: "is_night", index: ["d"] }
+
+  day_night_classification_lower:
+    description: "야간 근무 판정 - 역방향"
+    variables: ["e[d]", "is_night[d]"]
+    parameters: ["night_threshold", "big_m"]
+    expression: "e[d] - night_threshold >= 1 - big_m*(1-is_night[d]), for all d in D"
+    _companion: day_night_classification_upper
+    structured:
+      for_each: "d in D"
+      lhs:
+        type: subtract
+        terms:
+          - { type: var,   name: "e", index: ["d"] }
+          - { type: param, name: "night_threshold" }
+      operator: ">="
+      rhs:
+        type: subtract
+        terms:
+          - { type: value, value: 1 }
+          - type: multiply
+            terms:
+              - { type: param, name: "big_m" }
+              - type: subtract
+                terms:
+                  - { type: value, value: 1 }
+                  - { type: var,   name: "is_night", index: ["d"] }
+
+  day_duty_start_constraint:
+    description: "주간근무 시작시각 하한"
+    variables: ["s[d]", "is_night[d]"]
+    parameters: ["day_duty_start_earliest", "big_m"]
+    expression: "s[d] >= day_duty_start_earliest - big_m*is_night[d], for all d in D"
+    structured:
+      for_each: "d in D"
+      lhs:
+        type: var
+        name: "s"
+        index: ["d"]
+      operator: ">="
+      rhs:
+        type: subtract
+        terms:
+          - { type: param, name: "day_duty_start_earliest" }
+          - type: multiply
+            terms:
+              - { type: param, name: "big_m" }
+              - { type: var,   name: "is_night", index: ["d"] }
+
+  day_duty_end_constraint:
+    description: "주간근무 종료시각 상한"
+    variables: ["e[d]", "is_night[d]"]
+    parameters: ["day_duty_end_latest", "big_m"]
+    expression: "e[d] <= day_duty_end_latest + big_m*is_night[d], for all d in D"
+    structured:
+      for_each: "d in D"
+      lhs:
+        type: var
+        name: "e"
+        index: ["d"]
+      operator: "<="
+      rhs:
+        type: add
+        terms:
+          - { type: param, name: "day_duty_end_latest" }
+          - type: multiply
+            terms:
+              - { type: param, name: "big_m" }
+              - { type: var,   name: "is_night", index: ["d"] }
+
+  night_duty_start_constraint:
+    description: "야간근무 시작시각 하한"
+    variables: ["s[d]", "is_night[d]"]
+    parameters: ["night_duty_start_earliest", "big_m"]
+    expression: "s[d] >= night_duty_start_earliest - big_m*(1-is_night[d]), for all d in D"
+    structured:
+      for_each: "d in D"
+      lhs:
+        type: var
+        name: "s"
+        index: ["d"]
+      operator: ">="
+      rhs:
+        type: subtract
+        terms:
+          - { type: param, name: "night_duty_start_earliest" }
+          - type: multiply
+            terms:
+              - { type: param, name: "big_m" }
+              - type: subtract
+                terms:
+                  - { type: value, value: 1 }
+                  - { type: var,   name: "is_night", index: ["d"] }
+
+  night_sleep_guarantee:
+    description: "야간 근무 시 최소 연속 수면시간 보장"
+    variables: ["e[d]", "s_next[d]", "is_night[d]"]
+    parameters: ["min_night_sleep_minutes", "big_m"]
+    expression: "s_next[d]-e[d] >= min_night_sleep_minutes - big_m*(1-is_night[d]), for all d in D"
+    structured:
+      for_each: "d in D"
+      lhs:
+        type: subtract
+        terms:
+          - { type: var, name: "s_next", index: ["d"] }
+          - { type: var, name: "e",      index: ["d"] }
+      operator: ">="
+      rhs:
+        type: subtract
+        terms:
+          - { type: param, name: "min_night_sleep_minutes" }
+          - type: multiply
+            terms:
+              - { type: param, name: "big_m" }
+              - type: subtract
+                terms:
+                  - { type: value, value: 1 }
+                  - { type: var,   name: "is_night", index: ["d"] }
+
+  meal_break_guarantee:
+    description: "전반/후반 분할 시 식사 휴식 보장"
+    variables: ["x[i,d]", "mb[d]"]
+    parameters: ["min_meal_break_minutes"]
+    expression: "mb[d] >= min_meal_break_minutes * u[d], for all d in D"
+    structured:
+      for_each: "d in D"
+      lhs:
+        type: var
+        name: "mb"
+        index: ["d"]
+      operator: ">="
+      rhs:
+        type: multiply
+        terms:
+          - { type: param, name: "min_meal_break_minutes" }
+          - { type: var,   name: "u", index: ["d"] }
+
+  minimize_duties_with_soft:
+    description: "목적함수 확장 - 근무 수 최소화 + 소프트 페널티"
+    type: objective
+    sense: minimize
+    expression: "sum(u[d] for d in D) + w_avg_drive*slack_avg_drive + w_avg_wait*slack_avg_wait + w_rest*sum(slack_rest[d] for d in D) + w_balance*slack_balance"

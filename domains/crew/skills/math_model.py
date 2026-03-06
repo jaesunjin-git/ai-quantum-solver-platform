@@ -225,12 +225,58 @@ async def skill_math_model(model, session: CrewSession, project_id: str, message
             # ★ Gate 2: 모델 유효성 검증
             from engine.gates.gate1_data_profile import run as run_gate1
             data_profile = run_gate1(binder._dataframes)
+
+            # ── YAML expression 자동 덮어쓰기 ──
+            # LLM이 생성한 expression 대신 constraints.yaml의 검증된 수식 사용
+            try:
+                from engine.math_model_generator import _load_domain_yaml
+                _dy = _load_domain_yaml(state.detected_domain or 'railway')
+                _ct = _dy.get('constraint_templates', {})
+                _aux = _dy.get('auxiliary_variables', {})
+                _efix = 0
+                _removes = set()
+                for _con in model.get('constraints', []):
+                    _cn = _con.get('name', '')
+                    _yct = _ct.get(_cn, {})
+                    if isinstance(_yct, dict):
+                        _ye = _yct.get('expression', '').strip()
+                        _yf = _yct.get('for_each', '').strip()
+                        if _ye:
+                            if _ye.startswith('SKIP') or _ye.startswith('CONSTANT'):
+                                _removes.add(_cn)
+                                continue
+                            if _con.get('expression', '') != _ye:
+                                _con['expression'] = _ye
+                                _efix += 1
+                            if _yf and _con.get('for_each', '') != _yf:
+                                _con['for_each'] = _yf
+                if _removes:
+                    model['constraints'] = [
+                        c for c in model['constraints']
+                        if c.get('name') not in _removes
+                    ]
+                    logger.info(f'Removed non-constraints: {_removes}')
+                _vids = {v['id'] for v in model.get('variables', [])}
+                for _aid, _ainfo in _aux.items():
+                    if _aid not in _vids and isinstance(_ainfo, dict):
+                        model.setdefault('variables', []).append({
+                            'id': _aid,
+                            'type': _ainfo.get('type', 'continuous'),
+                            'indices': _ainfo.get('indices', []),
+                            'description': _ainfo.get('description', '')
+                        })
+                        logger.info(f'Auto-added auxiliary variable: {_aid}')
+                if _efix > 0:
+                    logger.info(f'YAML expression overwrite: {_efix} constraints corrected')
+            except Exception as _oe:
+                logger.warning(f'YAML expression overwrite failed: {_oe}')
+
             gate2_result = run_gate2(model, data_profile=data_profile, dataframes=binder._dataframes)
 
             # ★ Gate2 corrections를 모델에 실제 적용 (column_name_fix)
             if gate2_result.get("corrections"):
                 import json as _json
-                model_str = _json.dumps(model, ensure_ascii=False)
+                model_str = json.dumps(model, ensure_ascii=False)
                 applied_count = 0
                 for ckey, cval in gate2_result["corrections"].items():
                     if isinstance(cval, dict) and cval.get("type") == "column_name_fix":
@@ -246,7 +292,7 @@ async def skill_math_model(model, session: CrewSession, project_id: str, message
                         # expression 문자열 내부도 치환 (따옴표 없는 형태)
                         model_str = model_str.replace(old_name, new_name)
                 if applied_count > 0:
-                    model = _json.loads(model_str)
+                    model = json.loads(model_str)
                     logger.info(f"Gate2 corrections applied: {applied_count} column name fixes")
 
             # [DEBUG] 모델 JSON 저장 (디버깅용)
@@ -255,7 +301,7 @@ async def skill_math_model(model, session: CrewSession, project_id: str, message
             _os.makedirs(_model_dir, exist_ok=True)
             _model_path = _os.path.join(_model_dir, 'model.json')
             with open(_model_path, 'w', encoding='utf-8') as _mf:
-                _json.dump(model, _mf, ensure_ascii=False, indent=2)
+                json.dump(model, _mf, ensure_ascii=False, indent=2)
             logger.info(f'Model JSON saved to {_model_path}')
 
             logger.info(
@@ -395,6 +441,82 @@ async def skill_math_model(model, session: CrewSession, project_id: str, message
                                 f"{len(removed)} removed"
                             )
 
+                            # ★ 후처리 1: repair가 추가한 제약에서 참조하는 미등록 변수 자동 등록
+                            existing_var_ids = {v.get("id") for v in model.get("variables", [])}
+                            for con in model.get("constraints", []):
+                                for side in ["lhs", "rhs"]:
+                                    node = con.get(side, {})
+                                    if isinstance(node, dict) and "var" in node:
+                                        var_ref = node["var"]
+                                        vname = var_ref.get("name", "") if isinstance(var_ref, dict) else str(var_ref)
+                                        if vname and vname not in existing_var_ids:
+                                            # 인덱스 추출
+                                            vidx = var_ref.get("index", "") if isinstance(var_ref, dict) else ""
+                                            idx_list = [c.strip().upper() for c in vidx.strip("[]").split(",") if c.strip()]
+                                            new_var = {
+                                                "id": vname,
+                                                "name": vname,
+                                                "type": "binary",
+                                                "indices": idx_list,
+                                                "description": f"Auto-registered from repair ({con.get('name','')})",
+                                            }
+                                            model["variables"].append(new_var)
+                                            existing_var_ids.add(vname)
+                                            logger.info(f"  Auto-registered variable: {vname} indices={idx_list}")
+
+                            # ★ 후처리 2: 양쪽에 의사결정 변수 없는 제약 자동 제거
+                            def _has_decision_var(node, var_ids):
+                                if not isinstance(node, dict):
+                                    return False
+                                if "var" in node:
+                                    vr = node["var"]
+                                    vn = vr.get("name","") if isinstance(vr, dict) else str(vr)
+                                    return vn in var_ids
+                                if "sum" in node and isinstance(node["sum"], dict):
+                                    if "var" in node["sum"]:
+                                        return True
+                                for k in ["add","subtract","multiply"]:
+                                    if k in node:
+                                        items = node[k] if isinstance(node[k], list) else [node[k]]
+                                        if any(_has_decision_var(it, var_ids) for it in items):
+                                            return True
+                                return False
+
+                            all_var_ids = {v.get("id") for v in model.get("variables", [])}
+                            before_count = len(model["constraints"])
+                            model["constraints"] = [
+                                c for c in model["constraints"]
+                                if _has_decision_var(c.get("lhs",{}), all_var_ids)
+                                or _has_decision_var(c.get("rhs",{}), all_var_ids)
+                            ]
+                            removed_count = before_count - len(model["constraints"])
+                            if removed_count > 0:
+                                logger.info(f"  Removed {removed_count} constraints with no decision variables")
+
+                            # ★ 후처리 3: Set J 크기 조정 (승무원 → 듀티 상한)
+                            trip_count = 0
+                            for s in model.get("sets", []):
+                                if s.get("id") == "I":
+                                    trip_count = s.get("size", 0)
+                                    if not trip_count and s.get("source_file"):
+                                        try:
+                                            import pandas as _pd
+                                            _tf = s["source_file"]
+                                            for _dk, _dv in dataframes.items():
+                                                if _tf in _dk:
+                                                    trip_count = len(_dv)
+                                                    break
+                                        except Exception:
+                                            pass
+                            if trip_count > 0:
+                                duty_estimate = max(trip_count // 4, 20)  # 경험적: 운행수/4
+                                for s in model.get("sets", []):
+                                    if s.get("id") == "J" and s.get("source_type") == "range":
+                                        old_size = s.get("size", 0)
+                                        if old_size > duty_estimate * 2:
+                                            s["size"] = duty_estimate
+                                            logger.info(f"  Set J size adjusted: {old_size} -> {duty_estimate} (trips={trip_count})")
+
                             # 수정된 모델로 Gate2 재검증 (continue로 루프 반복)
                             # model은 이미 수정되었으므로 다음 attempt에서 재검증됨
                             # 단, generate_math_model을 다시 호출하지 않도록 플래그 설정
@@ -474,10 +596,13 @@ async def skill_math_model(model, session: CrewSession, project_id: str, message
 
 
             # ★ user_input_required 파라미터 체크
+            # source_file/source_column이 있는 파라미터는 데이터에서 바인딩 가능하므로 제외
             need_input_params = [
                 p.get("id", p.get("name", ""))
                 for p in model.get("parameters", [])
                 if p.get("user_input_required")
+                and not p.get("source_file")
+                and not p.get("source_column")
             ]
             if need_input_params:
                 logger.info(f"user_input_required 파라미터 {len(need_input_params)}개: {need_input_params}")

@@ -106,17 +106,17 @@ def interpret_result(
 
     # ── solution 파싱 ──
 
-    # u[d] = 활성 듀티
+    # y[j] = 활성 듀티 (승무원 j가 활성화)
     active_duties = set()
-    for key, val in solution.get("u", {}).items():
+    for key, val in solution.get("y", {}).items():
         if val == 1.0:
             idx = _parse_index_key(key)
             if not idx: continue
             active_duties.add(idx[0])
 
-    # y[i,d] = 트립→듀티 배정
+    # x[i,j] = 트립→듀티 배정
     duty_trips = {}
-    for key, val in solution.get("y", {}).items():
+    for key, val in solution.get("x", {}).items():
         if val == 1.0:
             idx = _parse_index_key(key)
             if len(idx) < 2: continue
@@ -136,14 +136,10 @@ def interpret_result(
         if not idx: continue
         w_vals[idx[0]] = float(val)
 
-    # x[j,d] = 승무원→듀티 배정
+    # 이 모델에서 duty_id = crew_id (y[j]가 곧 duty j)
     crew_assign = {}
-    for key, val in solution.get("x", {}).items():
-        if val == 1.0:
-            idx = _parse_index_key(key)
-            if len(idx) < 2: continue
-            crew_id, duty_id = idx[0], idx[1]
-            crew_assign[duty_id] = crew_id
+    for duty_id in active_duties:
+        crew_assign[duty_id] = duty_id
 
     # ── 듀티별 상세 생성 ──
     duties = []

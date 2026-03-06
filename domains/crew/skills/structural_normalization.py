@@ -422,7 +422,7 @@ class ConstraintSemanticMapper:
     Phase 1 추출 파라미터의 context → 영문 param_id 매핑"""
 
     def __init__(self):
-        self._rules = []  # [(param_id, keywords_ko, operator_hint, typical_range)]
+        self._rules = []  # [(param_id, hints, operator_hint, typical_range, context_must, context_exclude)]  # ★ CHANGED
         self._load_rules()
 
     def _load_rules(self):
@@ -450,35 +450,70 @@ class ConstraintSemanticMapper:
                 for cid, cdef in (cdata.get(section) or {}).items():
                     if not isinstance(cdef, dict):
                         continue
-                    hints_ko = (cdef.get("detection_hints") or {}).get("ko", [])
-                    if not hints_ko:
+
+                    # ★ CHANGED: detection_hints를 list와 dict 모두 지원
+                    raw_hints = cdef.get("detection_hints") or []
+                    if isinstance(raw_hints, list):
+                        hints = raw_hints
+                    elif isinstance(raw_hints, dict):
+                        # 기존 {"ko": [...]} 형태도 호환
+                        hints = raw_hints.get("ko", [])
+                    else:
+                        hints = []
+
+                    if not hints:
                         continue
+
+                    # ★ NEW: context_must / context_exclude 로딩
+                    context_must = cdef.get("context_must", [])
+                    context_exclude = cdef.get("context_exclude", [])
+
                     # single_param
                     param_id = cdef.get("parameter")
                     typical = cdef.get("typical_range", [])
                     if param_id:
-                        self._rules.append((param_id, hints_ko, "<=", typical))
-                    # compound params
-                    for pid, pdef in (cdef.get("parameters") or {}).items():
-                        if not isinstance(pdef, dict):
-                            continue
-                        ptypical = pdef.get("typical_range", [])
-                        # sub-param에 독립 hints가 있으면 우선 사용
-                        sub_hints = (pdef.get("detection_hints") or {}).get("ko", [])
-                        effective_hints = sub_hints if sub_hints else hints_ko
-                        self._rules.append((pid, effective_hints, "<=", ptypical))
+                        self._rules.append((param_id, hints, "<=", typical, context_must, context_exclude))
+
+                    # ★ CHANGED: compound params - list 형태도 지원
+                    raw_params = cdef.get("parameters") or {}
+                    if isinstance(raw_params, list):
+                        # list of param names (e.g., day_night_classification)
+                        for pid in raw_params:
+                            if isinstance(pid, str):
+                                self._rules.append((pid, hints, "<=", typical, context_must, context_exclude))
+                    elif isinstance(raw_params, dict):
+                        for pid, pdef in raw_params.items():
+                            if not isinstance(pdef, dict):
+                                # pid만 있고 정의가 없는 경우
+                                self._rules.append((pid, hints, "<=", typical, context_must, context_exclude))
+                                continue
+                            ptypical = pdef.get("typical_range", [])
+                            sub_hints_raw = pdef.get("detection_hints") or []
+                            if isinstance(sub_hints_raw, list):
+                                sub_hints = sub_hints_raw
+                            elif isinstance(sub_hints_raw, dict):
+                                sub_hints = sub_hints_raw.get("ko", [])
+                            else:
+                                sub_hints = []
+                            effective_hints = sub_hints if sub_hints else hints
+                            sub_ctx_must = pdef.get("context_must", context_must)
+                            sub_ctx_exclude = pdef.get("context_exclude", context_exclude)
+                            self._rules.append((pid, effective_hints, "<=", ptypical, sub_ctx_must, sub_ctx_exclude))
+
                     # conditional trigger/consequence
                     trigger = cdef.get("trigger") or {}
                     if trigger.get("threshold_param"):
                         self._rules.append((
-                            trigger["threshold_param"], hints_ko, ">",
-                            trigger.get("typical_threshold_range", [])
+                            trigger["threshold_param"], hints, ">",
+                            trigger.get("typical_threshold_range", []),
+                            context_must, context_exclude
                         ))
                     consequence = cdef.get("consequence") or {}
                     if consequence.get("parameter"):
                         self._rules.append((
-                            consequence["parameter"], hints_ko, ">=",
-                            consequence.get("typical_range", [])
+                            consequence["parameter"], hints, ">=",
+                            consequence.get("typical_range", []),
+                            context_must, context_exclude
                         ))
         logger.info(f"ConstraintSemanticMapper: {len(self._rules)} rules loaded")
 
@@ -492,14 +527,36 @@ class ConstraintSemanticMapper:
         best_id = None
         best_score = 0
 
-        for param_id, hints_ko, op_hint, typical_range in self._rules:
+        for rule in self._rules:                                          # ★ CHANGED
+            param_id, hints, op_hint, typical_range = rule[0], rule[1], rule[2], rule[3]
+            context_must = rule[4] if len(rule) > 4 else []
+            context_exclude = rule[5] if len(rule) > 5 else []
+
+            # ★ NEW: context_exclude 체크 – 제외 키워드가 있으면 스킵
+            if context_exclude:
+                excluded = False
+                for ex_kw in context_exclude:
+                    if ex_kw.lower() in text:
+                        excluded = True
+                        break
+                if excluded:
+                    continue
+
             score = 0
-            for hint in hints_ko:
-                if hint in text:
+            for hint in hints:
+                if hint.lower() in text:
                     score += len(hint) * 2  # 긴 힌트일수록 높은 점수
 
             if score == 0:
                 continue
+
+            # ★ NEW: context_must 체크 – 필수 키워드 중 하나라도 있으면 보너스
+            if context_must:
+                must_found = any(kw.lower() in text for kw in context_must)
+                if must_found:
+                    score += 10  # 큰 보너스
+                else:
+                    score = max(1, score // 2)  # 필수 키워드 없으면 점수 감소
 
             # typical_range 내에 있으면 보너스
             if typical_range and len(typical_range) == 2:
@@ -664,7 +721,6 @@ class StructuralNormalizationSkill:
             # ── 시간 겹침 쌍 사전 계산 (time_compatibility용) ──
             if "trip_dep_time" in trips_df.columns and "trip_arr_time" in trips_df.columns:
                 try:
-                    import json as _json
                     dep = trips_df["trip_dep_time"].astype(float).values
                     arr = trips_df["trip_arr_time"].astype(float).values
                     ids = trips_df["trip_id"].astype(str).values
@@ -676,7 +732,7 @@ class StructuralNormalizationSkill:
                                 overlap_pairs.append([ids[i], ids[j]])
                     overlap_path = phase1_dir / "overlap_pairs.json"
                     with open(str(overlap_path), "w", encoding="utf-8") as _of:
-                        _json.dump(overlap_pairs, _of)
+                        json.dump(overlap_pairs, _of)
                     report["overlap_pairs"] = len(overlap_pairs)
                     logger.info(
                         f"Overlap pairs: {len(overlap_pairs)} / {n*(n-1)//2} total pairs "
@@ -684,6 +740,69 @@ class StructuralNormalizationSkill:
                     )
                 except Exception as e:
                     logger.warning(f"Overlap pairs calculation failed: {e}")
+
+                # ★ NEW: 연속 가능 쌍 사전 계산 (max_single_wait_time용)
+                try:
+                    dep = trips_df["trip_dep_time"].astype(float).values
+                    arr = trips_df["trip_arr_time"].astype(float).values
+                    ids = trips_df["trip_id"].astype(str).values
+
+                    # 역 정보가 있으면 같은 역 조건 적용
+                    has_stations = (
+                        "arr_station" in trips_df.columns
+                        and "dep_station" in trips_df.columns
+                    )
+                    if has_stations:
+                        arr_st = trips_df["arr_station"].astype(str).values
+                        dep_st = trips_df["dep_station"].astype(str).values
+
+                    sequential_pairs = []
+                    n = len(dep)
+
+                    # reference_ranges.yaml에서 도메인 기준값 로딩
+                    MIN_GAP = 5      # fallback
+                    MAX_GAP = 720    # fallback
+                    try:
+                        import yaml as _yaml
+                        _ref_dir = Path(__file__).resolve().parents[3] / "knowledge" / "domains"
+                        for _dname in _ref_dir.iterdir():
+                            _rpath = _dname / "reference_ranges.yaml"
+                            if _rpath.is_file():
+                                with open(str(_rpath), "r", encoding="utf-8") as _rf:
+                                    _rdata = _yaml.safe_load(_rf) or {}
+                                for _region in _rdata.values():
+                                    if isinstance(_region, dict) and "values" in _region:
+                                        _vals = _region["values"]
+                                        MIN_GAP = _vals.get("min_wait_minutes", MIN_GAP)
+                                        MAX_GAP = _vals.get("max_total_stay_minutes", MAX_GAP)
+                                        break
+                                break
+                    except Exception as _e:
+                        logger.debug(f"Reference ranges load skipped: {_e}")
+
+                    for i in range(n):
+                        for j in range(n):
+                            if i == j:
+                                continue
+                            gap = dep[j] - arr[i]
+                            if gap < MIN_GAP or gap > MAX_GAP:
+                                continue
+                            # 역 조건: i의 도착역 == j의 출발역
+                            if has_stations and arr_st[i] != dep_st[j]:
+                                continue
+                            sequential_pairs.append([ids[i], ids[j]])
+
+                    seq_path = phase1_dir / "sequential_pairs.json"
+                    with open(str(seq_path), "w", encoding="utf-8") as _sf:
+                        json.dump(sequential_pairs, _sf)
+                    report["sequential_pairs"] = len(sequential_pairs)
+                    logger.info(
+                        f"Sequential pairs: {len(sequential_pairs)} "
+                        f"(station_filter={'ON' if has_stations else 'OFF'})"
+                    )
+                except Exception as e:
+                    logger.warning(f"Sequential pairs calculation failed: {e}")
+                    report["warnings"].append(f"sequential_pairs 생성 실패: {e}")
 
             # 기본 통계
             report["trip_stats"] = {
@@ -860,6 +979,17 @@ class StructuralNormalizationSkill:
             lines.append(f"**파라미터 추출**: {params_count}개 항목")
             lines.append("")
 
+        # ★ NEW: overlap/sequential pairs 통계 표시
+        overlap_count = report.get("overlap_pairs", 0)
+        seq_count = report.get("sequential_pairs", 0)
+        if overlap_count or seq_count:
+            lines.append("**사전 계산:**")
+            if overlap_count:
+                lines.append(f"  - 시간 겹침 쌍 (overlap): {overlap_count}개")
+            if seq_count:
+                lines.append(f"  - 연속 가능 쌍 (sequential): {seq_count}개")
+            lines.append("")
+
         # 파일별 처리 결과
         files = report.get("files_processed", [])
         if files:
@@ -903,4 +1033,3 @@ async def skill_structural_normalization(
 ) -> Dict:
     skill = get_skill()
     return await skill.handle(session, project_id, message, params)
-

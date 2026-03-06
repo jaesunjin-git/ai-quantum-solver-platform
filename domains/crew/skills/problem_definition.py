@@ -392,8 +392,15 @@ class ProblemDefinitionSkill:
             if not applicability["applicable"]:
                 continue
 
-            weight_range = cdata.get("weight_range", [0.1, 0.5])
-            default_weight = round((weight_range[0] + weight_range[1]) / 2, 2)
+            # ★ CHANGED: YAML의 weight 필드를 우선 사용
+            yaml_weight = cdata.get("weight")
+            if yaml_weight is not None:
+                default_weight = float(yaml_weight)
+                weight_range = cdata.get("weight_range", [max(0.1, default_weight - 0.5), default_weight + 0.5])
+            else:
+                weight_range = cdata.get("weight_range", [0.1, 0.5])
+                default_weight = round((weight_range[0] + weight_range[1]) / 2, 2)
+
             soft_results[cname] = {
                 "name_ko": cdata.get("name_ko", cname),
                 "type": cdata.get("type", "single_param"),
@@ -453,6 +460,11 @@ class ProblemDefinitionSkill:
     ) -> dict:
         """제약조건 타입에 따라 값을 추출한다."""
 
+        # ★ CHANGED: YAML의 의미적 type → 추출 방식 매핑
+        has_single_param = cdata.get("parameter") is not None
+        has_compound_params = cdata.get("parameters") is not None
+
+        # 직접 매핑되는 기존 타입
         if ctype == "single_param":
             return self._extract_single_param(cname, cdata, phase1_data)
 
@@ -472,6 +484,89 @@ class ProblemDefinitionSkill:
         elif ctype == "data_derived":
             return self._extract_data_derived(cname, cdata, phase1_data)
 
+        # ★ NEW: YAML 의미적 타입 → 추출 방식 자동 결정
+
+        # classification: 주간/야간 구분 등 자동 세팅 (compound보다 먼저 체크)
+        elif ctype in ("classification",):
+            auto_values = {}
+            params_raw = cdata.get("parameters")
+            if isinstance(params_raw, list):
+                for p in params_raw:
+                    if isinstance(p, str):
+                        ref_val = self._lookup_reference_value(p)
+                        if ref_val is not None:
+                            auto_values[p] = {"value": ref_val, "source": "reference_default", "confidence": 0.6}
+                        else:
+                            auto_values[p] = {"value": None, "source": "auto_model_variable"}
+            if auto_values:
+                return {
+                    "status": "confirmed",
+                    "values": auto_values,
+                    "computation_phase": "compile_time",
+                }
+            return {
+                "status": "computed_in_phase2",
+                "values": {},
+                "computation_phase": "semantic_normalization",
+            }
+
+        # parameter 필드가 있으면 single_param으로 처리
+        elif has_single_param:
+            return self._extract_single_param(cname, cdata, phase1_data)
+
+        # parameters (dict 또는 list)가 있으면 compound로 처리
+        elif has_compound_params:
+            params_raw = cdata.get("parameters")
+            if isinstance(params_raw, list):
+                converted = {}
+                for p in params_raw:
+                    if isinstance(p, str):
+                        converted[p] = {"typical_range": cdata.get("typical_range", [])}
+                cdata_copy = dict(cdata)
+                cdata_copy["parameters"] = converted
+                return self._extract_compound(cname, cdata_copy, phase1_data)
+            return self._extract_compound(cname, cdata, phase1_data)
+
+        # parameter 없는 구조적 제약 (equality, logical 등)
+        elif ctype in ("equality", "logical"):
+            return {
+                "status": "confirmed",
+                "values": {},
+                "computation_phase": "compile_time",
+            }
+
+        # constant 타입 (big_m 등): 자동 세팅
+        elif ctype in ("constant",):
+            param_name = cdata.get("parameter")
+            if param_name:
+                ref_val = self._lookup_reference_value(param_name)
+                if param_name == "big_m" and ref_val:
+                    # big_m은 데이터 기반 자동 조정: max(기본값, 최대도착시각*2)
+                    max_arr = 1440
+                    try:
+                        import pandas as _pd
+                        from pathlib import Path as _Path
+                        _base = _Path(__file__).resolve().parents[3] / "uploads"
+                        for _pid in sorted(_base.iterdir(), reverse=True):
+                            _tt = _pid / "phase1" / "timetable_rows.csv"
+                            if _tt.is_file():
+                                _df = _pd.read_csv(str(_tt))
+                                if "trip_arr_time" in _df.columns:
+                                    max_arr = max(max_arr, int(_df["trip_arr_time"].max()))
+                                break
+                    except Exception:
+                        pass
+                    auto_val = max(int(ref_val), max_arr + 60)  # 최대도착+60분 여유, 최소 1440
+                    return {
+                        "status": "confirmed",
+                        "values": {param_name: {"value": auto_val, "source": "auto_computed", "confidence": 1.0}},
+                    }
+                elif ref_val is not None:
+                    return {
+                        "status": "confirmed",
+                        "values": {param_name: {"value": ref_val, "source": "reference_default", "confidence": 0.9}},
+                    }
+
         return {"status": "unknown_type", "values": {}}
 
     def _extract_single_param(self, cname: str, cdata: dict, phase1_data: dict) -> dict:
@@ -487,10 +582,65 @@ class ProblemDefinitionSkill:
                 "values": {param_name: {"value": value, "source": "phase1_data", "confidence": 0.8}},
             }
 
+        # ★ NEW: reference_ranges에서 참고 범위 및 기본값 조회
+        ref_range = cdata.get("typical_range")
+        ref_value = self._lookup_reference_value(param_name)
+
+        # reference_default가 있고 typical_range 내이면 자동 적용
+        if ref_value is not None:
+            return {
+                "status": "confirmed",
+                "values": {param_name: {
+                    "value": ref_value,
+                    "source": "reference_default",
+                    "confidence": 0.85,
+                    "reference_range": ref_range,
+                    "note": "reference_ranges.yaml 기본값 자동 적용",
+                }},
+            }
+
         return {
             "status": "user_input_required",
-            "values": {param_name: {"value": None, "source": "user_input_required"}},
+            "values": {param_name: {
+                "value": None,
+                "source": "user_input_required",
+                "reference_range": ref_range,
+                "reference_default": ref_value,
+            }},
         }
+
+
+    # NEW: reference_ranges.yaml lookup
+    def _lookup_reference_value(self, param_name: str):
+        """reference_ranges.yaml에서 첫 번째 매칭되는 기본값 반환"""
+        if not hasattr(self, "_reference_cache"):
+            self._reference_cache = self._load_reference_ranges()
+        return self._reference_cache.get(param_name)
+
+    def _load_reference_ranges(self) -> dict:
+        """모든 reference_ranges.yaml에서 파라미터 기본값 수집"""
+        import os, yaml
+        base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))))
+        domains_dir = os.path.join(base, "knowledge", "domains")
+        values = {}
+        if not os.path.isdir(domains_dir):
+            return values
+        for dname in os.listdir(domains_dir):
+            rpath = os.path.join(domains_dir, dname, "reference_ranges.yaml")
+            if not os.path.isfile(rpath):
+                continue
+            try:
+                with open(rpath, "r", encoding="utf-8") as f:
+                    rdata = yaml.safe_load(f) or {}
+            except Exception:
+                continue
+            for region_key, region in rdata.items():
+                if isinstance(region, dict) and "values" in region:
+                    for k, v in region["values"].items():
+                        if k not in values:
+                            values[k] = v
+        return values
 
     def _find_best_cdata_for_param(self, param_name: str, fallback_cdata: dict) -> dict:
         """파라미터가 독립 제약에서 정의되어 있으면 그 제약의 cdata 반환.
@@ -513,8 +663,11 @@ class ProblemDefinitionSkill:
             sub_params = cdef.get("parameters") or {}
             if param_name in sub_params and cdef is not fallback_cdata:
                 # 이 제약의 hints가 더 구체적인지 확인
-                this_hints = (cdef.get("detection_hints") or {}).get("ko", [])
-                fall_hints = (fallback_cdata.get("detection_hints") or {}).get("ko", [])
+                # ★ CHANGED: detection_hints가 list일 수도 dict일 수도 있음
+                raw_this = cdef.get("detection_hints") or []
+                this_hints = raw_this if isinstance(raw_this, list) else raw_this.get("ko", [])
+                raw_fall = fallback_cdata.get("detection_hints") or []
+                fall_hints = raw_fall if isinstance(raw_fall, list) else raw_fall.get("ko", [])
                 if this_hints != fall_hints:
                     return cdef
 
@@ -901,7 +1054,19 @@ class ProblemDefinitionSkill:
             # 상태별 분류
             confirmed = {k: v for k, v in hard.items() if v.get("status") in ("confirmed", "extracted", "auto_computed")}
             partial = {k: v for k, v in hard.items() if v.get("status") == "partial"}
-            needs_input = {k: v for k, v in hard.items() if v.get("status") == "user_input_required"}
+            # auto_model_variable은 입력 필요에서 제외
+            needs_input = {}
+            for k, v in hard.items():
+                if v.get("status") != "user_input_required":
+                    continue
+                # 하위 값 중 auto_model_variable만 있으면 skip
+                vals = v.get("values", {})
+                has_real_missing = any(
+                    sv.get("source") == "user_input_required" and sv.get("value") is None
+                    for sv in vals.values()
+                )
+                if has_real_missing:
+                    needs_input[k] = v
             computed_later = {k: v for k, v in hard.items() if v.get("status") in ("computed_in_phase2",)}
 
             if confirmed:
@@ -928,10 +1093,15 @@ class ProblemDefinitionSkill:
                     lines.append(f"- **{name_ko}**: {desc}")
                     for pname, pval in cdata.get("values", {}).items():
                         ref = pval.get("reference_range")
-                        if ref:
-                            lines.append(f"  - {pname}: 참고 범위 {ref}")
+                        ref_default = pval.get("reference_default")
+                        if ref and ref_default is not None:
+                            lines.append(f"  - `{pname}` = ??? (참고 범위: {ref}, 기본값: {ref_default})")
+                        elif ref:
+                            lines.append(f"  - `{pname}` = ??? (참고 범위: {ref})")
+                        elif ref_default is not None:
+                            lines.append(f"  - `{pname}` = ??? (기본값: {ref_default})")
                         else:
-                            lines.append(f"  - {pname}: ???")
+                            lines.append(f"  - `{pname}` = ???")
                 lines.append("")
 
             if computed_later:

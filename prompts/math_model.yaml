@@ -1,6 +1,8 @@
-version: '1.0'
-description: 수학 모델 생성용 프롬프트
+version: '2.0'
+description: 수학 모델 생성용 프롬프트 (YAML 기반 템플릿)
+
 system: 당신은 최적화 문제의 수학적 모델링 전문가입니다.
+
 rules:
 - JSON만 출력하라. 마크다운 코드블록을 사용하지 마라.
 - 아래 스키마를 정확히 따르라. 필드를 빠뜨리지 마라.
@@ -8,57 +10,120 @@ rules:
 - '의사결정 변수 예시: x[i,j]=승무원i를 운행j에 배정 여부, y[j]=승무원j 활성화 여부.'
 - estimated_variable_count는 각 변수의 인덱스 집합 크기의 곱의 합으로 계산하라.
 - sets의 elements는 빈 배열로 두고 source_file과 source_column만 명시하라.
-- 제약조건은 반드시 모든 제약을 포함하라. 절대 생략하지 마라.
+- 제약조건은 반드시 모든 제약(하드+소프트)을 포함하라. 절대 생략하지 마라.
 - 제약조건은 반드시 구조화된 lhs/operator/rhs 필드를 포함하라.
 - expression도 Python식으로 반드시 작성하되, 컴파일러는 lhs/operator/rhs를 우선 사용한다.
 - 'lhs와 rhs 노드 타입: value, var, param, sum, multiply, add, subtract.'
 - 'sum 노드의 over는 "변수 in 집합" 형태 (예: "j in J").'
 - coeff가 있는 sum은 coeff 필드에 param 노드를 넣어라.
 - 'for_each는 제약 반복 인덱스 (예: "i in I" 또는 "i in I, j in J").'
-- 데이터에 개별 항목 목록이 없고 총 개수만 있으면 source_type을 "range"로 설정하라. 예: 승무원 96명이면 source_file/source_column 대신 {"id":"J","name":"승무원","source_type":"range","size":96}로 작성하라.
+- 데이터에 개별 항목 목록이 없고 총 개수만 있으면 source_type을 "range"로 설정하라.
 - 'source_type 옵션: (1) 생략 또는 "column" = source_file+source_column에서 고유값 추출, (2) "range" = 1부터 size까지 정수 집합 자동 생성, (3) "explicit" = values 배열에 직접 나열.'
-- operator는 반드시 비교연산자(==, <=, >=, <, >, !=)만 사용하라. 곱셈(*)이나 덧셈(+)은 operator가 아니라 lhs 또는 rhs 노드 안의 multiply/add로 표현하라.
-- '★ 단위 통일 규칙: 모든 시간 관련 파라미터의 value는 반드시 "분(minutes)" 단위로 작성하라. 데이터 파일의 시간 컬럼도 분 단위로 변환된다. 예: 11시간 = 660, 40분 = 40, 5시간 = 300. 시간(hour) 단위를 절대 사용하지 마라.'
-- '★ value 필드 규칙: parameter의 value에는 데이터 파일에서 가져올 수 없는 상수만 넣어라. 데이터 파일에서 가져오는 값은 source_file/source_column을 사용하고 value는 비워두라.'
-- '★ 금지 패턴: (1) binary 변수(0/1)를 시간 상수와 직접 비교 금지 (x[i,j] >= 360 금지). (2) soft 제약에 x[i,j] <= 1 같은 무의미한 식 금지. (3) 열차 단위(i)와 승무원 단위(j) 혼동 금지.'
-- 'x[j,i] * param 같은 곱셈 표현식은 제약이 아니다. 반드시 비교연산자가 포함된 완전한 제약을 작성하라. 예: sum(param[i] * x[j,i] for i in I) <= max_value.'
-- '★ 파라미터 id 규칙: 모든 parameter의 id는 반드시 영문 snake_case로 작성하라 (한국어 금지). name은 한국어 설명용, id는 코드 참조용이다.'
-- '★ 1계층 파라미터 (시스템 주입): [사용 가능한 파라미터 목록]에 제공된 파라미터는 시스템이 자동 주입한다. 모델 JSON의 parameters에 이 파라미터들을 포함하지 마라. constraints/objective에서 해당 id를 그대로 참조하라.'
-- '★ 중복 파라미터 금지: [사용 가능한 파라미터 목록]에 있는 파라미터와 의미가 중복되는 새 파라미터를 만들지 마라. 제약식에서 기존 파라미터와 의사결정 변수를 조합하여 직접 계산하라.'
-- '★ 2계층 파라미터: 위 목록에 없지만 수학적 구조에 반드시 필요한 파라미터만 추가 가능하다. default_value 없이 description만 포함하라. 시스템이 사용자에게 값을 확인한다.'
-- '★ 제약조건 변수 포함 필수: 모든 제약조건의 lhs 또는 rhs에는 반드시 의사결정 변수(x, y, z 등)가 포함되어야 한다. 파라미터끼리만 비교하는 제약은 최적화에 무의미하므로 금지한다. 올바른 예: sum(param[i] * x[i,d] for i in I) + scalar_param_a + scalar_param_b <= max_param. 잘못된 예: aggregated_param[d] <= max_param (집계 파라미터는 의사결정 변수가 아님).'
-- '★ source_file 규칙: 정규화된 데이터만 사용 가능하다. source_file에는 normalized/ 폴더 아래의 파일만 사용하라. 원본 파일명을 절대 사용하지 마라.'
-- '★ Few-Shot 예시: 든티별 총 근무시간 제약을 작성할 때, 별도 파라미터(duty_work_time)를 만들지 말고 제약식에서 직접 계산하라. 예시: {"id": "max_work_per_duty", "for_each": "d in D", "lhs": {"add": [{"sum": {"var": "x", "index": "[i,d]", "over": "i in I", "coeff": {"param": {"name": "travel_time", "index": "[i]"}}}}, {"param": {"name": "prep_param"}}, {"param": {"name": "cleanup_param"}}]}, "operator": "<=", "rhs": {"param": {"name": "max_work_param"}}}'
-- '★ 허용 집합 규칙: parameters 섹션에는 [사용 가능한 파라미터 목록]에 없는 파라미터만 추가할 수 있다. 추가할 경우 description 필드에 "추가 이유: ..."를 반드시 명시하라. 이유 없이 추가된 파라미터는 시스템이 자동 제거한다.'
-- '★ 출력 전 자기검증: JSON 출력 전에 다음을 확인하라. (1) parameters에 [사용 가능한 파라미터 목록]의 id가 있는가? 있으면 제거. (2) 모든 제약의 lhs/rhs에 var 노드가 있는가? 없으면 수정. (3) 모든 operator가 비교연산자(==,<=,>=,<,>,!=)인가? (4) parameters의 파라미터가 constraints에서 실제 참조되는가? 미참조시 제거. (5) 집계값이 별도 파라미터인가? 제약식 내 sum()으로 교체.'
-template: '{system}
+- operator는 반드시 비교연산자(==, <=, >=, <, >, !=)만 사용하라.
+- '★ 단위 통일: 모든 시간 파라미터는 반드시 "분(minutes)" 단위. 예: 11시간=660, 5시간=300.'
+- '★ value 필드: 데이터 파일에서 가져올 수 없는 상수만 넣어라.'
+- '★ 금지 패턴: (1) binary 변수를 시간 상수와 직접 비교 금지. (2) soft 제약에 무의미한 식 금지. (3) 열차 단위(i)와 승무원 단위(j) 혼동 금지.'
+- '★ 파라미터 id는 반드시 영문 snake_case (한국어 금지). name은 한국어 설명용.'
+- '★ 1계층 파라미터는 시스템이 자동 주입. parameters 배열에 포함하지 마라. constraints/objective에서 id를 그대로 참조하라.'
+- '★ 중복 파라미터 금지: 1계층 파라미터와 동일한 id를 다시 정의하지 마라.'
 
+soft_constraint_rules:
+- '소프트 제약은 priority="soft"로 설정하고, weight 필드에 가중치를 넣어라.'
+- '소프트 제약은 slack 변수를 사용하여 위반을 허용한다. 컴파일러가 자동으로 slack을 생성한다.'
+- '목적함수에 소프트 제약의 penalty를 명시적으로 포함하지 마라. 컴파일러가 자동 추가한다.'
+- '소프트 제약의 lhs/operator/rhs는 하드 제약과 동일한 구조를 사용하라.'
+- '소프트 제약이 "평균" 관련이면, sum()/count 형태로 표현하라.'
+
+objective_rules:
+- '목적함수는 반드시 confirmed_problem의 objective를 따르라.'
+- '목적함수 expression에는 소프트 제약 penalty를 포함하지 마라 (컴파일러가 자동 추가).'
+- 'min_duties: sum(y[j] for j in J)를 minimize.'
+- 'min_total_cost: sum(cost[i,j]*x[i,j] for i,j)를 minimize.'
+
+sections:
+  confirmed_problem: |
+    [확정된 문제 정의]
+    문제 단계: {stage}
+    세부 유형: {variant}
+
+  objective: |
+    [확정된 목적함수]
+    {objective_text}
+
+  hard_constraints: |
+    [하드 제약조건 ({hard_count}개)]
+    아래 제약은 반드시 모델에 포함하세요. priority="hard", weight=0으로 설정하세요.
+    {hard_constraint_list}
+
+  soft_constraints: |
+    [소프트 제약조건 ({soft_count}개)]
+    아래 제약은 priority="soft"로 설정하고, 각 weight 값을 사용하세요.
+    소프트 제약도 lhs/operator/rhs 구조를 동일하게 사용합니다.
+    {soft_constraint_list}
+
+  constraint_templates: |
+    [제약조건 JSON 템플릿 — 반드시 이 구조를 사용]
+    {templates_text}
+
+  required_variables: |
+    [필수 추가 변수]
+    아래 변수를 variables 배열에 반드시 포함하세요:
+    {required_vars_text}
+
+  data_columns: |
+    [데이터 컬럼 (파라미터 아님)]
+    아래는 파라미터가 아닌 데이터 컬럼입니다. parameters 배열에 넣지 마세요.
+    {data_columns_text}
+
+  parameters: |
+    [1계층 파라미터 (시스템 자동 주입)]
+    아래 {param_count}개 파라미터는 시스템이 자동 주입합니다:
+    {param_list_text}
+    (id 목록: {param_ids})
+
+template: |
+  {system}
 
   중요 규칙:
-
   {rules_text}
 
+  소프트 제약 규칙:
+  {soft_rules_text}
+
+  목적함수 규칙:
+  {objective_rules_text}
 
   출력 JSON 스키마:
-
   {model_schema}
 
-
   제약조건 작성 형식:
-
   {constraint_schema}
-
-
-  === 입력 데이터 ===
-
-  도메인: {domain}
-
-  데이터 요약:
-
-  {confirmed_section}{data_summary}
-
 
   {objective_instruction}
 
+  [검증된 데이터 팩트]
+  {data_facts}
 
-  위 데이터를 분석하여 최적화 수학 모델을 JSON으로 출력하세요.'
+  [사용 가능한 데이터 소스]
+  {confirmed_section}
+
+  {data_guide}
+
+  [데이터 요약]
+  {csv_summary}
+
+  [분석 리포트]
+  {analysis_report}
+
+  [도메인]
+  {domain}
+
+  위 스키마의 모든 필드를 채워서 순수 JSON으로 반환하세요.
+
+checklist: |
+  출력 전 체크리스트:
+  (1) parameters에 1계층 id가 있는가? 있으면 제거.
+  (2) 모든 제약의 lhs/rhs에 var 노드가 있는가?
+  (3) 모든 operator가 비교연산자인가?
+  (4) 하드 제약 {hard_count}개 + 소프트 제약 {soft_count}개 = 총 {total_count}개 제약이 있는가?
+  (5) 소프트 제약에 priority="soft"와 weight가 설정되었는가?

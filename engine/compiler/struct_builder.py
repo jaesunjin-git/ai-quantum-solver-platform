@@ -260,6 +260,9 @@ def eval_node(node: Any, binding: Dict[str, Any], ctx: BuildContext) -> Any:
         if isinstance(param_info, dict):
             name = param_info.get('name', '')
             index_str = param_info.get('index', '')
+        elif isinstance(param_info, str):
+            name = param_info
+            index_str = node.get('index', '')
         else:
             return 0
 
@@ -539,25 +542,26 @@ def apply_constraint_cpsat(model, lhs, op: str, rhs) -> bool:
 
 
 def apply_constraint_lp(solver, lhs, op: str, rhs, name: str = "") -> bool:
-    """LP/MIP 솔버에 제약 추가"""
+    """LP/MIP 솔버에 제약 추가 - pywraplp 연산자 오버로딩 활용"""
     try:
+        # pywraplp의 Variable과 LinearExpr은 <=, >=, == 연산자를 지원
+        # solver.Add()로 직접 추가 가능
         if op == '==':
-            ct = solver.Constraint(float(rhs), float(rhs), name) if isinstance(rhs, (int, float)) else None
+            solver.Add(lhs == rhs, name)
         elif op == '<=':
-            ct = solver.Constraint(-solver.infinity(), float(rhs), name) if isinstance(rhs, (int, float)) else None
+            solver.Add(lhs <= rhs, name)
         elif op == '>=':
-            ct = solver.Constraint(float(rhs), solver.infinity(), name) if isinstance(rhs, (int, float)) else None
+            solver.Add(lhs >= rhs, name)
+        elif op == '<':
+            solver.Add(lhs <= rhs - 1, name)
+        elif op == '>':
+            solver.Add(lhs >= rhs + 1, name)
+        elif op == '!=':
+            logger.warning(f"LP does not support != operator natively, skipping {name}")
+            return False
         else:
+            logger.warning(f"Unknown operator: {op}")
             return False
-
-        if ct is None:
-            return False
-
-        # lhs가 단순 변수인 경우
-        if hasattr(lhs, 'solution_value'):
-            ct.SetCoefficient(lhs, 1)
-            return True
-
         return True
     except Exception as e:
         logger.warning(f"LP constraint add failed: {e}")

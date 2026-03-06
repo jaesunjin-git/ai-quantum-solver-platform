@@ -1,106 +1,58 @@
-﻿# knowledge/domains/railway/_index.yaml
-# ============================================================
-# 철도 도메인 진입점
-# 용도: 도메인 감지, 서브도메인 판별, 토폴로지 분류
-# 참조 시점: 파이프라인 초기 (데이터 분석, 문제 정의 진입)
-# ============================================================
-
-version: "2.0"
-domain: railway
-name_ko: 철도
-name_en: Railway
-
-detection_keywords:
-  - ["철도", "열차", "train", "railway", "rail"]
-  - ["역", "station", "정거장", "터미널"]
-  - ["노선", "line", "route", "구간"]
-  - ["DIA", "다이아", "운행도표"]
-  - ["기관사", "승무원", "차장", "conductor"]
-
-sub_domains:
-  urban_metro:
-    name_ko: "도시철도 / 지하철"
-    detection_keywords: ["지하철", "도시철도", "metro", "subway", "경전철", "호선"]
-    characteristics:
-      - "고빈도, 짧은 배차간격"
-      - "고정 노선, 정의된 종착역"
-  high_speed:
-    name_ko: "고속철도"
-    detection_keywords: ["KTX", "고속", "high-speed", "HSR", "SRT"]
-    characteristics:
-      - "장거리, 적은 정차역"
-      - "복잡한 승무 기지 배정"
-  conventional:
-    name_ko: "일반 여객철도"
-    detection_keywords: ["무궁화", "새마을", "ITX", "일반열차"]
-    characteristics:
-      - "급행/완행 혼재"
-      - "다중 노선 승무 공유 가능"
-  freight:
-    name_ko: "화물철도"
-    detection_keywords: ["화물", "freight", "cargo", "컨테이너"]
-    characteristics:
-      - "비정기 운행"
-      - "톤수 기반 제약"
-
-network_topologies:
-  single_line_bidirectional:
-    name_ko: "단일노선 양방향"
-    description: "2개 종착역, 상행/하행 왕복 운행"
-    detection_hints:
-      data_conditions:
-        - "terminal_station_count == 2"
-        - "direction_values == 2"
-    topology_effects:
-      deadhead: "종착역 간에만 발생하거나 발생하지 않음"
-      turnaround: "종착역에서 필수"
-
-  single_line_unidirectional:
-    name_ko: "단일노선 단방향"
-    description: "한 방향만 운행, 승무원 재배치 필요"
-    detection_hints:
-      data_conditions:
-        - "direction_values == 1"
-    topology_effects:
-      deadhead: "승무원 회송 필수"
-
-  circular:
-    name_ko: "순환노선"
-    description: "고정 종착역 없이 순환 운행"
-    detection_hints:
-      data_conditions:
-        - "no distinct terminal stations"
-        - "first_station == last_station in most trips"
-    topology_effects:
-      turnaround: "교대 지점 별도 정의 필요"
-      depot: "듀티 시작/종료역이 동일하지 않을 수 있음"
-
-  multi_line:
-    name_ko: "다중노선"
-    description: "여러 노선을 공유하는 승무 운용"
-    detection_hints:
-      data_conditions:
-        - "line_id_count >= 2"
-        - "terminal_station_count >= 3"
-    topology_effects:
-      deadhead: "복잡한 역 간 이동시간 행렬"
-      qualification: "노선별 자격 검증 필수"
-
-  hub_spoke:
-    name_ko: "허브-스포크"
-    description: "중심역에서 여러 방면으로 분기"
-    detection_hints:
-      data_conditions:
-        - "one station appears in >60% of trips"
-        - "branch_count >= 2"
-    topology_effects:
-      turnaround: "허브역 교대/대기 빈번"
-
-topology_detection_logic:
+domain:
+  name: railway
+  name_ko: "철도"
+  version: "2.0"
   description: >
-    Phase 1 정규화 이후의 trips 데이터에서 다음을 계산하여 판별:
-    1. terminal_station_count: 종착역(dep/arr에서 빈도 상위) 수
-    2. direction_values: direction 컬럼의 고유값 수
-    3. line_id_count: 노선 ID 고유값 수 (컬럼이 있을 때)
-    4. first==last 패턴: 순환 여부
-    코드에서 이 조건들을 순차 검사하여 가장 적합한 토폴로지 선택.
+    철도 승무원 스케줄링 도메인 지식.
+    도시철도(지하철), 고속철도(KTX), 일반철도, 화물 등 하위 도메인을 포함.
+
+  detection_keywords:
+    - "철도"
+    - "열차"
+    - train
+    - railway
+    - rail
+    - "역"
+    - station
+    - "노선"
+    - line
+    - DIA
+    - "기관사"
+    - "승무원"
+
+  sub_domains:
+    urban_metro:
+      name_ko: "도시철도/지하철"
+      keywords: ["지하철", metro, "도시철도", "경전철", light_rail]
+    high_speed:
+      name_ko: "고속철도"
+      keywords: [KTX, "고속", HSR, SRT]
+    conventional:
+      name_ko: "일반철도"
+      keywords: ["무궁화", ITX, "새마을", "일반"]
+    freight:
+      name_ko: "화물"
+      keywords: ["화물", freight, cargo]
+
+  problem_variants:
+    duty_generation:
+      - single_line_bidirectional
+      - single_line_unidirectional
+      - multi_line
+      - circular_line
+    roster_assignment:
+      - cyclic
+      - individual
+
+  data_columns:
+    trips:
+      source_file: timetable_rows.csv
+      fields:
+        - { name: trip_id,        type: string,  description: "운행 고유 ID" }
+        - { name: departure_time, type: time,    description: "출발 시각 (분)" }
+        - { name: arrival_time,   type: time,    description: "도착 시각 (분)" }
+        - { name: duration,       type: integer, description: "운행 소요시간 (분)" }
+        - { name: direction,      type: string,  description: "상행/하행" }
+        - { name: start_station,  type: string,  description: "출발역" }
+        - { name: end_station,    type: string,  description: "도착역" }
+      note: "deadhead(공차회송) 시간은 스케줄 데이터에서 계산해야 함"

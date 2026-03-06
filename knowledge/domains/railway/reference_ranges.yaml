@@ -1,53 +1,77 @@
-﻿# knowledge/domains/railway/reference_ranges.yaml
-# ============================================================
-# 서브도메인별 참고 범위
-# 용도: 사용자에게 "일반적으로 이 범위입니다" 안내용
-# 참조 시점: 문제 정의에서 사용자 확인 UI 생성 시
-#
-# 주의: 이 값은 하드코딩된 기본값이 아님.
-#       사용자 데이터에서 값을 추출하지 못했을 때
-#       "참고로 보통 이 범위입니다"라고 안내하는 용도.
-# ============================================================
+korean_urban_rail:
+  name_ko: "한국 도시철도"
+  sub_domain: urban_metro
+  values:
+    max_driving_minutes: 360
+    max_work_minutes: 660
+    preparation_minutes: 40
+    cleanup_minutes: 40
+    min_break_minutes: 40
+    min_night_rest_minutes: 360
+    max_total_stay_minutes: 720
+    big_m: 1440
+    max_wait_minutes: 180
+    min_wait_minutes: 10
+    max_single_wait_minutes: 300
+    min_night_sleep_minutes: 240
+    day_duty_start_earliest: 380
+    day_duty_end_latest: 1380
+    night_duty_start_earliest: 1020
+    night_threshold: 1320
+    min_meal_break_minutes: 40
+    avg_driving_target_minutes: 300
+    avg_wait_target_minutes: 180
+    post_arrival_rest_minutes: 150
+    training_cycle_duties: 10
 
-version: "2.0"
+korean_conventional_rail:
+  name_ko: "한국 일반철도"
+  sub_domain: conventional
+  values:
+    max_driving_minutes: 420
+    max_work_minutes: 720
+    preparation_minutes: 45
+    cleanup_minutes: 45
+    min_break_minutes: 45
+    min_night_rest_minutes: 480
+    max_total_stay_minutes: 780
+    big_m: 1440
+    max_wait_minutes: 180
+    min_wait_minutes: 10
+    max_single_wait_minutes: 300
+    min_night_sleep_minutes: 240
+    day_duty_start_earliest: 380
+    day_duty_end_latest: 1380
+    night_duty_start_earliest: 1020
+    night_threshold: 1320
+    min_meal_break_minutes: 45
+    avg_driving_target_minutes: 300
+    avg_wait_target_minutes: 180
+    post_arrival_rest_minutes: 180
+    training_cycle_duties: 10
 
-urban_metro:
-  description: "도시철도/지하철 일반적 범위"
-  max_driving_minutes: {range: [240, 420], note: "운영사마다 상이"}
-  max_work_minutes: {range: [480, 720], note: "준비/정리 포함"}
-  prep_time_minutes: {range: [15, 50], note: "세분류 시 항목별 다름"}
-  cleanup_time_minutes: {range: [15, 50]}
-  min_break_minutes: {range: [20, 60]}
-  break_trigger_minutes: {range: [180, 300]}
-  night_rest_minutes: {range: [360, 600]}
-  max_total_stay_minutes: {range: [540, 780]}
-  max_wait_minutes: {range: [60, 240]}
-  min_turnaround_minutes: {range: [3, 15]}
-
-high_speed:
-  description: "고속철도 일반적 범위"
-  max_driving_minutes: {range: [300, 480]}
-  max_work_minutes: {range: [540, 780]}
-  prep_time_minutes: {range: [30, 60]}
-  cleanup_time_minutes: {range: [30, 60]}
-  min_break_minutes: {range: [30, 60]}
-  break_trigger_minutes: {range: [180, 300]}
-  night_rest_minutes: {range: [480, 600]}
-  max_total_stay_minutes: {range: [600, 840]}
-  max_wait_minutes: {range: [60, 300]}
-
-conventional:
-  description: "일반 여객철도 일반적 범위"
-  max_driving_minutes: {range: [300, 480]}
-  max_work_minutes: {range: [540, 780]}
-  prep_time_minutes: {range: [30, 60]}
-  cleanup_time_minutes: {range: [30, 60]}
-  min_break_minutes: {range: [30, 60]}
-  night_rest_minutes: {range: [480, 600]}
-
-freight:
-  description: "화물철도 일반적 범위"
-  max_driving_minutes: {range: [360, 540]}
-  max_work_minutes: {range: [600, 840]}
-  prep_time_minutes: {range: [30, 60]}
-  cleanup_time_minutes: {range: [30, 60]}
+korean_high_speed:
+  name_ko: "한국 고속철도 (KTX)"
+  sub_domain: high_speed
+  values:
+    max_driving_minutes: 360
+    max_work_minutes: 660
+    preparation_minutes: 50
+    cleanup_minutes: 50
+    min_break_minutes: 40
+    min_night_rest_minutes: 360
+    max_total_stay_minutes: 720
+    big_m: 1440
+    max_wait_minutes: 180
+    min_wait_minutes: 10
+    max_single_wait_minutes: 300
+    min_night_sleep_minutes: 240
+    day_duty_start_earliest: 360
+    day_duty_end_latest: 1380
+    night_duty_start_earliest: 1020
+    night_threshold: 1320
+    min_meal_break_minutes: 40
+    avg_driving_target_minutes: 300
+    avg_wait_target_minutes: 180
+    post_arrival_rest_minutes: 150
+    training_cycle_duties: 10

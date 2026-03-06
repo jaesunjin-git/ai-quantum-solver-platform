@@ -276,6 +276,32 @@ class DataBinder:
             logger.info(f"Set {set_id}: {len(values)} explicit values")
             return values
 
+
+        # 2.5. file 타입: JSON 파일에서 직접 로드
+        if source_type == "file":
+            source_file = set_def.get("source_file", "")
+            if source_file:
+                import json as _json
+                # upload_dir 기준으로 파일 탐색
+                _candidates = [
+                    self.upload_dir / source_file,
+                    self.upload_dir / "normalized" / Path(source_file).name,
+                ]
+                for _cand in _candidates:
+                    if _cand.exists():
+                        try:
+                            with open(str(_cand), encoding="utf-8") as _sf:
+                                file_values = _json.load(_sf)
+                            if isinstance(file_values, list):
+                                # tuple로 변환 (pair 데이터)
+                                file_values = [tuple(v) if isinstance(v, list) else v for v in file_values]
+                                logger.info(f"Set {set_id}: {len(file_values)} values from file {_cand.name}")
+                                return file_values
+                        except Exception as _fe:
+                            logger.warning(f"Set {set_id}: file load error {_cand}: {_fe}")
+            logger.warning(f"Set {set_id}: source_type=file but file not found")
+            return []
+
         # 3. source_file + source_column
         source_file = set_def.get("source_file", "")
         source_column = set_def.get("source_column", "")
