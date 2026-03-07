@@ -334,10 +334,25 @@ class DataBinder:
 
         # 1) default_value가 있으면 최우선 사용 (사용자 입력값)
         default_val = param_def.get("default_value")
+        if default_val is not None:
+            _logger.info(f"Parameter {param_def.get('id')!r}: using default_value {default_val}")
+            return default_val
+
+        # 1.5) value 필드가 있으면 사용
+        direct_val = param_def.get("value")
+        if direct_val is not None:
+            _logger.info(f"Parameter {param_def.get('id')!r}: using value field {direct_val}")
+            return direct_val
 
         # 2) 데이터 소스에서 가져오기 시도
         source_file = param_def.get("source_file", "")
         source_col = param_def.get("source_column", "")
+
+        # parameters.csv의 value 컬럼은 전체 배열이므로 스칼라 파라미터에 부적합
+        # source_column이 "value"이고 source_file이 parameters.csv이면 스킵
+        if source_file and "parameters.csv" in source_file and source_col == "value":
+            _logger.warning(f"Parameter {param_def.get('id')!r}: skipping parameters.csv bulk read (no default_value)")
+            return None
 
         if source_file and source_col:
             df = self.get_dataframe(source_file)

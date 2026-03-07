@@ -1,129 +1,183 @@
 version: '2.0'
 description: 수학 모델 생성용 프롬프트 (YAML 기반 템플릿)
-
 system: 당신은 최적화 문제의 수학적 모델링 전문가입니다.
-
 rules:
 - JSON만 출력하라. 마크다운 코드블록을 사용하지 마라.
 - 아래 스키마를 정확히 따르라. 필드를 빠뜨리지 마라.
 - variables는 솔버가 결정하는 의사결정 변수만 포함하라. 데이터 컬럼은 parameters에 넣어라.
-- '의사결정 변수 예시: x[i,j]=승무원i를 운행j에 배정 여부, y[j]=승무원j 활성화 여부.'
+- '의사결정 변수: x[i,d]=trip i를 duty d에 배정 여부, u[d]=duty d 활성화 여부, s[d]=duty 시작시간, e[d]=duty
+  종료시간, is_night[d]=야간 여부, mb[d]=식사휴게시간, s_next[d]=익일 시작시간.'
 - estimated_variable_count는 각 변수의 인덱스 집합 크기의 곱의 합으로 계산하라.
 - sets의 elements는 빈 배열로 두고 source_file과 source_column만 명시하라.
 - 제약조건은 반드시 모든 제약(하드+소프트)을 포함하라. 절대 생략하지 마라.
 - 제약조건은 반드시 구조화된 lhs/operator/rhs 필드를 포함하라.
 - expression도 Python식으로 반드시 작성하되, 컴파일러는 lhs/operator/rhs를 우선 사용한다.
 - 'lhs와 rhs 노드 타입: value, var, param, sum, multiply, add, subtract.'
-- 'sum 노드의 over는 "변수 in 집합" 형태 (예: "j in J").'
+- 'sum 노드의 over는 "변수 in 집합" 형태 (예: "i in T", "d in D"). J는 사용하지 마라.'
 - coeff가 있는 sum은 coeff 필드에 param 노드를 넣어라.
-- 'for_each는 제약 반복 인덱스 (예: "i in I" 또는 "i in I, j in J").'
+- 'for_each는 제약 반복 인덱스 (예: "i in T", "d in D", 또는 "i in T, d in D"). J는 사용하지 마라.'
 - 데이터에 개별 항목 목록이 없고 총 개수만 있으면 source_type을 "range"로 설정하라.
-- 'source_type 옵션: (1) 생략 또는 "column" = source_file+source_column에서 고유값 추출, (2) "range" = 1부터 size까지 정수 집합 자동 생성, (3) "explicit" = values 배열에 직접 나열.'
+- 'source_type 옵션: (1) 생략 또는 "column" = source_file+source_column에서 고유값 추출, (2) "range"
+  = 1부터 size까지 정수 집합 자동 생성, (3) "explicit" = values 배열에 직접 나열.'
 - operator는 반드시 비교연산자(==, <=, >=, <, >, !=)만 사용하라.
 - '★ 단위 통일: 모든 시간 파라미터는 반드시 "분(minutes)" 단위. 예: 11시간=660, 5시간=300.'
 - '★ value 필드: 데이터 파일에서 가져올 수 없는 상수만 넣어라.'
-- '★ 금지 패턴: (1) binary 변수를 시간 상수와 직접 비교 금지. (2) soft 제약에 무의미한 식 금지. (3) 열차 단위(i)와 승무원 단위(j) 혼동 금지.'
-- '★ 파라미터 id는 반드시 영문 snake_case (한국어 금지). name은 한국어 설명용.'
-- '★ 1계층 파라미터는 시스템이 자동 주입. parameters 배열에 포함하지 마라. constraints/objective에서 id를 그대로 참조하라.'
+- '★ 금지 패턴: (1) binary 변수를 시간 상수와 직접 비교 금지. (2) soft 제약에 무의미한 식 금지. (3) trip 단위(i)와
+  duty 단위(d) 혼동 금지.'
+- ★ 파라미터 id는 반드시 영문 snake_case (한국어 금지). name은 한국어 설명용.
+- ★ 1계층 파라미터는 시스템이 자동 주입. parameters 배열에 포함하지 마라. constraints/objective에서 id를 그대로
+  참조하라.
 - '★ 중복 파라미터 금지: 1계층 파라미터와 동일한 id를 다시 정의하지 마라.'
-
+- '★ Set 규칙: T(trips)와 D(duties)만 사용. I, J는 사용하지 마라.'
+- '★ 변수명 규칙: x[i,d], u[d], s[d], e[d], is_night[d], mb[d], s_next[d]만 사용. duty_start[j],
+  duty_end[j], y[j] 등은 금지.'
+- '★ 변수 타입 규칙: 이 도메인의 모든 시간 변수(s[d], e[d], s_next[d], mb[d])는 분 단위 정수이므로 type을 반드시
+  integer로 설정하라. continuous를 사용하지 마라.'
 soft_constraint_rules:
-- '소프트 제약은 priority="soft"로 설정하고, weight 필드에 가중치를 넣어라.'
-- '소프트 제약은 slack 변수를 사용하여 위반을 허용한다. 컴파일러가 자동으로 slack을 생성한다.'
-- '목적함수에 소프트 제약의 penalty를 명시적으로 포함하지 마라. 컴파일러가 자동 추가한다.'
-- '소프트 제약의 lhs/operator/rhs는 하드 제약과 동일한 구조를 사용하라.'
-- '소프트 제약이 "평균" 관련이면, sum()/count 형태로 표현하라.'
-
+- 소프트 제약은 priority="soft"로 설정하고, weight 필드에 가중치를 넣어라.
+- 소프트 제약은 slack 변수를 사용하여 위반을 허용한다. 컴파일러가 자동으로 slack을 생성한다.
+- 목적함수에 소프트 제약의 penalty를 명시적으로 포함하지 마라. 컴파일러가 자동 추가한다.
+- 소프트 제약의 lhs/operator/rhs는 하드 제약과 동일한 구조를 사용하라.
+- 소프트 제약이 "평균" 관련이면, sum()/count 형태로 표현하라.
 objective_rules:
-- '목적함수는 반드시 confirmed_problem의 objective를 따르라.'
-- '목적함수 expression에는 소프트 제약 penalty를 포함하지 마라 (컴파일러가 자동 추가).'
+- 목적함수는 반드시 confirmed_problem의 objective를 따르라.
+- 목적함수 expression에는 소프트 제약 penalty를 포함하지 마라 (컴파일러가 자동 추가).
 - 'min_duties: sum(y[j] for j in J)를 minimize.'
 - 'min_total_cost: sum(cost[i,j]*x[i,j] for i,j)를 minimize.'
-
 sections:
-  confirmed_problem: |
-    [확정된 문제 정의]
+  confirmed_problem: '[확정된 문제 정의]
+
     문제 단계: {stage}
+
     세부 유형: {variant}
 
-  objective: |
-    [확정된 목적함수]
+    '
+  objective: '[확정된 목적함수]
+
     {objective_text}
 
-  hard_constraints: |
-    [하드 제약조건 ({hard_count}개)]
+    '
+  hard_constraints: '[하드 제약조건 ({hard_count}개)]
+
     아래 제약은 반드시 모델에 포함하세요. priority="hard", weight=0으로 설정하세요.
+
     {hard_constraint_list}
 
-  soft_constraints: |
-    [소프트 제약조건 ({soft_count}개)]
+    '
+  soft_constraints: '[소프트 제약조건 ({soft_count}개)]
+
     아래 제약은 priority="soft"로 설정하고, 각 weight 값을 사용하세요.
+
     소프트 제약도 lhs/operator/rhs 구조를 동일하게 사용합니다.
+
     {soft_constraint_list}
 
-  constraint_templates: |
-    [제약조건 JSON 템플릿 — 반드시 이 구조를 사용]
-    {templates_text}
+    '
+  constraint_templates: "[제약조건 JSON 템플릿 — 아래 규칙을 반드시 준수]\n\n★ 핵심 규칙:\n1. 아래 템플릿의 expression을\
+    \ 그대로 복사하세요. 변수명, 인덱스, 수식을 임의로 변경하지 마세요.\n2. 인덱스 규칙: duty는 반드시 d in D, trip은 i\
+    \ in T. j in J는 사용하지 마세요.\n3. 변수명 규칙: x[i,d], u[d], s[d], e[d], is_night[d], mb[d],\
+    \ s_next[d]만 사용하세요.\n   - duty_start[j], duty_end[j], y[j] 등은 사용하지 마세요.\n4. 파라미터명은\
+    \ parameters.csv의 semantic_id를 그대로 사용하세요.\n5. Set은 T(trips)와 D(duties)만 사용하세요.\
+    \ J는 사용하지 마세요.\n6. 아래에 없는 제약조건을 임의로 추가하지 마세요.\n\n{templates_text}"
+  required_variables: '[필수 추가 변수]
 
-  required_variables: |
-    [필수 추가 변수]
     아래 변수를 variables 배열에 반드시 포함하세요:
+
     {required_vars_text}
 
-  data_columns: |
-    [데이터 컬럼 (파라미터 아님)]
+    '
+  data_columns: '[데이터 컬럼 (파라미터 아님)]
+
     아래는 파라미터가 아닌 데이터 컬럼입니다. parameters 배열에 넣지 마세요.
+
     {data_columns_text}
 
-  parameters: |
-    [1계층 파라미터 (시스템 자동 주입)]
+    '
+  parameters: '[1계층 파라미터 (시스템 자동 주입)]
+
     아래 {param_count}개 파라미터는 시스템이 자동 주입합니다:
+
     {param_list_text}
+
     (id 목록: {param_ids})
 
-template: |
-  {system}
+    '
+template: '{system}
+
 
   중요 규칙:
+
   {rules_text}
 
+
   소프트 제약 규칙:
+
   {soft_rules_text}
 
+
   목적함수 규칙:
+
   {objective_rules_text}
 
+
   출력 JSON 스키마:
+
   {model_schema}
 
+
   제약조건 작성 형식:
+
   {constraint_schema}
+
 
   {objective_instruction}
 
+
   [검증된 데이터 팩트]
+
   {data_facts}
 
+
   [사용 가능한 데이터 소스]
+
   {confirmed_section}
+
 
   {data_guide}
 
+
   [데이터 요약]
+
   {csv_summary}
 
+
   [분석 리포트]
+
   {analysis_report}
 
+
   [도메인]
+
   {domain}
+
 
   위 스키마의 모든 필드를 채워서 순수 JSON으로 반환하세요.
 
-checklist: |
-  출력 전 체크리스트:
+  '
+checklist: '출력 전 체크리스트:
+
   (1) parameters에 1계층 id가 있는가? 있으면 제거.
+
   (2) 모든 제약의 lhs/rhs에 var 노드가 있는가?
+
   (3) 모든 operator가 비교연산자인가?
+
   (4) 하드 제약 {hard_count}개 + 소프트 제약 {soft_count}개 = 총 {total_count}개 제약이 있는가?
+
   (5) 소프트 제약에 priority="soft"와 weight가 설정되었는가?
+
+  (6) Set은 T와 D만 사용했는가? I, J를 사용하지 않았는가?
+
+  (7) 변수명이 x[i,d], u[d], s[d], e[d], is_night[d], mb[d], s_next[d]만 사용됐는가?
+
+  (8) constraint의 expression이 템플릿과 일치하는가?'

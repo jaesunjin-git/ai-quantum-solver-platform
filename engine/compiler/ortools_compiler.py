@@ -48,7 +48,13 @@ class ORToolsCompiler(BaseCompiler):
 
             has_continuous = "continuous" in var_types
             if has_continuous:
-                return self._compile_lp(math_model, bound_data, **kwargs)
+                # 승무원 스케줄링: 모든 시간값은 분 단위 정수
+                # continuous를 integer로 변환하여 CP-SAT 사용
+                for v in math_model.get("variables", []):
+                    if v.get("type") == "continuous":
+                        logger.info(f"Auto-converting variable {v.get('id')} from continuous to integer")
+                        v["type"] = "integer"
+                return self._compile_cp_sat(math_model, bound_data, **kwargs)
             else:
                 return self._compile_cp_sat(math_model, bound_data, **kwargs)
 
@@ -105,27 +111,23 @@ class ORToolsCompiler(BaseCompiler):
         param_map = bound_data.get("parameters", {})
         set_map = bound_data.get("sets", {})
         
-        # --- overlap_pairs 자동 로딩 ---
-        _overlap_path = None
+        # --- overlap_pairs 로딩 (project_id 기반) ---
         import os as _os2
+        _project_id = kwargs.get('project_id', '')
         if 'overlap_pairs' not in set_map or len(set_map.get('overlap_pairs', [])) < 2:
-            _op_candidates = []
-            if _os2.path.exists('uploads'):
-                for _d in _os2.listdir('uploads'):
-                    _np = _os2.path.join('uploads', _d, 'normalized', 'overlap_pairs.json')
-                    if _os2.path.exists(_np):
-                        _op_candidates.append(_np)
-            for _opc in _op_candidates:
+            _op_path = _os2.path.join('uploads', str(_project_id), 'normalized', 'overlap_pairs.json')
+            if _os2.path.exists(_op_path):
                 try:
-                    with open(_opc, encoding='utf-8') as _opf:
-                        import json as _ojson
+                    import json as _ojson
+                    with open(_op_path, encoding='utf-8') as _opf:
                         _op_data = _ojson.load(_opf)
-                    if isinstance(_op_data, list) and len(_op_data) > 1:
+                    if isinstance(_op_data, list) and len(_op_data) > 0:
                         set_map['overlap_pairs'] = [tuple(p) for p in _op_data]
-                        logger.info(f"CP-SAT overlap_pairs loaded: {len(set_map['overlap_pairs'])} pairs from {_opc}")
-                        break
+                        logger.info(f"CP-SAT overlap_pairs loaded: {len(set_map['overlap_pairs'])} pairs from {_op_path}")
                 except Exception as _ope:
                     logger.warning(f"CP-SAT overlap_pairs load failed: {_ope}")
+            else:
+                logger.warning(f"overlap_pairs.json not found at {_op_path}")
         # --- end overlap_pairs ---
 
         ctx = BuildContext(var_map, param_map, set_map)
@@ -456,36 +458,23 @@ class ORToolsCompiler(BaseCompiler):
         param_map = bound_data.get("parameters", {})
         set_map = bound_data.get("sets", {})
 
-        # --- LP: overlap_pairs 자동 로딩 ---
+        # --- LP: overlap_pairs 로딩 (project_id 기반) ---
+        import os as _os2
+        _project_id = kwargs.get('project_id', '')
         if 'overlap_pairs' not in set_map or len(set_map.get('overlap_pairs', [])) < 2:
-            import os as _os2
-            import json as _ojson2
-            _op_candidates = []
-            if hasattr(self, '_project_id'):
-                _op_candidates.append(f'uploads/{self._project_id}/normalized/overlap_pairs.json')
-            # bound_data에서 project_id 추출 시도
-            for _set_def in math_model.get('sets', []):
-                _sf = _set_def.get('source_file', '')
-                if _sf:
-                    _base = _os2.path.dirname(_os2.path.join(str(getattr(self, '_upload_dir', 'uploads')), _sf))
-                    _op_candidates.append(_os2.path.join(_base, 'overlap_pairs.json'))
-            # uploads/*/normalized/ 패턴으로 탐색
-            if _os2.path.exists('uploads'):
-                for _d in _os2.listdir('uploads'):
-                    _np = _os2.path.join('uploads', _d, 'normalized', 'overlap_pairs.json')
-                    if _os2.path.exists(_np):
-                        _op_candidates.append(_np)
-            for _opc in _op_candidates:
-                if _os2.path.exists(_opc):
-                    try:
-                        with open(_opc, encoding='utf-8') as _opf:
-                            _op_data = _ojson2.load(_opf)
-                        if isinstance(_op_data, list) and len(_op_data) > 1:
-                            set_map['overlap_pairs'] = [tuple(p) for p in _op_data]
-                            logger.info(f"LP overlap_pairs loaded: {len(set_map['overlap_pairs'])} pairs from {_opc}")
-                            break
-                    except Exception as _ope:
-                        logger.warning(f"LP overlap_pairs load failed: {_ope}")
+            _op_path = _os2.path.join('uploads', str(_project_id), 'normalized', 'overlap_pairs.json')
+            if _os2.path.exists(_op_path):
+                try:
+                    import json as _ojson2
+                    with open(_op_path, encoding='utf-8') as _opf:
+                        _op_data = _ojson2.load(_opf)
+                    if isinstance(_op_data, list) and len(_op_data) > 0:
+                        set_map['overlap_pairs'] = [tuple(p) for p in _op_data]
+                        logger.info(f"LP overlap_pairs loaded: {len(set_map['overlap_pairs'])} pairs from {_op_path}")
+                except Exception as _ope:
+                    logger.warning(f"LP overlap_pairs load failed: {_ope}")
+            else:
+                logger.warning(f"LP overlap_pairs.json not found at {_op_path}")
         # --- end LP overlap_pairs ---
 
         ctx = BuildContext(var_map, param_map, set_map)
@@ -494,43 +483,6 @@ class ORToolsCompiler(BaseCompiler):
         logger.info(f"BuildContext - params: {list(param_map.keys())[:20]}")
         logger.info(f"BuildContext - vars: {list(var_map.keys())}")
 
-        # === DEBUG DUMP (임시) ===
-        try:
-            import json as _djson
-            _debug = {
-                "param_keys": list(param_map.keys()),
-                "param_sample": {k: str(v)[:100] for k, v in list(param_map.items())[:30]},
-                "set_keys": list(set_map.keys()),
-                "set_sizes": {k: len(v) if isinstance(v, (list, tuple)) else str(v) for k, v in set_map.items()},
-                "var_keys": list(var_map.keys()),
-                "var_types": {k: ("dict" if isinstance(v, dict) else type(v).__name__) for k, v in var_map.items()},
-                "var_sizes": {k: len(v) if isinstance(v, dict) else 1 for k, v in var_map.items()},
-            }
-            # trip_dep_time, trip_arr_time 상세
-            for pname in ["trip_dep_time", "trip_arr_time", "trip_duration", "big_m", "max_driving_minutes", "preparation_minutes"]:
-                pval = param_map.get(pname)
-                if pval is not None:
-                    if isinstance(pval, (list, tuple)):
-                        _debug[f"param_{pname}"] = f"array len={len(pval)}, first3={list(pval[:3])}"
-                    elif isinstance(pval, dict):
-                        _debug[f"param_{pname}"] = f"dict len={len(pval)}, keys={list(pval.keys())[:5]}"
-                    else:
-                        _debug[f"param_{pname}"] = str(pval)
-                else:
-                    _debug[f"param_{pname}"] = "NOT FOUND"
-            
-            # overlap_pairs 상세
-            op = set_map.get("overlap_pairs", [])
-            _debug["overlap_pairs_size"] = len(op) if isinstance(op, (list, tuple)) else str(op)
-            if isinstance(op, (list, tuple)) and len(op) > 0:
-                _debug["overlap_pairs_sample"] = [str(x) for x in op[:3]]
-            
-            with open("uploads/94/debug_bound_data.json", "w", encoding="utf-8") as _df:
-                _djson.dump(_debug, _df, ensure_ascii=False, indent=2, default=str)
-            logger.info("DEBUG: bound_data dumped to uploads/94/debug_bound_data.json")
-        except Exception as _de:
-            logger.warning(f"DEBUG dump failed: {_de}")
-        # === END DEBUG ===
 
 
         total_constraints = 0

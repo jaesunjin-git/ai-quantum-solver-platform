@@ -381,16 +381,26 @@ class ParameterExtractor:
                 val_col = col
 
         if text_col is not None and val_col is not None:
+            # text_col, val_col 외 나머지 텍스트 컬럼을 context로 사용
+            _other_text_cols = [c for c in df.columns if c != text_col and c != val_col]
             for _, row in df.iterrows():
                 key = str(row.get(text_col, "")).strip()
                 val = row.get(val_col)
                 if key and pd.notna(val):
                     minutes = _to_minutes(val)
+                    # context: 나머지 텍스트 컬럼 값을 결합
+                    ctx_parts = []
+                    for oc in _other_text_cols:
+                        ov = row.get(oc)
+                        if pd.notna(ov):
+                            ctx_parts.append(str(ov).strip())
+                    ctx = " ".join(ctx_parts)
                     rows.append({
                         "param_name": key,
                         "value": minutes if minutes is not None else val,
                         "unit": "minutes" if minutes is not None else "raw",
                         "source": source_name,
+                        "context": ctx,
                     })
         else:
             # 크로스탭 형태: 각 셀을 파라미터로
@@ -882,6 +892,7 @@ class StructuralNormalizationSkill:
         # ── Semantic mapping: assign meaningful English param IDs ──
         mapper = _get_semantic_mapper()
         _used_ids = {}  # track assigned IDs to handle duplicates
+        _used_values = {}  # track (semantic_id, value) to skip exact duplicates
         for p in all_params:
             original_name = p.get("param_name", "")
             ctx = p.get("context", "")
@@ -889,6 +900,13 @@ class StructuralNormalizationSkill:
             unit = p.get("unit", "")
             mapped_id = mapper.map_param(original_name, ctx, val, unit)
             if mapped_id != original_name:
+                # 동일 semantic_id + 동일 value면 중복 -> 스킵
+                dup_key = (mapped_id, str(val))
+                if dup_key in _used_values:
+                    logger.info(f"Skipped duplicate: {mapped_id}={val} (same as existing)")
+                    p["_skip"] = True
+                    p["semantic_id"] = mapped_id
+                    continue
                 # Handle duplicates: append _max, _min, _avg based on context
                 if mapped_id in _used_ids:
                     ctx_lower = ctx.lower()
@@ -902,10 +920,14 @@ class StructuralNormalizationSkill:
                         _used_ids[mapped_id] = _used_ids.get(mapped_id, 0) + 1
                         mapped_id = f"{mapped_id}_{_used_ids[mapped_id]}"
                 _used_ids[mapped_id] = _used_ids.get(mapped_id, 0) + 1
+                _used_values[(mapped_id, str(val))] = True
                 p["semantic_id"] = mapped_id
                 logger.info(f"Semantic map: {original_name} -> {mapped_id} (ctx: {ctx[:50]})")
             else:
                 p["semantic_id"] = original_name
+
+        # 중복 스킵된 행 제거
+        all_params = [p for p in all_params if not p.get("_skip", False)]
 
         if all_params:
             # ── 통계/인원 데이터 필터링 ──

@@ -14,6 +14,7 @@ handle_math_model_confirm: 수학 모델 확정 처리 및 다음 단계 안내.
 import asyncio
 import json
 import logging
+import os
 import re
 from typing import Any, Dict, List, Optional
 
@@ -172,7 +173,7 @@ async def skill_math_model(model, session: CrewSession, project_id: str, message
         domain = state.detected_domain or "generic"
 
         # ★ 재시도 루프: Gate 2 검증 실패 시 최대 3회 재생성
-        MAX_RETRIES = 5
+        MAX_RETRIES = 3
         retry_feedback = ""
         final_model = None
         final_validation = None
@@ -196,16 +197,41 @@ async def skill_math_model(model, session: CrewSession, project_id: str, message
                     "error": None,
                 }
             else:
+                # ── normalized/parameters.csv에서 semantic_id 기반 파라미터 주입 ──
+                _cp = state.confirmed_problem or {}
+                if not _cp.get("parameters"):
+                    import csv as _csv_mod
+                    import re as _re_mod
+                    _norm_csv = os.path.join("uploads", str(project_id), "normalized", "parameters.csv")
+                    if os.path.exists(_norm_csv):
+                        _injected = {}
+                        try:
+                            with open(_norm_csv, "r", encoding="utf-8") as _f:
+                                for _row in _csv_mod.DictReader(_f):
+                                    _sid = (_row.get("semantic_id") or "").strip()
+                                    _pn = (_row.get("param_name") or "").strip()
+                                    if _sid and _sid != _pn:
+                                        _base = _re_mod.sub(r"_(2|3|4|5|avg|min|max)$", "", _sid)
+                                        if _base not in _injected:
+                                            _injected[_sid] = {"value": _row.get("value", ""), "unit": _row.get("unit", "minutes")}
+                            if _injected:
+                                if not _cp:
+                                    _cp = {}
+                                _cp["parameters"] = _injected
+                                logger.info(f"Param inject: {len(_injected)} params from normalized/parameters.csv")
+                        except Exception as _inj_e:
+                            logger.warning(f"Param inject failed: {_inj_e}")
+
                 result = await generate_math_model(
-                csv_summary=csv_summary,
-                analysis_report=analysis_report,
-                domain=domain,
-                user_objective=user_objective,
-                data_facts=state.data_facts,
-                retry_feedback=retry_feedback,
-                dataframes=binder._dataframes if binder else None,
-                confirmed_problem=state.confirmed_problem,
-            )
+                    csv_summary=csv_summary,
+                    analysis_report=analysis_report,
+                    domain=domain,
+                    user_objective=user_objective,
+                    data_facts=state.data_facts,
+                    retry_feedback=retry_feedback,
+                    dataframes=binder._dataframes if binder else None,
+                    confirmed_problem=_cp if _cp else state.confirmed_problem,
+                )
 
             if not result["success"]:
                 error_msg = result.get("error", "알 수 없는 오류")
@@ -289,11 +315,15 @@ async def skill_math_model(model, session: CrewSession, project_id: str, message
                             model_str = model_str.replace(old_token, new_token)
                             applied_count += 1
                             logger.info(f"Applied correction: {old_name} -> {new_name}")
-                        # expression 문자열 내부도 치환 (따옴표 없는 형태)
-                        model_str = model_str.replace(old_name, new_name)
+                        # expression 내부 치환은 단어 경계 기준으로 수행
+                        import re as _re
+                        model_str = _re.sub(r'(?<![a-zA-Z_])' + _re.escape(old_name) + r'(?![a-zA-Z_])', new_name, model_str)
                 if applied_count > 0:
-                    model = json.loads(model_str)
-                    logger.info(f"Gate2 corrections applied: {applied_count} column name fixes")
+                    try:
+                        model = json.loads(model_str)
+                        logger.info(f"Gate2 corrections applied: {applied_count} column name fixes")
+                    except json.JSONDecodeError as _je:
+                        logger.warning(f"Gate2 correction broke JSON at pos {_je.pos}, keeping original model")
 
             # [DEBUG] 모델 JSON 저장 (디버깅용)
             import os as _os

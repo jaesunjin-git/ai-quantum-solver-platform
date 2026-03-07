@@ -1027,23 +1027,61 @@ class ProblemDefinitionSkill:
 
 
     def _collect_parameters(self, state, project_id: str, dk, constraints: dict) -> dict:
-        """제약조건에서 필요한 파라미터를 종합하여 수집"""
+        """Phase 1 parameters.csv + 제약조건 values 종합 수집"""
+        logger.info(f"_collect_parameters called: project_id={project_id}")
+        import csv as _csv
+        import os as _os
+        import re as _re
         parameters = {}
 
-        # 제약조건의 값에서 파라미터 수집
+        # ── 1단계: Phase 1 parameters.csv에서 semantic_id 기반 수집 ──
+        _base = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+        norm_dir = _os.path.join(_base, "uploads", str(project_id), "normalized")
+        csv_path = _os.path.join(norm_dir, "parameters.csv")
+        logger.info(f"_collect_parameters: csv_path={csv_path}, exists={_os.path.exists(csv_path)}")
+        if _os.path.exists(csv_path):
+            try:
+                with open(csv_path, "r", encoding="utf-8") as f:
+                    reader = _csv.DictReader(f)
+                    for row in reader:
+                        sid = (row.get("semantic_id") or "").strip()
+                        pname = (row.get("param_name") or "").strip()
+                        pid = sid if sid and sid != pname else None
+                        if not pid:
+                            continue
+                        # 중복 접미사(_2, _3 등)는 첫 번째 값만 사용
+                        base_id = _re.sub(r"_(2|3|4|5|avg|min|max)$", "", pid)
+                        if base_id in parameters:
+                            continue
+                        val_str = (row.get("value") or "").strip()
+                        try:
+                            val = float(val_str)
+                        except (ValueError, TypeError):
+                            val = val_str if val_str else None
+                        unit = (row.get("unit") or "").strip()
+                        parameters[pid] = {
+                            "value": val,
+                            "unit": unit or "minutes",
+                            "source": "parameters.csv",
+                        }
+                logger.info(f"_collect_parameters: {len(parameters)} params from parameters.csv")
+            except Exception as e:
+                logger.warning(f"_collect_parameters: CSV read failed: {e}")
+
+        # ── 2단계: 제약조건 values에서 추가 수집 ──
         for category in ["hard", "soft"]:
             for cname, cinfo in constraints.get(category, {}).items():
                 for pname, pval in cinfo.get("values", {}).items():
                     if pname not in parameters:
                         parameters[pname] = pval
 
-        # reference_ranges에서 참고 범위 추가
+        # ── 3단계: reference_ranges 참고 범위 ──
         if dk:
             sub_domain = self._detect_sub_domain(state, dk)
             if sub_domain:
                 for pname in list(parameters.keys()):
                     ref = dk.get_reference_range(sub_domain, pname)
-                    if ref and parameters[pname].get("value") is None:
+                    if ref and isinstance(parameters[pname], dict) and parameters[pname].get("value") is None:
                         parameters[pname]["reference_range"] = ref.get("range")
                         parameters[pname]["note"] = ref.get("note", "")
 

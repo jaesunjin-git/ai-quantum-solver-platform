@@ -64,17 +64,30 @@ def _load_domain_yaml(domain: str) -> dict:
     # 2) 하위폴더 탐색 (knowledge/domains/railway/constraints.yaml 등)
     sub_dir = os.path.join(domain_dir, domain)
     if os.path.isdir(sub_dir):
-        for fname in os.listdir(sub_dir):
+        merged = {}
+        loaded_files = []
+        _skip_keys = {'constraints', 'variables', 'sets', 'objectives', 'category_rules'}
+        for fname in sorted(os.listdir(sub_dir)):
             if fname.endswith(".yaml"):
                 fpath = os.path.join(sub_dir, fname)
                 try:
                     with open(fpath, "r", encoding="utf-8") as f:
                         data = _yaml.safe_load(f) or {}
                     if data.get("domain") == domain or data.get("constraint_templates"):
-                        logger.info(f"Domain YAML loaded (subfolder): {fpath}")
-                        return data
+                        for k, v in data.items():
+                            if k in _skip_keys:
+                                continue
+                            if k not in merged:
+                                merged[k] = v
+                            elif isinstance(merged[k], dict) and isinstance(v, dict):
+                                merged[k].update(v)
+                        loaded_files.append(fname)
+                        logger.info(f"Domain YAML merged: {fpath}")
                 except Exception:
                     pass
+        if merged:
+            logger.info(f"Domain YAML loaded {loaded_files}, keys: {list(merged.keys())}")
+            return merged
     return {}
 
 def _get_model_schema() -> str:

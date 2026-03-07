@@ -779,16 +779,27 @@ def run(math_model: Dict,
 
             logger.info(f"Direct+Alias bind complete: {_bound_count} params bound")
 
-            # unbound_params 재계산 (검증3 결과 갱신)
-            unbound_params = []
-            for p in _all_model_params:
-                pname = p.get("name", p.get("id", ""))
-                sf = p.get("source_file") or ""
-                sc = p.get("source_column") or ""
-                dv = p.get("default_value", p.get("default"))
-                if not sf and not sc and dv is None:
-                    unbound_params.append(pname)
-            logger.info(f"Direct-bind: {len(unbound_params)} params still unbound: {unbound_params}")
+    # --- dedup: remove unnecessary parameters ---
+    _remove_ids = set()
+    _all_pids = {p.get("id",""): p for p in math_model.get("parameters", [])}
+    for _pid, _pdata in _all_pids.items():
+        # 1) trips.csv 컬럼 제거
+        _src = str(_pdata.get("source_file","")) + str(_pdata.get("auto_bound_source",""))
+        if "trips.csv" in _src and not _pdata.get("default_value") and not _pdata.get("value"):
+            _remove_ids.add(_pid)
+        # 2) 세부 파라미터가 있는 기본 파라미터 제거 (preparation_minutes, cleanup_minutes)
+        if _pid in ("preparation_minutes", "cleanup_minutes"):
+            _has_detail = any(k.startswith(_pid + "_") for k in _all_pids)
+            if _has_detail:
+                _remove_ids.add(_pid)
+        # 3) 축약 이름 중복 제거 (_time_ vs _minutes_)
+        if "_time_" in _pid:
+            _full = _pid.replace("_time_", "_minutes_")
+            if _full in _all_pids:
+                _remove_ids.add(_pid)
+    if _remove_ids:
+        math_model["parameters"] = [p for p in math_model["parameters"] if p.get("id","") not in _remove_ids]
+        logger.info(f"Dedup removed {len(_remove_ids)} params: {_remove_ids}")
 
 
     # --- confirmed_problem 기반 fallback 매핑 (Phase0에서 이미 처리, 잔여분만) ---

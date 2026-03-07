@@ -95,7 +95,7 @@ class SolverPipeline:
             logger.info(f"Compiler: {type(compiler).__name__}")
 
             compile_start = time.time()
-            compile_result = compiler.compile(math_model, bound_data, **kwargs)
+            compile_result = compiler.compile(math_model, bound_data, project_id=project_id, **kwargs)
             compile_time = time.time() - compile_start
 
             if not compile_result.success:
