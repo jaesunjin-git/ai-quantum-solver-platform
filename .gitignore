@@ -14,7 +14,6 @@ venv/
 _*.py
 
 # 기존에 적어두신 것 (언더바 없는 것도 혹시 모르니 유지)
-analyze*.py
 check_*.py
 test_*.py
 find_*.py

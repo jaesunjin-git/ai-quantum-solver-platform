@@ -180,11 +180,16 @@ class InputClassifier:
     def extract_domain_from_message(cls, message: str) -> Optional[str]:
         cls._load_keywords()
         msg = message.lower()
+        # Count matches per domain instead of first-match
+        domain_scores: Dict[str, int] = {}
         for keyword, domain in cls._domain_map.items():
             if keyword in msg:
-                return domain
-        return None
-
+                domain_scores[domain] = domain_scores.get(domain, 0) + 1
+        if not domain_scores:
+            return None
+        # Return domain with most keyword matches
+        best = max(domain_scores, key=domain_scores.get)
+        return best
 
 # ============================================================
 # 4. LLM 응답 파서 (Skill JSON 추출)

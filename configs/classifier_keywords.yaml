@@ -1,161 +1,150 @@
-# ============================================================
-# configs/classifier_keywords.yaml
-# InputClassifier 키워드 설정 (Single Source of Truth)
-# ============================================================
-
-# STEP 1: 데이터 분석
 analysis:
-  - 데이터 분석
-  - 분석 시작
-  - 분석해줘
-  - 분석 해줘
-  - 분석 진행
-  - analyze
-
-# STEP 1 변형: 분석 결과 재확인
-problem_definition:
-  - "문제 정의"
-  - "문제정의"
-  - "problem definition"
-  - "문제 유형"
-  - "어떤 문제"
-  - "최적화 문제 정의"
-  - "what to optimize"
-  - "문제를 정의"
-
+- 데이터 분석
+- 분석 시작
+- 분석해줘
+- 분석 해줘
+- 분석 진행
+- analyze
 analysis_result:
-  - 분석 결과
-  - 리포트 다시
-  - 데이터 결과
-  - 분석 리포트
-
-# STEP 1.5-a: 수학 모델 조회 (캐시 반환)
-show_math_model:
-  - 수학 모델 보여줘
-  - 수학모델 보여줘
-  - 모델 결과
-  - 모델 보여줘
-  - 모델 확인
-  - 수학 모델 결과
-  - 수학모델 결과
-
-# STEP 1.5-b: 수학 모델 생성/재생성
-math_model:
-  - 수학 모델 생성
-  - 수학모델 생성
-  - 모델링
-  - 모델 생성
-  - 수식 정의
-  - 변수 정의
-  - 목적함수
-  - 수학 모델
-  - 수학모델
-  - modeling
-  - math model
-  - generate model
-
-# STEP 2: Pre-Decision
-pre_decision:
-  - 시뮬레이션
-  - 솔버 추천
-  - 최적화 설계
-  - 견적
-  - 복잡도 분석
-  - 복잡도
-  - 최적화 계획
-  - 어떤 솔버
-  - run simulation
-  - recommend solver
-
-# STEP 3: 최적화 실행
-execution:
-  - 최적화 실행
-  - 실행해줘
-  - 실행 해줘
-  - 지금 실행
-  - 바로 실행
-  - 실행 시작
-  - 로 돌려줘
-  - 최적화 재실행
-  - start optimization
-  - execute optimization
-  - run optimization
-
-# 결과 재조회: 일반
-show_result:
-  - 결과 보여줘
-  - 결과 다시
-  - 이전 결과
-  - 결과 확인
-  - 다시 보여줘
-  - show result
-
-# 결과 재조회: 솔버
-show_solver:
-  - 솔버 결과
-  - 추천 결과
-  - 시뮬레이션 결과
-  - 솔버 다시
-
-# 결과 재조회: 최적화
-show_opt_result:
-  - 최적화 결과
-  - 최종 결과
-  - 실행 결과
-
-# 특수 명령어
-reset:
-  - 초기화
-  - 리셋
-  - reset
-  - 처음부터
-  - 다시 시작
-
-guide:
-  - 뭘 해야
-  - 다음 단계
-  - 뭐 해야
-  - 어떻게 해
-  - guide
-  - help
-
-# 도메인 변경 트리거
+- 분석 결과
+- 리포트 다시
+- 데이터 결과
+- 분석 리포트
+data_normalization:
+- 데이터 정규화
+- 정규화
+- normalization
+- 데이터 변환
+- 매핑
+- data normalization
 domain_change:
-  - 도메인 변경
-  - 도메인 수정
-  - 도메인을
-  - 도메인이 잘못
-  - 도메인 틀렸
-  - 항공이야
-  - 철도야
-  - 버스야
-  - 물류야
-  - 병원이야
-  - 항공으로
-  - 철도로
-  - 버스로
-  - 물류로
-  - 병원으로
-
-# 도메인 키워드 → 도메인 키 매핑
+- 도메인 변경
+- 도메인 수정
+- 도메인을
+- 도메인이 잘못
+- 도메인 틀렸
+- 항공이야
+- 철도야
+- 버스야
+- 물류야
+- 병원이야
+- 항공으로
+- 철도로
+- 버스로
+- 물류로
+- 병원으로
 domain_keyword_map:
-  항공: aviation
-  비행: aviation
-  flight: aviation
-  철도: railway
-  기차: railway
-  열차: railway
-  ktx: railway
-  srt: railway
-  rail: railway
-  버스: bus
   bus: bus
-  배차: bus
-  물류: logistics
-  택배: logistics
-  배송: logistics
   delivery: logistics
-  간호: hospital
-  병원: hospital
+  dia: railway
+  flight: aviation
+  ktx: railway
   nurse: hospital
+  rail: railway
+  srt: railway
+  간호: hospital
+  교번: railway
+  기차: railway
+  다이아: railway
+  물류: logistics
+  배송: logistics
+  버스: bus
   병동: hospital
+  병원: hospital
+  비행: aviation
+  사업: railway
+  승무: railway
+  열차: railway
+  철도: railway
+  택배: logistics
+  항공: aviation
+  호선: railway
+execution:
+- 최적화 실행
+- 실행해줘
+- 실행 해줘
+- 지금 실행
+- 바로 실행
+- 실행 시작
+- 로 돌려줘
+- 최적화 재실행
+- start optimization
+- execute optimization
+- run optimization
+guide:
+- 뭘 해야
+- 다음 단계
+- 뭐 해야
+- 어떻게 해
+- guide
+- help
+math_model:
+- 수학 모델 생성
+- 수학모델 생성
+- 모델링
+- 모델 생성
+- 수식 정의
+- 변수 정의
+- 목적함수
+- 수학 모델
+- 수학모델
+- modeling
+- math model
+- generate model
+pre_decision:
+- 시뮬레이션
+- 솔버 추천
+- 최적화 설계
+- 견적
+- 복잡도 분석
+- 복잡도
+- 최적화 계획
+- 어떤 솔버
+- run simulation
+- recommend solver
+problem_definition:
+- 문제 정의
+- 문제정의
+- problem definition
+- 문제 유형
+- 어떤 문제
+- 최적화 문제 정의
+- what to optimize
+- 문제를 정의
+reset:
+- 초기화
+- 리셋
+- reset
+- 처음부터
+- 다시 시작
+show_math_model:
+- 수학 모델 보여줘
+- 수학모델 보여줘
+- 모델 결과
+- 모델 보여줘
+- 모델 확인
+- 수학 모델 결과
+- 수학모델 결과
+show_opt_result:
+- 최적화 결과
+- 최종 결과
+- 실행 결과
+show_result:
+- 결과 보여줘
+- 결과 다시
+- 이전 결과
+- 결과 확인
+- 다시 보여줘
+- show result
+show_solver:
+- 솔버 결과
+- 추천 결과
+- 시뮬레이션 결과
+- 솔버 다시
+structural_normalization:
+- 구조 정규화
+- 구조정규화
+- structural normalization
+- Phase 1
+- phase1
+- 구조 변환

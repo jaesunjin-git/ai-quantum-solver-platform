@@ -122,6 +122,7 @@ class DataNormalizationSkill:
                     "needs_review": needs_review,
                 },
                 "agent_status": "normalization_proposed",
+                "auto_next": "confirm_normalization",
             },
             "options": [
                 {"label": "확인", "action": "send", "message": "확인"},
@@ -679,11 +680,9 @@ Each mapping must have: target_table, source_file, source_sheet, transform_type,
                     "results": results,
                     "errors": errors,
                     "agent_status": "normalization_complete",
+                    "auto_next": "math_model",
                 },
-                "options": [
-                    {"label": "수학 모델 생성", "action": "send",
-                     "message": "수학 모델 생성해줘"},
-                ],
+                "options": [],
             }
         else:
             return {

@@ -149,6 +149,13 @@ class CrewAgent:
                     if any(kw in message for kw in confirm_keywords):
                         return await handle_math_model_confirm(self.model, session, project_id, message)
 
+
+                # Guard: PROBLEM_DEFINITION requires structural normalization
+                if quick_intent == 'PROBLEM_DEFINITION' and not session.state.structural_normalization_done:
+                    logger.info(f'[{project_id}] Structural normalization not done - running before problem definition')
+                    await self._execute_skill(session, project_id, 'STRUCTURAL_NORMALIZATION', message, {})
+                    # After auto structural normalization, continue to problem definition
+
                 return await self._execute_skill(session, project_id, quick_intent, message, {})
 
             # ── 2차: LLM 스킬 선택 ──

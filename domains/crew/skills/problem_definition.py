@@ -1247,21 +1247,25 @@ class ProblemDefinitionSkill:
                 "type": "problem_definition",
                 "text": (
                     "**문제 정의가 확정되었습니다.**\n\n"
-                    "다음 단계: 데이터 정규화 (Phase 2)\n"
-                    "데이터를 수학 모델에 맞는 형태로 변환합니다."
+                    "데이터 정규화를 자동으로 진행합니다..."
                 ),
                 "data": {
                     "view_mode": "problem_defined",
                     "confirmed_problem": state.confirmed_problem,
                     "agent_status": "problem_defined",
+                    "auto_next": "data_normalization",
                 },
-                "options": [
-                    {"label": "데이터 정규화 시작", "action": "send", "message": "데이터 정규화 시작"},
-                ],
+                "options": [],
             }
 
+        # ── 제약조건 카테고리 변경 early detection (before modify keyword catch) ──
+        _cat_early = re.search(r'(\w+)\s+(?:를\s*|을\s*)?(?:로\s*)?(hard|soft)(?:로)?(?:\s*변경|\s*전환|\s*바꿔)', message, re.IGNORECASE)
+        if not _cat_early:
+            _cat_early = re.search(r'(?:change|move|switch|set)\s+(\w+)\s+(?:to\s+)?(hard|soft)', message, re.IGNORECASE)
+        _is_category_change = bool(_cat_early and state.problem_definition)
+
         # 수정 요청
-        if any(kw in msg_lower for kw in modify):
+        if not _is_category_change and any(kw in msg_lower for kw in modify):
             return {
                 "type": "problem_definition",
                 "text": (
@@ -1552,16 +1556,22 @@ class ProblemDefinitionSkill:
                 return {
                     "type": "problem_definition",
                     "text": (
-                        f"✅ **{name_ko}** 제약을 **{to_cat.upper()}**로 변경했습니다.\n\n"
-                        f"**확인**을 입력하면 문제 정의가 확정됩니다."
+                        f"\u2705 **{name_ko}** \uc81c\uc57d\uc744 **{to_cat.upper()}**\ub85c \ubcc0\uacbd\ud588\uc2b5\ub2c8\ub2e4.\n\n"
+                        f"\uc544\ub798 \uc81c\uc548\uc744 \ud655\uc778\ud558\uc2dc\uace0, \ucd94\uac00 \uc218\uc815\uc774 \ud544\uc694\ud558\uba74 \uc624\ub978\ucabd \ud328\ub110\uc5d0\uc11c \uc218\uc815\ud574\uc8fc\uc138\uc694."
                     ),
                     "data": {
+                        "view_mode": "problem_definition",
                         "proposal": state.problem_definition,
+                        "hard_constraints": state.problem_definition.get("hard_constraints", {}),
+                        "soft_constraints": state.problem_definition.get("soft_constraints", {}),
+                        "objective": state.problem_definition.get("objective"),
+                        "parameters": state.problem_definition.get("parameters", {}),
                         "agent_status": "category_modified",
                     },
                     "options": [
-                        {"label": "확인", "action": "send", "message": "확인"},
-                        {"label": "추가 수정", "action": "send", "message": "수정"},
+                        {"label": "\ud655\uc778", "action": "send", "message": "\ud655\uc778"},
+                        {"label": "\uc218\uc815", "action": "send", "message": "\uc218\uc815"},
+                        {"label": "\ub2e4\uc2dc \ubd84\uc11d", "action": "send", "message": "\ub2e4\uc2dc \ubd84\uc11d"},
                     ],
                 }
 
