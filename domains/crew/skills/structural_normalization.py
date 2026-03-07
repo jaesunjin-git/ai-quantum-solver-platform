@@ -515,7 +515,67 @@ class ConstraintSemanticMapper:
                             consequence.get("typical_range", []),
                             context_must, context_exclude
                         ))
-        logger.info(f"ConstraintSemanticMapper: {len(self._rules)} rules loaded")
+
+        # ── v3 format: "constraints" unified key ──
+        for dname2 in os.listdir(domains_dir):
+            cpath2 = os.path.join(domains_dir, dname2, "constraints.yaml")
+            if not os.path.isfile(cpath2):
+                continue
+            try:
+                with open(cpath2, "r", encoding="utf-8") as f2:
+                    cdata2 = yaml.safe_load(f2) or {}
+            except Exception:
+                continue
+            if "constraints" not in cdata2:
+                continue
+            # Skip if already processed via hard/soft
+            if cdata2.get("hard") or cdata2.get("soft"):
+                continue
+            for cid, cdef in cdata2["constraints"].items():
+                if not isinstance(cdef, dict):
+                    continue
+                raw_hints = cdef.get("detection_hints") or []
+                if isinstance(raw_hints, list):
+                    hints = raw_hints
+                elif isinstance(raw_hints, dict):
+                    hints = raw_hints.get("ko", [])
+                else:
+                    hints = []
+                if not hints:
+                    continue
+                context_must = cdef.get("context_must", [])
+                context_exclude = cdef.get("context_exclude", [])
+                category = cdef.get("category", "hard")
+                # single param
+                param_id = cdef.get("parameter")
+                typical = cdef.get("typical_range", [])
+                if param_id:
+                    self._rules.append((param_id, hints, "<=", typical, context_must, context_exclude))
+                # parameters list or dict
+                raw_params = cdef.get("parameters") or {}
+                if isinstance(raw_params, list):
+                    for pid in raw_params:
+                        if isinstance(pid, str):
+                            self._rules.append((pid, hints, "<=", typical, context_must, context_exclude))
+                elif isinstance(raw_params, dict):
+                    for pid, pdef in raw_params.items():
+                        if not isinstance(pdef, dict):
+                            self._rules.append((pid, hints, "<=", typical, context_must, context_exclude))
+                            continue
+                        ptypical = pdef.get("typical_range", [])
+                        sub_hints_raw = pdef.get("detection_hints") or []
+                        if isinstance(sub_hints_raw, list):
+                            sub_hints = sub_hints_raw
+                        elif isinstance(sub_hints_raw, dict):
+                            sub_hints = sub_hints_raw.get("ko", [])
+                        else:
+                            sub_hints = []
+                        effective_hints = sub_hints if sub_hints else hints
+                        sub_ctx_must = pdef.get("context_must", context_must)
+                        sub_ctx_exclude = pdef.get("context_exclude", context_exclude)
+                        self._rules.append((pid, effective_hints, "<=", ptypical, sub_ctx_must, sub_ctx_exclude))
+
+                logger.info(f"ConstraintSemanticMapper: {len(self._rules)} rules loaded")
 
     def map_param(self, param_name: str, context: str, value, unit: str = "") -> str:
         """context와 value를 분석하여 가장 적합한 영문 param_id 반환.
@@ -550,22 +610,23 @@ class ConstraintSemanticMapper:
             if score == 0:
                 continue
 
-            # ★ NEW: context_must 체크 – 필수 키워드 중 하나라도 있으면 보너스
+            # context_must: 필수 키워드 중 하나라도 있어야 후보로 인정
             if context_must:
                 must_found = any(kw.lower() in text for kw in context_must)
-                if must_found:
-                    score += 10  # 큰 보너스
-                else:
-                    score = max(1, score // 2)  # 필수 키워드 없으면 점수 감소
+                if not must_found:
+                    continue  # 필수 키워드 없으면 이 규칙 스킵
+                score += 10  # 필수 키워드 매칭 보너스
 
-            # typical_range 내에 있으면 보너스
+            # typical_range 내에 있으면 큰 보너스 (동일 context 구분 핵심)
             if typical_range and len(typical_range) == 2:
                 try:
                     fval = float(value)
                     if typical_range[0] <= fval <= typical_range[1]:
-                        score += 5
+                        score += 20  # 정확히 범위 안 -> 큰 보너스
                     elif typical_range[0] * 0.5 <= fval <= typical_range[1] * 1.5:
-                        score += 2
+                        score += 5   # 근접 범위
+                    else:
+                        score -= 10  # 범위 밖이면 감점
                 except (ValueError, TypeError):
                     pass
 
@@ -847,6 +908,46 @@ class StructuralNormalizationSkill:
                 p["semantic_id"] = original_name
 
         if all_params:
+            # ── 통계/인원 데이터 필터링 ──
+            # param_type이 없고 context도 없는 행 중, param_name이
+            # 제약조건 관련 키워드가 아니면 통계 데이터로 간주하여 제외
+            _constraint_keywords = [
+                "시간", "time", "분", "min", "준비", "정리", "대기",
+                "휴식", "수면", "취침", "출고", "퇴근", "교육",
+            ]
+            filtered_params = []
+            for p in all_params:
+                ptype = p.get("param_type", "")
+                ctx = p.get("context", "")
+                pname = p.get("param_name", "")
+                # param_type이 있거나 context가 있으면 유효 파라미터
+                if ptype or ctx:
+                    filtered_params.append(p)
+                    continue
+                # param_type/context 없어도 이름에 제약조건 키워드 있으면 유지
+                # 단, 값이 HH:MM 형식이거나 "회/명/개" 단위면 통계 데이터
+                _val_str = str(p.get("value", ""))
+                _is_stats_value = (
+                    ":" in _val_str  # HH:MM 형식
+                    or _val_str.endswith("회") or _val_str.endswith("명") or _val_str.endswith("개")
+                )
+                # 이름이 "총 ", "월 ", "연간", "D(", "S(" 로 시작하면 통계
+                _is_stats_name = (
+                    pname.startswith("총 ") or pname.startswith("월 ") or
+                    pname.startswith("연간") or pname.startswith("D(") or
+                    pname.startswith("S(")
+                )
+                if _is_stats_value or _is_stats_name:
+                    logger.info(f"Filtered out stats param (keyword match but stats): {pname}={_val_str}")
+                    continue
+                if any(kw in pname for kw in _constraint_keywords):
+                    filtered_params.append(p)
+                    continue
+                # 그 외는 통계 데이터 -> 제외
+                logger.info(f"Filtered out stats param: {pname}={p.get('value','')} (source={p.get('source','')})")
+            logger.info(f"Parameter filter: {len(all_params)} -> {len(filtered_params)} (removed {len(all_params)-len(filtered_params)} stats)")
+            all_params = filtered_params
+
             params_df = pd.DataFrame(all_params)
             params_df.to_csv(str(phase1_dir / "parameters_raw.csv"), index=False, encoding="utf-8")
             report["parameters_extracted"] = len(params_df)

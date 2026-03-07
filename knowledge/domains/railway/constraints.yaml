@@ -125,6 +125,12 @@ constraints:
       rhs:
         type: constant
         value: 1
+    detection_hints:
+    - 운행 커버
+    - trip coverage
+    - 모든 열차
+    - 배정
+    category: hard
   crew_activation_linking:
     description: crew가 하나라도 트립을 담당하면 활성화
     expression_template: y[j] >= x[i,j]
@@ -145,6 +151,11 @@ constraints:
         indices:
         - i
         - j
+    detection_hints:
+    - 활성화
+    - activation
+    - crew link
+    category: hard
   no_overlap:
     description: 시간 겹치는 트립은 같은 crew에 배정 금지
     expression_template: x[i1,j] + x[i2,j] <= 1
@@ -170,9 +181,16 @@ constraints:
       rhs:
         type: constant
         value: 1
+    detection_hints:
+    - 중복
+    - overlap
+    - 겹침
+    - 동시 배정
+    category: hard
   max_driving_time:
     description: 1사업 최대 운전시간
-    expression_template: sum(trip_duration[i] * x[i,j] for i in I) <= max_driving_minutes * y[j]
+    expression_template: sum(trip_duration[i] * x[i,j] for i in I) <= max_driving_minutes
+      * y[j]
     for_each: j in J
     parameters:
     - max_driving_minutes
@@ -198,9 +216,26 @@ constraints:
           id: y
           indices:
           - j
+    detection_hints:
+    - 운전시간
+    - driving time
+    - 승무시간
+    - 핸들타임
+    - handle time
+    - 최대 운전
+    category: hard
+    context_must:
+    - 이내
+    - 이하
+    - 최대
+    context_exclude: []
+    typical_range:
+    - 340
+    - 420
   avg_driving_time_target:
     description: 사업평균 운전시간 목표
-    expression_template: sum(trip_duration[i] * x[i,j] for i in I) <= avg_driving_target_minutes * y[j]
+    expression_template: sum(trip_duration[i] * x[i,j] for i in I) <= avg_driving_target_minutes
+      * y[j]
     for_each: j in J
     parameters:
     - avg_driving_target_minutes
@@ -208,6 +243,20 @@ constraints:
     fixed_category: false
     penalty_var: slack_avg_driving
     penalty_weight: 10
+    detection_hints:
+    - 평균 운전
+    - avg driving
+    - 평균 핸들
+    - 운전시간 평균
+    - 사업 평균 운전
+    category: soft
+    context_must:
+    - 평균
+    - avg
+    - 넘지 않게
+    typical_range:
+    - 250
+    - 330
   max_work_time:
     description: 1사업 최대 근무시간 (구속시간)
     expression_template: duty_end[j] - duty_start[j] <= max_work_minutes * y[j]
@@ -238,19 +287,50 @@ constraints:
           id: y
           indices:
           - j
+    detection_hints:
+    - 근무시간
+    - work time
+    - 구속시간
+    - duty time
+    - 근무시간 이내
+    category: hard
+    context_must:
+    - 근무
+    - work
+    context_exclude: []
+    typical_range:
+    - 540
+    - 720
   max_wait_time:
     description: 1사업 최대 대기시간
-    expression_template: (duty_end[j] - duty_start[j] - sum(trip_duration[i] * x[i,j] for i in I)) <= max_wait_minutes * y[j]
+    expression_template: (duty_end[j] - duty_start[j] - sum(trip_duration[i] * x[i,j]
+      for i in I)) <= max_wait_minutes * y[j]
     for_each: j in J
     parameters:
     - max_wait_minutes
     default_category: hard
     fixed_category: false
     context_param: max_wait_minutes
+    detection_hints:
+    - 대기시간
+    - wait time
+    - 대기 최대
+    - waiting
+    - 최대 대기
+    category: hard
+    context_must:
+    - 대기
+    - wait
+    context_exclude:
+    - 평균
+    - avg
+    typical_range:
+    - 180
+    - 360
   avg_wait_time_target:
     description: 사업평균 대기시간 목표
-    expression_template: (duty_end[j] - duty_start[j] - sum(trip_duration[i] * x[i,j] for i in I)) <= avg_wait_target_minutes
-      * y[j]
+    expression_template: (duty_end[j] - duty_start[j] - sum(trip_duration[i] * x[i,j]
+      for i in I)) <= avg_wait_target_minutes * y[j]
     for_each: j in J
     parameters:
     - avg_wait_target_minutes
@@ -258,9 +338,23 @@ constraints:
     fixed_category: false
     penalty_var: slack_avg_wait
     penalty_weight: 5
+    detection_hints:
+    - 평균 대기
+    - avg wait
+    - 대기시간 평균
+    - 실대기 시간
+    - 평균 실대기
+    - 인정대기
+    - 인정 대기
+    category: soft
+    context_must:
+    - 평균
+    - avg
+    - 인정
   max_total_stay_time:
     description: 1사업 최대 체재시간
-    expression_template: duty_end[j] - duty_start[j] + preparation_minutes + cleanup_minutes <= max_total_stay_minutes * y[j]
+    expression_template: duty_end[j] - duty_start[j] + preparation_minutes + cleanup_minutes
+      <= max_total_stay_minutes * y[j]
     for_each: j in J
     parameters:
     - max_total_stay_minutes
@@ -271,9 +365,24 @@ constraints:
     penalty_var: slack_total_stay
     penalty_weight: 8
     context_param: max_total_stay_minutes
+    detection_hints:
+    - 체류시간
+    - 체재시간
+    - 총 체재
+    - total stay
+    - 회사 내 체류
+    category: hard
+    context_must:
+    - 체류
+    - 체재
+    - stay
+    typical_range:
+    - 600
+    - 780
   preparation_time:
     description: 승무 전 준비시간
-    expression_template: duty_start[j] <= trip_dep_time[i] - preparation_minutes + big_m * (1 - x[i,j])
+    expression_template: duty_start[j] <= trip_dep_time[i] - preparation_minutes +
+      big_m * (1 - x[i,j])
     for_each: i in I, j in J
     parameters:
     - preparation_minutes
@@ -290,9 +399,20 @@ constraints:
       rhs:
         type: expression
         expr: trip_dep_time[i] - preparation_minutes + big_m * (1 - x[i,j])
+    detection_hints:
+    - 출근
+    - 준비시간
+    - preparation
+    - 사전점검
+    - 출근점호
+    category: hard
+    typical_range:
+    - 20
+    - 60
   cleanup_time:
     description: 승무 후 정리시간
-    expression_template: duty_end[j] >= trip_arr_time[i] + cleanup_minutes - big_m * (1 - x[i,j])
+    expression_template: duty_end[j] >= trip_arr_time[i] + cleanup_minutes - big_m
+      * (1 - x[i,j])
     for_each: i in I, j in J
     parameters:
     - cleanup_minutes
@@ -309,10 +429,18 @@ constraints:
       rhs:
         type: expression
         expr: trip_arr_time[i] + cleanup_minutes - big_m * (1 - x[i,j])
+    detection_hints:
+    - 정리시간
+    - cleanup
+    - 퇴근점호
+    category: hard
+    typical_range:
+    - 20
+    - 60
   mandatory_break:
     description: 필수 휴식시간
-    expression_template: (duty_end[j] - duty_start[j]) - sum(trip_duration[i] * x[i,j] for i in I) >= min_break_minutes *
-      y[j]
+    expression_template: (duty_end[j] - duty_start[j]) - sum(trip_duration[i] * x[i,j]
+      for i in I) >= min_break_minutes * y[j]
     for_each: j in J
     parameters:
     - min_break_minutes
@@ -349,15 +477,39 @@ constraints:
           id: y
           indices:
           - j
+    detection_hints:
+    - 휴식
+    - break
+    - 식사시간
+    - 쉬는 시간
+    - rest
+    category: hard
+    context_exclude:
+    - 식사
+    - meal
+    - 수면
+    - 야간
+    - 취침
   meal_break_guarantee:
     description: 식사시간 보장
-    expression_template: (duty_end[j] - duty_start[j]) - sum(trip_duration[i] * x[i,j] for i in I) >= min_meal_break_minutes
-      * y[j]
+    expression_template: (duty_end[j] - duty_start[j]) - sum(trip_duration[i] * x[i,j]
+      for i in I) >= min_meal_break_minutes * y[j]
     for_each: j in J
     parameters:
     - min_meal_break_minutes
     default_category: hard
     fixed_category: false
+    detection_hints:
+    - 식사 보장
+    - meal break
+    - 식사시간 보장
+    - 점심
+    - 식사 휴식
+    category: hard
+    context_must:
+    - 식사
+    - meal
+    - 점심
   day_duty_start:
     description: 주간 근무 시작 시각 제한
     expression_template: duty_start[j] >= day_duty_start_earliest * (1 - is_night[j])
@@ -366,6 +518,22 @@ constraints:
     - day_duty_start_earliest
     default_category: hard
     fixed_category: false
+    detection_hints:
+    - 주간 출고
+    - 주간 첫 출고
+    - 주간근무 시작
+    - day duty start
+    - 06:20
+    category: hard
+    context_must:
+    - 주간
+    - day
+    context_exclude:
+    - 야간
+    - night
+    typical_range:
+    - 360
+    - 420
   day_duty_end:
     description: 주간 근무 종료 시각 제한
     expression_template: duty_end[j] <= day_duty_end_latest + big_m * is_night[j]
@@ -375,6 +543,24 @@ constraints:
     - big_m
     default_category: hard
     fixed_category: false
+    detection_hints:
+    - 퇴근시간
+    - 최종 퇴근
+    - 주간 종료
+    - day duty end
+    - '23:00'
+    category: hard
+    context_must:
+    - 퇴근
+    - 종료
+    - 이전
+    - end
+    context_exclude:
+    - 야간
+    - night
+    typical_range:
+    - 1320
+    - 1440
   night_duty_start:
     description: 야간 근무 최소 시작 시각 (hard 한계)
     expression_template: duty_start[j] >= night_duty_start_earliest_min * is_night[j]
@@ -384,9 +570,29 @@ constraints:
     default_category: hard
     fixed_category: false
     note: 'hard: 최소 17:00 이후'
+    detection_hints:
+    - 야간 출고
+    - 야간사업 출고
+    - 야간근무 시작
+    - night duty start
+    - 야간 최소
+    - '17:00'
+    category: hard
+    context_must:
+    - 야간
+    - night
+    context_exclude:
+    - 가급적
+    - 권장
+    - 취침
+    - 수면
+    typical_range:
+    - 960
+    - 1140
   night_duty_start_preferred:
     description: 야간 근무 권장 시작 시각
-    expression_template: duty_start[j] >= night_duty_start_earliest * is_night[j] - slack_night_start[j]
+    expression_template: duty_start[j] >= night_duty_start_earliest * is_night[j]
+      - slack_night_start[j]
     for_each: j in J
     parameters:
     - night_duty_start_earliest
@@ -395,6 +601,19 @@ constraints:
     penalty_var: slack_night_start
     penalty_weight: 15
     note: 'soft: 가급적 18:00 이후'
+    detection_hints:
+    - 야간 가급적
+    - 야간 출고 가급적
+    - night preferred
+    - 18:00 이후
+    category: soft
+    context_must:
+    - 가급적
+    - 권장
+    - preferred
+    typical_range:
+    - 1020
+    - 1140
   day_night_classification:
     description: 주간/야간 분류 기준
     expression_template: duty_start[j] >= night_threshold * is_night[j]
@@ -403,24 +622,65 @@ constraints:
     - night_threshold
     default_category: hard
     fixed_category: false
+    detection_hints:
+    - 주간 야간 구분
+    - day night split
+    - 숙박 구분
+    - 주야 분리
+    - 근무 구분
+    category: hard
   night_sleep_guarantee:
     description: 야간 수면시간 보장
-    expression_template: big_m * (1 - is_night[j]) + (duty_end[j] - duty_start[j]) >= min_night_sleep_minutes * is_night[j]
+    expression_template: big_m * (1 - is_night[j]) + (duty_end[j] - duty_start[j])
+      >= min_night_sleep_minutes * is_night[j]
     for_each: j in J
     parameters:
     - min_night_sleep_minutes
     - big_m
     default_category: hard
     fixed_category: false
+    detection_hints:
+    - 취침시간
+    - 수면시간
+    - 수면 보장
+    - 야간 수면
+    - night sleep
+    - 숙면 보장
+    - 취침
+    category: hard
+    context_must:
+    - 취침
+    - 수면
+    - sleep
+    typical_range:
+    - 180
+    - 300
   night_rest:
     description: 야간 휴식시간 확보
-    expression_template: (duty_end[j] - duty_start[j]) - sum(trip_duration[i]*x[i,j] for i in I) >= min_night_rest_minutes
-      * is_night[j]
+    expression_template: (duty_end[j] - duty_start[j]) - sum(trip_duration[i]*x[i,j]
+      for i in I) >= min_night_rest_minutes * is_night[j]
     for_each: j in J
     parameters:
     - min_night_rest_minutes
     default_category: hard
     fixed_category: false
+    detection_hints:
+    - 야간 휴식
+    - night rest
+    - 숙박
+    - 입고
+    - 익일출고
+    - 당일입고
+    - 5시간 20분 확보
+    category: hard
+    context_must:
+    - 입고
+    - 출고
+    - 숙박
+    - 야간 휴식
+    typical_range:
+    - 280
+    - 400
   post_arrival_rest:
     description: 도착 후 휴식시간 확보
     expression_template: post_arrival_rest >= post_arrival_rest_minutes_min
@@ -433,6 +693,22 @@ constraints:
     penalty_var: slack_post_rest
     penalty_weight: 5
     note: 2-3시간 확보 노력 (최소 1시간은 hard)
+    detection_hints:
+    - 강차 후 휴양
+    - 퇴근 후 휴식
+    - post shift rest
+    - 휴양시간
+    - 근무간 휴식
+    category: soft
+    context_must:
+    - 강차
+    - 휴양
+    context_exclude:
+    - 교육
+    - training
+    typical_range:
+    - 60
+    - 240
   post_shift_training:
     description: 퇴근 후 교육시간 확보
     expression_template: post_shift_free_time >= post_arrival_rest_minutes_2
@@ -443,6 +719,18 @@ constraints:
     fixed_category: false
     penalty_var: slack_training
     penalty_weight: 3
+    detection_hints:
+    - 교육
+    - training
+    - 퇴근 후 교육
+    - 강차 후 교육
+    category: soft
+    context_must:
+    - 교육
+    - training
+    typical_range:
+    - 60
+    - 180
   workload_balance:
     description: crew간 트립 배분 균형
     expression_template: sum(x[i,j] for i in I) <= max_trips_per_crew * y[j]
@@ -454,6 +742,12 @@ constraints:
     penalty_var: slack_balance
     penalty_weight: 5
     note: '자동 계산: ceil(|I|/target_crews) + margin'
+    detection_hints:
+    - 균형
+    - balance
+    - 공평
+    - 편차
+    category: soft
 objectives:
   minimize_duties:
     type: minimize
@@ -490,7 +784,8 @@ objectives:
     requires_soft: true
   maximize_efficiency:
     type: maximize
-    expression: sum(trip_duration[i] * x[i,j] for i in I for j in J) / sum(duty_end[j] - duty_start[j] for j in J)
+    expression: sum(trip_duration[i] * x[i,j] for i in I for j in J) / sum(duty_end[j]
+      - duty_start[j] for j in J)
     description: 운전 효율(driving efficiency) 최대화
     description_ko: 운전 효율 최대화
     required_constraints:

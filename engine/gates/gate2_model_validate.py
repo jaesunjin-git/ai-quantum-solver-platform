@@ -678,6 +678,11 @@ def run(math_model: Dict,
                 _pv = _row["value"]
                 _available[_pn] = _pv
                 _available[_pn.lower()] = _pv
+                # Also index by semantic_id for matching
+                _sid = _row.get('semantic_id', '')
+                if _sid:
+                    _available[_sid] = _pv
+                    _available[_sid.lower()] = _pv
 
             # 모델 파라미터에서 id, name 모두 수집하여 매핑 테이블 구축
             _bound_count = 0
