@@ -1,21 +1,41 @@
-﻿# 파이썬 캐시 무시
+﻿# Python
 __pycache__/
 *.py[cod]
+*.pyo
+*.egg-info/
 
-# 환경변수 및 가상환경 무시
+# Environment
 .env
-uploads/
+.env.*
 venv/
+.venv/
 
-# 모든 백업 파일 무시 (*.bak 뒤에 별표를 하나 더 붙여서 날짜 붙은 것도 다 무시)
-*.bak*
+# Uploads
+uploads/
 
-# 맨 앞에 언더바(_)가 붙은 임시 테스트 파이썬 파일 모두 무시
-_*.py
+# Backups
+*.bak
+*.bak.*
+*.bak_*
+_archive/
 
-# 기존에 적어두신 것 (언더바 없는 것도 혹시 모르니 유지)
-check_*.py
-test_*.py
-find_*.py
-show_*.py
-fix_*.py
+# Test scripts
+scripts/*.py
+!scripts/check_bound.py
+!scripts/test_binder.py
+
+# Temp
+_temp_*.py
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
+server_log.txt
