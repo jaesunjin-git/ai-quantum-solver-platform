@@ -43,8 +43,9 @@ def _build_param_alias_map():
                 continue
             with open(cpath, "r", encoding="utf-8") as f:
                 cdata = yaml.safe_load(f) or {}
-            for section in ["hard", "soft"]:
-                for cid, cdef in (cdata.get(section) or {}).items():
+            # constraints.yaml 구조: 최상위 "constraints" 섹션에 모든 제약,
+            # 각 제약 내부에 category: hard/soft 필드로 구분
+            for cid, cdef in (cdata.get("constraints") or {}).items():
                     if not isinstance(cdef, dict):
                         continue
                     _raw_hints = cdef.get("detection_hints") or {}
@@ -1169,7 +1170,13 @@ def run(math_model: Dict,
     logger.info(f"Struct validation: project_id={_struct_project_id}")
 
     # ★ 구조 검증: for_each 누락, param index 누락 자동 교정
-    struct_fixes = _fix_constraint_structure(math_model, corrections, warnings, set_sizes=set_sizes, project_id=_struct_project_id)
+    # 템플릿 기반 모델은 구조가 이미 검증되어 있으므로 struct fix 스킵
+    _skip_struct = math_model.get("metadata", {}).get("skip_struct_fix", False)
+    if _skip_struct:
+        logger.info("Struct validation: SKIPPED (template-based model)")
+        struct_fixes = 0
+    else:
+        struct_fixes = _fix_constraint_structure(math_model, corrections, warnings, set_sizes=set_sizes, project_id=_struct_project_id)
     if struct_fixes > 0:
         corrections['structural_fixes'] = struct_fixes
 

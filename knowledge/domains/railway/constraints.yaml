@@ -85,6 +85,7 @@ variables:
     aliases:
     - duty_end[j]
     - e[d]
+    upper_bound: 1800
   is_night:
     type: binary
     indices:
@@ -787,7 +788,7 @@ constraints:
   night_rest:
     description: 야간 휴식시간 확보
     expression_template: (duty_end[j] - duty_start[j]) - sum(trip_duration[i]*x[i,j]
-      for i in I) >= min_night_rest_minutes * is_night[j]
+      for i in I) >= min_night_rest_total_minutes * is_night[j]
     for_each: j in J
     parameters:
       min_night_rest_total_minutes:

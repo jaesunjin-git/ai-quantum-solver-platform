@@ -106,7 +106,9 @@ class SessionStateDB(Base):
     math_model = Column(Text, nullable=True)           # JSON string
     last_pre_decision_result = Column(Text, nullable=True)  # JSON string
     last_optimization_result = Column(Text, nullable=True)  # JSON string
-    data_facts = Column(Text, nullable=True)                # ★ 추가: JSON string
+    data_facts = Column(Text, nullable=True)                # ★ JSON string
+    solver_selected = Column(String, nullable=True)         # 선택된 솔버 이름/ID
+    pending_param_inputs = Column(Text, nullable=True)      # JSON string: 파라미터 입력 대기 목록
 
     # Problem Definition
     problem_defined = Column(Boolean, default=False)

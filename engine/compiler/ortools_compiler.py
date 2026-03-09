@@ -151,13 +151,13 @@ class ORToolsCompiler(BaseCompiler):
             _has_lhs = "lhs" in con_def
             _has_rhs = "rhs" in con_def
             _has_expr = "expression" in con_def
-            logger.info(f"DEBUG constraint '{cname}': keys={_keys}, has_lhs={_has_lhs}, has_rhs={_has_rhs}, has_expr={_has_expr}")
+            logger.debug(f"DEBUG constraint '{cname}': keys={_keys}, has_lhs={_has_lhs}, has_rhs={_has_rhs}, has_expr={_has_expr}")
             if _has_lhs:
-                logger.info(f"  lhs={json.dumps(con_def['lhs'], ensure_ascii=False, default=str)[:200]}")
+                logger.debug(f"  lhs={json.dumps(con_def['lhs'], ensure_ascii=False, default=str)[:200]}")
             if _has_rhs:
-                logger.info(f"  rhs={json.dumps(con_def['rhs'], ensure_ascii=False, default=str)[:200]}")
+                logger.debug(f"  rhs={json.dumps(con_def['rhs'], ensure_ascii=False, default=str)[:200]}")
             if _has_expr:
-                logger.info(f"  expr={con_def['expression'][:150]}")
+                logger.debug(f"  expr={con_def['expression'][:150]}")
             category = con_def.get("category", con_def.get("priority", "hard"))
             expr = con_def.get("expression", "")
 
@@ -316,6 +316,12 @@ class ORToolsCompiler(BaseCompiler):
 
             try:
                 slack = model.new_int_var(0, MAX_SLACK, slack_name)
+
+                # CP-SAT은 정수만 허용 — float를 int로 변환
+                if isinstance(lhs_val, float):
+                    lhs_val = int(lhs_val)
+                if isinstance(rhs_val, float):
+                    rhs_val = int(rhs_val)
 
                 # 제약 방향에 따라 슬랙 추가 방향 결정
                 #   lhs <= rhs  →  lhs <= rhs + slack  (slack 완화)

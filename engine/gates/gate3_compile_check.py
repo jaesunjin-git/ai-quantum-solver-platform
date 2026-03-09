@@ -83,7 +83,9 @@ def run(compile_result: Dict,
         skipped_soft = 0
         for w in compile_warnings:
             w_str = str(w).lower()
-            if "structured build returned 0" in w_str or "failed" in w_str:
+            # "structured build returned 0" 은 fallback 시도 경고 → 최종 실패 아님
+            # "all parse methods failed" 만 3단계 모두 실패한 진짜 최종 실패
+            if "all parse methods failed" in w_str:
                 failed_constraints += 1
             if "soft" in w_str and "skip" in w_str:
                 skipped_soft += 1

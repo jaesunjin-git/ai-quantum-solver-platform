@@ -32,6 +32,21 @@ from core.version.model_service import create_model_version
 logger = logging.getLogger(__name__)
 
 
+def _build_auto_inform_text(model: dict) -> str:
+    informs = model.get("metadata", {}).get("auto_param_inform", [])
+    if not informs:
+        return ""
+    visible = [i for i in informs if i["param"] != "big_m"]
+    if not visible:
+        return ""
+    lines = ["\nℹ️ **시스템 자동 설정 파라미터:**\n"]
+    for info in visible:
+        lines.append(f"- {info['reason']}\n")
+    lines.append("\n위 값을 변경하시려면 말씀해 주세요.\n\n")
+    return "".join(lines)
+
+
+
 async def skill_math_model(model, session: CrewSession, project_id: str, message: str, params: Dict
 ) -> Dict:
     state = session.state
@@ -171,6 +186,150 @@ async def skill_math_model(model, session: CrewSession, project_id: str, message
         csv_summary = state.csv_summary or ""
         analysis_report = state.last_analysis_report or ""
         domain = state.detected_domain or "generic"
+
+
+        # ═══════════════════════════════════════════════════════════
+        # ★ 경로 분기: 도메인 템플릿 기반 조립 vs LLM 생성
+        # ═══════════════════════════════════════════════════════════
+        from engine.template_model_builder import (
+            load_domain_template, classify_route, build_model_from_template
+        )
+
+        _template = load_domain_template(domain)
+        _confirmed_cc = state.confirmed_constraints or {}
+        _use_template = False
+
+        if _template and _confirmed_cc:
+            _route, _matched, _unmatched = classify_route(_confirmed_cc, _template)
+            logger.info(f"Model generation route: {_route} (matched={len(_matched)}, unmatched={len(_unmatched)})")
+
+            if _route == "A":
+                logger.info("Route A: building model from template (no LLM)")
+                _tmpl_result = build_model_from_template(
+                    template=_template,
+                    confirmed_constraints=_confirmed_cc,
+                    confirmed_problem=state.confirmed_problem or {},
+                    phase1_summary=state.phase1_summary or {},
+                    project_id=project_id,
+                )
+                if _tmpl_result["success"]:
+                    _use_template = True
+                else:
+                    logger.warning(f"Template build failed: {_tmpl_result.get('error')} -> LLM fallback")
+
+            elif _route == "B":
+                logger.info(f"Route B: unmatched {_unmatched} -> LLM fallback")
+
+        if _use_template:
+            model = _tmpl_result["model"]
+            validation = _tmpl_result["validation"]
+
+            # DataBinder + Gate2
+            from engine.compiler.base import DataBinder
+            binder = DataBinder(project_id)
+            binder.load_files()
+            from engine.gates.gate1_data_profile import run as run_gate1
+            data_profile = run_gate1(binder._dataframes)
+            gate2_result = run_gate2(model, data_profile=data_profile, dataframes=binder._dataframes)
+
+            # 템플릿 경로: overlap_pairs 크기 에러는 컴파일에 영향 없으므로 경고로 다운그레이드
+            _real_errors = [
+                e for e in gate2_result.get("errors", [])
+                if "overlap_pairs" not in e
+            ]
+            _downgraded = [
+                e for e in gate2_result.get("errors", [])
+                if "overlap_pairs" in e
+            ]
+            if _downgraded:
+                gate2_result["warnings"].extend([f"(다운그레이드) {e}" for e in _downgraded])
+                gate2_result["errors"] = _real_errors
+                gate2_result["valid"] = len(_real_errors) == 0
+                logger.info(f"Gate2: downgraded {len(_downgraded)} overlap_pairs errors to warnings")
+
+            logger.info(
+                f"Gate2 (template): valid={gate2_result['valid']}, "
+                f"errors={len(gate2_result['errors'])}, warnings={len(gate2_result['warnings'])}"
+            )
+
+            # Gate2 corrections 적용
+            if gate2_result.get("corrections"):
+                model_str = json.dumps(model, ensure_ascii=False)
+                for ckey, cval in gate2_result["corrections"].items():
+                    if isinstance(cval, dict) and cval.get("type") == "column_name_fix":
+                        old_t = '"' + cval["old"] + '"'
+                        new_t = '"' + cval["new"] + '"'
+                        model_str = model_str.replace(old_t, new_t)
+                try:
+                    model = json.loads(model_str)
+                except json.JSONDecodeError:
+                    pass
+
+            # 모델 JSON 저장
+            _model_dir = os.path.join("uploads", str(project_id))
+            os.makedirs(_model_dir, exist_ok=True)
+            with open(os.path.join(_model_dir, "model.json"), "w", encoding="utf-8") as _mf:
+                json.dump(model, _mf, ensure_ascii=False, indent=2)
+
+            # user_input_required 체크
+            need_input_params = [
+                p.get("id", p.get("name", ""))
+                for p in model.get("parameters", [])
+                if p.get("user_input_required")
+                and not p.get("source_file")
+                and not p.get("source_column")
+            ]
+            if need_input_params:
+                state.math_model = model
+                state.pending_param_inputs = need_input_params
+                save_session_state(project_id, state)
+                param_lines = [f"  - **{pn}**" for pn in need_input_params]
+                return {
+                    "type": "param_input",
+                    "text": (
+                        f"📐 수학 모델이 생성되었으나, **{len(need_input_params)}개 파라미터**의 값을 "
+                        f"데이터에서 자동으로 찾을 수 없습니다.\n\n"
+                        + "\n".join(param_lines)
+                    ),
+                    "data": {"view_mode": "param_input", "pending_params": need_input_params, "math_model": model},
+                    "options": [{"label": "🔄 모델 재생성", "action": "send", "message": "수학 모델 다시 생성해줘"}],
+                }
+
+            # Gate2 경고 병합
+            if gate2_result.get("warnings"):
+                validation.setdefault("warnings", []).extend(gate2_result["warnings"])
+            if gate2_result.get("errors"):
+                validation.setdefault("errors", []).extend(gate2_result["errors"])
+
+            # 세션 저장 + 결과 반환
+            state.math_model = model
+            state.math_model_confirmed = False
+            state.last_executed_skill = "MathModelSkill"
+            save_session_state(project_id, state)
+
+            summary = summarize_model(model)
+            meta = model.get("metadata", {})
+
+            return {
+                "type": "analysis",
+                "text": (
+                    f"📐 **수학 모델이 생성되었습니다.** (템플릿 기반)\n\n"
+                    f"추정 변수 수: **{meta.get('estimated_variable_count', '?')}개**\n"
+                    f"추정 제약 수: **{meta.get('estimated_constraint_count', '?')}개**\n\n"
+                    + _build_auto_inform_text(model)
+                    + "오른쪽 패널에서 상세 모델을 확인하고, 맞으면 '모델 확정'을 눌러주세요."
+                ),
+                "data": {
+                    "view_mode": "math_model",
+                    "math_model": model,
+                    "math_model_summary": summary,
+                },
+                "options": [
+                    {"label": "✅ 모델 확정", "action": "send", "message": "수학 모델 확정"},
+                    {"label": "🔄 모델 재생성", "action": "send", "message": "수학 모델 다시 생성해줘"},
+                    {"label": "✏️ 목적함수 변경", "action": "send", "message": "목적함수를 변경하고 싶어요"},
+                ],
+            }
 
         # ★ 재시도 루프: Gate 2 검증 실패 시 최대 3회 재생성
         MAX_RETRIES = 3

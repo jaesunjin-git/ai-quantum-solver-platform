@@ -859,8 +859,9 @@ Each mapping must have: target_table, source_file, source_sheet, transform_type,
                             "trip_id": int(tid) if not isinstance(tid, str) else tid,
                             "direction": "forward",
                             "dep_station": times[0][0], "arr_station": times[-1][0],
-                            "trip_dep_time": times[0][1], "trip_arr_time": times[-1][1],
-                            "trip_duration": times[-1][1] - times[0][1],
+                            "trip_dep_time": times[0][1],
+                            "trip_arr_time": times[-1][1] + 1440 if times[-1][1] < times[0][1] else times[-1][1],
+                            "trip_duration": (times[-1][1] + 1440 if times[-1][1] < times[0][1] else times[-1][1]) - times[0][1],
                             "station_count": len(times),
                         })
             if has_round and rev:
@@ -875,8 +876,9 @@ Each mapping must have: target_table, source_file, source_sheet, transform_type,
                             "trip_id": int(tid_r) if not isinstance(tid_r, str) else tid_r,
                             "direction": "reverse",
                             "dep_station": times[0][0], "arr_station": times[-1][0],
-                            "trip_dep_time": times[0][1], "trip_arr_time": times[-1][1],
-                            "trip_duration": times[-1][1] - times[0][1],
+                            "trip_dep_time": times[0][1],
+                            "trip_arr_time": times[-1][1] + 1440 if times[-1][1] < times[0][1] else times[-1][1],
+                            "trip_duration": (times[-1][1] + 1440 if times[-1][1] < times[0][1] else times[-1][1]) - times[0][1],
                             "station_count": len(times),
                         })
 

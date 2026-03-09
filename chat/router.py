@@ -616,7 +616,7 @@ _pipeline = SolverPipeline()
 
 
 @router.post('/solve')
-async def solve_optimization(request: dict):
+async def solve_optimization(request: dict, db: Session = Depends(get_db)):
     project_id = request.get('project_id')
     solver_id = request.get('solver_id')
     solver_name = request.get('solver_name', '')
@@ -685,6 +685,27 @@ async def solve_optimization(request: dict):
                     logger.warning(f'Failed to save run result: {rve}')
             except Exception as se:
                 logger.warning(f'Failed to save solve result to session: {se}')
+
+            # Save result card to chat history so re-login restores the result view
+            try:
+                result_card = {
+                    'view_mode': 'result',
+                    'solver_id': result.solver_id,
+                    'solver_name': result.solver_name,
+                    **(result.summary or {}),
+                }
+                result_log = ChatHistoryDB(
+                    project_id=int(project_id) if str(project_id).isdigit() else 0,
+                    role='assistant',
+                    message_type='card',
+                    message_text=f'{result.solver_name} 최적화 완료. 결과를 확인하세요.',
+                    card_json=json.dumps(result_card, ensure_ascii=False, default=str),
+                )
+                db.add(result_log)
+                db.commit()
+                logger.info(f'Result card saved to chat history: {project_id}')
+            except Exception as he:
+                logger.warning(f'Failed to save result card to chat history: {he}')
 
             return {
                 'success': True,

@@ -113,6 +113,8 @@ async def process_user_intents(
             project_id=project_id,
             has_file=False,
             current_tab=current_tab,
+            event_type=event_type,
+            event_data=event_data,
         )
         return _finalize_response(result)
 

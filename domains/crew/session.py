@@ -233,9 +233,10 @@ def save_session_state(project_id: str, state: SessionState):
         row.csv_summary = state.csv_summary
         row.last_analysis_report = state.last_analysis_report
         row.math_model = json.dumps(state.math_model, ensure_ascii=False) if state.math_model else None
-        row.pending_param_inputs = json.dumps(state.pending_param_inputs, ensure_ascii=False) if state.pending_param_inputs else None
         row.last_pre_decision_result = json.dumps(state.last_pre_decision_result, ensure_ascii=False) if state.last_pre_decision_result else None
         row.last_optimization_result = json.dumps(state.last_optimization_result, ensure_ascii=False) if state.last_optimization_result else None
+        row.solver_selected = state.solver_selected
+        row.pending_param_inputs = json.dumps(state.pending_param_inputs, ensure_ascii=False) if state.pending_param_inputs else None
 
         # 팩트 데이터
         # Problem Definition
@@ -297,6 +298,8 @@ def load_session_state(project_id: str) -> Optional[SessionState]:
         state.math_model = json.loads(row.math_model) if row.math_model else None
         state.last_pre_decision_result = json.loads(row.last_pre_decision_result) if row.last_pre_decision_result else None
         state.last_optimization_result = json.loads(row.last_optimization_result) if row.last_optimization_result else None
+        state.solver_selected = getattr(row, 'solver_selected', None)
+        state.pending_param_inputs = json.loads(row.pending_param_inputs) if getattr(row, 'pending_param_inputs', None) else None
 
         # 팩트 데이터
         # 팩트 데이터

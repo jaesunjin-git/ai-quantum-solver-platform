@@ -118,6 +118,10 @@ class ProblemDefinitionSkill:
     ) -> Dict:
         state = session.state
 
+        # 구조화된 이벤트 처리 (최우선)
+        if params.get("event_type") == "problem_definition_confirm":
+            return await self._handle_pd_confirm(session, project_id, params.get("event_data", {}))
+
         # 이미 제안을 보냈고 사용자 응답 대기 중
         if state.problem_definition_proposed and not state.problem_defined:
             return await self._handle_user_response(model, session, project_id, message)
@@ -1255,6 +1259,62 @@ class ProblemDefinitionSkill:
             else:
                 parts.append(f"{pname}=???")
         return ", ".join(parts) if parts else "구조적 제약"
+
+    # ──────────────────────────────────────
+    # 패널 확정 이벤트 처리 (problem_definition_confirm)
+    # ──────────────────────────────────────
+    async def _handle_pd_confirm(
+        self, session: CrewSession, project_id: str, event_data: Dict
+    ) -> Dict:
+        state = session.state
+        pd = state.problem_definition
+        if not pd:
+            pd = {}
+
+        constraint_changes = event_data.get("constraint_changes", [])
+
+        # 제약조건 변경 적용
+        changed_lines = []
+        for change in constraint_changes:
+            cname = change.get("name")
+            to_cat = change.get("to")
+            if not cname or not to_cat:
+                continue
+            from_cat = "soft" if to_cat == "hard" else "hard"
+            from_key = f"{from_cat}_constraints"
+            to_key = f"{to_cat}_constraints"
+            if cname in pd.get(from_key, {}):
+                moved = pd[from_key].pop(cname)
+                pd.setdefault(to_key, {})[cname] = moved
+                direction = "Hard → Soft" if to_cat == "soft" else "Soft → Hard"
+                changed_lines.append(f"  - **{cname}**: {direction}")
+
+        # 문제 정의 확정
+        state.problem_definition = pd
+        state.problem_defined = True
+        state.confirmed_problem = pd
+        state.constraints_confirmed = True
+        state.confirmed_constraints = {
+            "hard": pd.get("hard_constraints", {}),
+            "soft": pd.get("soft_constraints", {}),
+        }
+        save_session_state(project_id, state)
+
+        change_text = ""
+        if changed_lines:
+            change_text = f"\n\n**변경된 제약조건 ({len(changed_lines)}개):**\n" + "\n".join(changed_lines)
+
+        return {
+            "type": "problem_definition",
+            "text": f"✅ 문제 정의가 확정되었습니다.{change_text}\n\n데이터 정규화 단계로 진행합니다.",
+            "data": {
+                "view_mode": "problem_defined",
+                "proposal": pd,
+                "confirmed_problem": pd,
+                "auto_next": "data_normalization",
+            },
+            "options": [],
+        }
 
     # ──────────────────────────────────────
     # 사용자 응답 처리

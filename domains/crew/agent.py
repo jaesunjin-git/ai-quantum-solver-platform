@@ -121,9 +121,15 @@ class CrewAgent:
         event_data: Optional[Dict] = None,
         current_tab: Optional[str] = None,
     ) -> Dict[str, Any]:
-            # ── 이벤트 기반 (파일 업로드) ──
+            # ── 이벤트 기반 ──
             if event_type == "file_upload":
                 return await handle_file_upload(session, project_id, event_data)
+
+            if event_type == "problem_definition_confirm":
+                return await skill_problem_definition(
+                    self.model, session, project_id, "",
+                    {"event_type": event_type, "event_data": event_data or {}},
+                )
 
             # ── 1차: 키워드 빠른 우선분류 ──
             quick_intent = InputClassifier.quick_classify(message, has_file=has_file, current_tab=current_tab)
@@ -159,6 +165,19 @@ class CrewAgent:
                 return await self._execute_skill(session, project_id, quick_intent, message, {})
 
             # ── 2차: LLM 스킬 선택 ──
+            # ★ 질문/일반대화는 파이프라인 리다이렉트를 건너뛰고 LLM에게 직접 위임
+            _msg_q = message.lower().strip()
+            _question_markers = [
+                "인가요", "나요", "할까요", "알려줘", "알려주", "설명해",
+                "어떻게", "왜", "무엇", "뭔가요", "뭐가", "어떤", "?",
+                "있나요", "없나요", "되나요", "파악", "궁금",
+            ]
+            _action_markers = ["해줘", "시작", "실행", "생성해", "확정", "추천해", "다시"]
+            if any(m in _msg_q for m in _question_markers) and not any(a in _msg_q for a in _action_markers):
+                logger.info(f"[{project_id}] Question detected — skipping pipeline redirects → LLM")
+                session.history.append({"role": "user", "content": message})
+                return await self._llm_select_and_execute(session, project_id, message, current_tab)
+
             # ★ Phase1: 분석 미완료 시 모델 생성 차단
             if not session.state.analysis_completed:
                 logger.info(f"[{project_id}] Analysis not completed — redirecting to ANALYZE")

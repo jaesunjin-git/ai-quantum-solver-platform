@@ -23,6 +23,32 @@ class BuildContext:
         self.param_map = param_map
         self.set_map = set_map
 
+        # ── 역색인 캐시: set value → index (O(1) 조회용) ──
+        # get_param_indexed에서 list params의 list.index() O(N) 반복을 제거
+        self._set_index_cache: Dict[str, Dict] = {}
+        for _sid, _svals in set_map.items():
+            if isinstance(_svals, (list, tuple)):
+                _cache: Dict = {}
+                for _idx, _v in enumerate(_svals):
+                    _cache[_v] = _idx
+                    _cache[str(_v)] = _idx
+                    try:
+                        _cache[int(_v)] = _idx
+                    except (ValueError, TypeError):
+                        pass
+                self._set_index_cache[_sid] = _cache
+
+        # ── 변수 str-key 캐시: str tuple key → original key (O(1) 조회용) ──
+        # get_var fallback 전체 순회를 제거
+        self._var_str_cache: Dict[str, Dict] = {}
+        for _vname, _vmap in var_map.items():
+            if isinstance(_vmap, dict):
+                _sc: Dict = {}
+                for _k in _vmap:
+                    _sk = tuple(str(x) for x in _k) if isinstance(_k, tuple) else str(_k)
+                    _sc[_sk] = _k
+                self._var_str_cache[_vname] = _sc
+
     def get_set(self, name: str) -> List:
         return self.set_map.get(name, [])
 
@@ -81,59 +107,25 @@ class BuildContext:
                         return result
             return result
         if val is not None:
-            # list/tuple인 경우: key를 set에서 찾아 인덱스로 변환
+            # list/tuple인 경우: 역색인 캐시로 O(1) 조회
             if isinstance(val, (list, tuple)):
-                # 0) key가 set의 원소이면 해당 위치로 변환 (trip_id=3001 -> index=0)
-                for _sid, _svals in self.set_map.items():
-                    if isinstance(_svals, (list, tuple)):
-                        try:
-                            _idx = list(_svals).index(key)
-                            if _idx < len(val):
-                                _r = val[_idx]
-                                if isinstance(_r, (int, float)):
-                                    return int(_r) if isinstance(_r, float) and _r == int(_r) else _r
-                                return _r
-                        except (ValueError, IndexError):
-                            pass
-                # 1) key가 정수 인덱스이고 범위 내이면 직접 사용
-                if isinstance(key, int) and 0 <= key < len(val):
-                    result = val[key]
-                    if isinstance(result, (int, float)):
-                        return int(result) if isinstance(result, float) and result == int(result) else result
-                    return result
-                # 2) set_map에서 key의 위치(순서) 찾기
-                for set_id, set_vals in self.set_map.items():
-                    if isinstance(set_vals, (list, tuple)):
-                        try:
-                            idx = list(set_vals).index(key)
-                            if idx < len(val):
-                                result = val[idx]
-                                if isinstance(result, (int, float)):
-                                    return int(result) if isinstance(result, float) and result == int(result) else result
-                                return result
-                        except (ValueError, IndexError):
-                            # 타입 변환 후 재시도 (str->int 또는 int->str)
-                            try:
-                                converted_key = int(key) if isinstance(key, str) else str(key)
-                                idx = list(set_vals).index(converted_key)
-                                if idx < len(val):
-                                    result = val[idx]
-                                    if isinstance(result, (int, float)):
-                                        return int(result) if isinstance(result, float) and result == int(result) else result
-                                    return result
-                            except (ValueError, IndexError, TypeError):
-                                continue
-                # 3) key를 int로 변환 시도
+                # 캐시에서 key → index 탐색 (O(1))
+                _str_key = str(key)
+                for _sid, _idx_cache in self._set_index_cache.items():
+                    _idx = _idx_cache.get(key)
+                    if _idx is None:
+                        _idx = _idx_cache.get(_str_key)
+                    if _idx is not None and _idx < len(val):
+                        _r = val[_idx]
+                        return int(_r) if isinstance(_r, float) and _r == int(_r) else _r
+                # fallback: 직접 정수 인덱스
                 try:
                     int_key = int(key)
                     if 0 <= int_key < len(val):
                         result = val[int_key]
-                        if isinstance(result, (int, float)):
-                            return int(result) if isinstance(result, float) and result == int(result) else result
-                        return result
+                        return int(result) if isinstance(result, float) and result == int(result) else result
                 except (ValueError, TypeError):
                     pass
-                # 4) 매핑 실패 — 배열 길이와 set 크기가 다른 경우 0 반환
                 logger.warning(
                     f"Parameter '{name}': array len={len(val)}, "
                     f"key={key} not mappable to index"
@@ -156,49 +148,90 @@ class BuildContext:
             return 0
         if key in vmap:
             return vmap[key]
-        str_key = str(key) if not isinstance(key, tuple) else tuple(str(k) for k in key)
+        str_key = tuple(str(k) for k in key) if isinstance(key, tuple) else str(key)
         if str_key in vmap:
             return vmap[str_key]
-        for vk in vmap:
-            vk_t = vk if isinstance(vk, tuple) else (vk,)
-            key_t = key if isinstance(key, tuple) else (key,)
-            if len(vk_t) == len(key_t) and all(str(a) == str(b) for a, b in zip(vk_t, key_t)):
-                return vmap[vk]
+        # str-key 캐시로 O(1) 조회 (기존 전체 순회 대체)
+        _sc = self._var_str_cache.get(name)
+        if _sc:
+            orig = _sc.get(str_key)
+            if orig is not None:
+                return vmap[orig]
         return 0
 
 
 def parse_for_each(for_each: str, ctx: BuildContext) -> List[Dict[str, Any]]:
-    """for_each 문자열을 파싱하여 인덱스 바인딩 리스트 반환"""
+    """for_each 문자열을 파싱하여 인덱스 바인딩 리스트 반환.
+    단일 변수: 'i in I'
+    튜플 변수: '(i1, i2) in overlap_pairs'  ← 괄호 안 쉼표를 구분자로 오인하지 않도록 처리.
+    """
     if not for_each or not for_each.strip():
         return [{}]
 
     text = for_each.strip()
     text = re.sub(r'\bfor\b', '', text).strip()
-    parts = re.split(r'\s*,\s*', text)
+
+    # 괄호 깊이를 추적하여 분리 (튜플 이터레이터의 내부 쉼표 보호)
+    segments = []
+    buf = ''
+    paren_depth = 0
+    for ch in text + ',':
+        if ch == '(':
+            paren_depth += 1
+            buf += ch
+        elif ch == ')':
+            paren_depth -= 1
+            buf += ch
+        elif ch == ',' and paren_depth == 0:
+            if buf.strip():
+                segments.append(buf.strip())
+            buf = ''
+        else:
+            buf += ch
 
     loop_specs = []
-    for part in parts:
-        part = part.strip()
-        if not part:
-            continue
-        m = re.match(r'(\w+)\s+in\s+(\w+)', part)
+    for segment in segments:
+        # 튜플 형태: (i1, i2) in set_name
+        m = re.match(r'\(([^)]+)\)\s+in\s+(\w+)', segment)
         if m:
-            idx_name = m.group(1)
+            var_names = [v.strip() for v in m.group(1).split(',')]
             set_name = m.group(2)
             values = ctx.get_set(set_name)
             if not values:
                 logger.warning(f"Set '{set_name}' not found or empty")
-            loop_specs.append((idx_name, values))
+            loop_specs.append(('tuple', var_names, values))
+            continue
+        # 단일 형태: i in I
+        m = re.match(r'(\w+)\s+in\s+(\w+)', segment)
+        if m:
+            set_name = m.group(2)
+            values = ctx.get_set(set_name)
+            if not values:
+                logger.warning(f"Set '{set_name}' not found or empty")
+            loop_specs.append(('single', m.group(1), values))
 
     if not loop_specs:
         return [{}]
 
     result = [{}]
-    for idx_name, values in loop_specs:
+    for spec in loop_specs:
         new_result = []
-        for binding in result:
-            for val in values:
-                new_result.append({**binding, idx_name: val})
+        if spec[0] == 'tuple':
+            _, var_names, values = spec
+            for binding in result:
+                for val in values:
+                    nb = dict(binding)
+                    if isinstance(val, (list, tuple)):
+                        for vn, vv in zip(var_names, val):
+                            nb[vn] = vv
+                    else:
+                        nb[var_names[0]] = val
+                    new_result.append(nb)
+        else:
+            _, idx_name, values = spec
+            for binding in result:
+                for val in values:
+                    new_result.append({**binding, idx_name: val})
         result = new_result
     return result
 
@@ -324,6 +357,89 @@ def eval_node(node: Any, binding: Dict[str, Any], ctx: BuildContext) -> Any:
             return left - right
         return 0
 
+    # ── 'type:' 기반 형식 처리 (model.json이 사용하는 포맷) ──
+    if 'type' in node:
+        node_type = node['type']
+
+        if node_type == 'constant':
+            return node.get('value', 0)
+
+        elif node_type in ('variable', 'var'):
+            name = node.get('id', node.get('name', ''))
+            indices = node.get('indices', [])
+            if not indices:
+                vmap = ctx.var_map.get(name)
+                return vmap if (vmap is not None and not isinstance(vmap, dict)) else 0
+            key = resolve_index(indices, binding)
+            return ctx.get_var(name, key[0] if len(key) == 1 else key)
+
+        elif node_type in ('parameter', 'param'):
+            name = node.get('id', node.get('name', ''))
+            indices = node.get('indices', [])
+            if not indices:
+                val = ctx.get_param_scalar(name)
+                return val if val is not None else 0
+            key = resolve_index(indices, binding)
+            return ctx.get_param_indexed(name, key[0] if len(key) == 1 else key)
+
+        elif node_type == 'sum':
+            if 'terms' in node:
+                # 명시적 terms 리스트 합산
+                result = None
+                for term in node['terms']:
+                    tv = eval_node(term, binding, ctx)
+                    result = tv if result is None else result + tv
+                return result if result is not None else 0
+            elif 'variable' in node:
+                # {"type":"sum","variable":"x","sum_over":"j","indices":["i","j"],"coefficient":"trip_duration[i]"}
+                var_name = node['variable']
+                indices = node.get('indices', [])
+                sum_over_var = node.get('sum_over', '')
+                coeff_str = node.get('coefficient', '')
+                # sum_over_var (예: "j") → 대문자 set 이름 "J"
+                set_name = sum_over_var.upper() if sum_over_var else ''
+                set_vals = ctx.get_set(set_name)
+                if not set_vals:
+                    return 0
+                result = None
+                for sv in set_vals:
+                    local_binding = {**binding, sum_over_var: sv}
+                    key = resolve_index(indices, local_binding)
+                    vv = ctx.get_var(var_name, key[0] if len(key) == 1 else key)
+                    if coeff_str:
+                        from engine.compiler.expression_parser import _eval_expr as _ep_eval
+                        coeff_val = _ep_eval(coeff_str, local_binding, ctx, ctx.var_map, None)
+                        term = coeff_val * vv
+                    else:
+                        term = vv
+                    result = term if result is None else result + term
+                return result if result is not None else 0
+
+        elif node_type == 'product':
+            terms = node.get('terms', [])
+            if not terms:
+                return 0
+            result = eval_node(terms[0], binding, ctx)
+            for term in terms[1:]:
+                result = result * eval_node(term, binding, ctx)
+            return result
+
+        elif node_type == 'subtract':
+            terms = node.get('terms', [])
+            if len(terms) < 2:
+                return 0
+            result = eval_node(terms[0], binding, ctx)
+            for term in terms[1:]:
+                result = result - eval_node(term, binding, ctx)
+            return result
+
+        elif node_type == 'expression':
+            expr_str = node.get('expr', node.get('expression', ''))
+            if expr_str:
+                from engine.compiler.expression_parser import _eval_expr as _ep_eval
+                return _ep_eval(expr_str, binding, ctx, ctx.var_map, None)
+            return 0
+
     logger.warning(f"Unknown node type: {list(node.keys())}")
     return 0
 
@@ -386,11 +502,14 @@ def eval_sum_node(sum_info: Dict, binding: Dict[str, Any], ctx: BuildContext) ->
 def build_constraint(
     con_def: Dict,
     ctx: BuildContext,
+    max_instances: int = 0,
 ) -> List[Tuple[Any, str, Any]]:
     """
     구조화된 제약 JSON -> (lhs_expr, operator, rhs_expr) 리스트.
     for_each가 있으면 바인딩별로 여러 제약 생성.
-    
+
+    max_instances > 0이면 바인딩 생성 후 해당 수만큼만 평가 (예산 초과 방지).
+
     반환: [(lhs, op, rhs), ...] 또는 빈 리스트 (파싱 실패 시)
     """
     lhs_node = con_def.get('lhs')
@@ -434,6 +553,12 @@ def build_constraint(
 
     # ── 기본 경로: 기존 for_each 파싱 ──
     bindings = parse_for_each(for_each, ctx)
+    # max_instances 제한: 바인딩 생성 후 즉시 잘라냄 (eval_node 비용 절감)
+    if max_instances > 0 and len(bindings) > max_instances:
+        logger.warning(
+            f"build_constraint: {len(bindings)} bindings truncated to {max_instances} (max_instances)"
+        )
+        bindings = bindings[:max_instances]
     constraints = []
 
     for binding in bindings:

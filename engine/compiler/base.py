@@ -370,6 +370,24 @@ class DataBinder:
                         if param_def.get("value") is not None:
                             return param_def["value"]
                         return None
+                # key_column이 있으면 {key: value} dict로 반환 (indexed 파라미터)
+                key_col = param_def.get("key_column", "")
+                if key_col and key_col in df.columns:
+                    pid = param_def.get("id", "")
+                    result_dict = {}
+                    for _, row in df.iterrows():
+                        k = row[key_col]
+                        v = row[source_col]
+                        import math as _math
+                        if v is None or (isinstance(v, float) and _math.isnan(v)):
+                            continue
+                        if isinstance(v, float) and v == int(v):
+                            v = int(v)
+                        result_dict[k] = v
+                        result_dict[str(k)] = v  # 문자열 키도 동시 등록
+                    _logger.info(f"Parameter {pid!r}: {len(result_dict)//2} indexed values from {source_file}::{source_col} (key={key_col})")
+                    return result_dict
+
                 # param_name 컬럼이 있으면 파라미터 id로 필터링하여 스칼라 반환
                 if "param_name" in df.columns and source_col == "value":
                     pid = param_def.get("id", "")
@@ -461,6 +479,43 @@ class DataBinder:
             values = self._convert_time_values(values)
             bound["parameters"][pid] = values
 
+        # ── Parameter alias: expression에서 사용하는 일반 이름에 대한 fallback 매핑 ──
+        import re as _re
+        _known_non_params = {"x", "y", "duty_start", "duty_end", "is_night",
+                             "i", "j", "i1", "i2", "for", "in", "sum", "if", "else",
+                             "and", "or", "not", "trip_duration", "trip_dep_time", "trip_arr_time"}
+        _expr_params = set()
+        for _c in math_model.get("constraints", []):
+            _expr = _c.get("expression", "") or _c.get("expression_template", "") or ""
+            _words = set(_re.findall(r'[a-z][a-z_]+[a-z]', _expr))
+            _expr_params.update(_words - _known_non_params)
+
+        for _name in _expr_params:
+            if _name in bound["parameters"] and bound["parameters"][_name] is not None:
+                continue
+            # prefix match: cleanup_minutes -> cleanup_minutes_arrival
+            _candidates = {k: v for k, v in bound["parameters"].items()
+                           if k.startswith(_name + "_") and v is not None
+                           and not isinstance(v, (dict, list, tuple))}
+            if _candidates:
+                _best = max(_candidates, key=lambda k: float(_candidates[k]) if _candidates[k] is not None else 0)
+                bound["parameters"][_name] = _candidates[_best]
+                logger.info(f"Param alias (prefix): '{_name}' -> '{_best}' = {_candidates[_best]}")
+                continue
+            # token overlap match: min_night_rest_minutes -> min_night_rest_total_minutes
+            _name_tokens = set(_name.split("_"))
+            _best_key, _best_score, _best_val = None, 0, None
+            for _k, _v in bound["parameters"].items():
+                if _v is None or isinstance(_v, (dict, list, tuple)):
+                    continue
+                _k_tokens = set(_k.split("_"))
+                _overlap = len(_name_tokens & _k_tokens)
+                if _overlap > _best_score and _overlap >= min(3, len(_name_tokens)):
+                    _best_score, _best_key, _best_val = _overlap, _k, _v
+            if _best_key:
+                bound["parameters"][_name] = _best_val
+                logger.info(f"Param alias (token): '{_name}' -> '{_best_key}' = {_best_val}")
+
         # Sets 바인딩 (자동 range 보정 포함)
         for s in math_model.get("sets", []):
             sid = s.get("id", "")
@@ -540,6 +595,41 @@ class DataBinder:
             values = self._convert_time_values(values)
             bound["parameters"][pname] = values
             logger.info(f"Auto-bind: {pname!r} <- {sf}::{sc} ({len(values)} values)")
+
+        # ── Trip 인덱스 데이터 자동 주입 ──
+        # preparation_time, cleanup_time, max_driving_time 등의 표현식에서
+        # trip_dep_time[i], trip_arr_time[i], trip_duration[i]를 계수로 사용.
+        # model.json의 parameters에 없으면 expression_parser가 0을 반환하여
+        # duty_start[j] <= -prep_minutes → INFEASIBLE 발생.
+        # 구모델 호환을 위해 항상 trips.csv에서 자동 로드(없는 경우에만).
+        _TRIP_INDEX_PARAMS = {
+            "trip_dep_time": "trip_dep_time",
+            "trip_arr_time": "trip_arr_time",
+            "trip_duration": "trip_duration",
+        }
+        _trips_df = None
+        for _tp_id, _tp_col in _TRIP_INDEX_PARAMS.items():
+            if bound["parameters"].get(_tp_id) is not None:
+                continue  # 이미 바인딩됨
+            # trips.csv 로드 (한 번만)
+            if _trips_df is None:
+                _trips_df = self.get_dataframe("normalized/trips.csv")
+            if _trips_df is None or "trip_id" not in _trips_df.columns or _tp_col not in _trips_df.columns:
+                logger.warning(f"Trip auto-inject: cannot load '{_tp_id}' (trips.csv missing or no trip_id column)")
+                continue
+            import math as _math
+            _result = {}
+            for _, _row in _trips_df.iterrows():
+                _k = _row["trip_id"]
+                _v = _row[_tp_col]
+                if _v is None or (isinstance(_v, float) and _math.isnan(_v)):
+                    continue
+                if isinstance(_v, float) and _v == int(_v):
+                    _v = int(_v)
+                _result[_k] = _v
+                _result[str(_k)] = _v
+            bound["parameters"][_tp_id] = _result
+            logger.info(f"Trip auto-inject: '{_tp_id}' loaded {len(_result)//2} values from trips.csv")
 
         return bound
 
