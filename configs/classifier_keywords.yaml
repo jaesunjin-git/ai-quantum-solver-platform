@@ -79,17 +79,12 @@ guide:
 - guide
 - help
 math_model:
+# ★ 반드시 행동동사(action_verbs)와 함께 있어야 Action으로 처리됨
+# 명사 단독으로는 LLM에게 위임 (질문일 수도 있으므로)
 - 수학 모델 생성
 - 수학모델 생성
-- 모델링
-- 모델 생성
-- 수식 정의
-- 변수 정의
-- 목적함수
-- 수학 모델
-- 수학모델
-- modeling
-- math model
+- 모델 생성해
+- 수식 생성
 - generate model
 pre_decision:
 - 시뮬레이션
@@ -148,3 +143,180 @@ structural_normalization:
 - Phase 1
 - phase1
 - 구조 변환
+
+# ============================================================
+# Intent 분류 제어 설정 (하드코딩 대체)
+# ============================================================
+
+# 질문 어미 패턴: 이 중 하나라도 포함되면 질문으로 간주 → LLM 위임
+# catch_all: 메시지가 이 문자로 끝나면 무조건 질문으로 처리
+question_patterns:
+  endings:
+    - 인가요
+    - 인가요?
+    - 뭔가요
+    - 뭔가요?
+    - 건가요
+    - 건가요?
+    - 나요
+    - 나요?
+    - 하나요
+    - 하나요?
+    - 한가요
+    - 한가요?
+    - 가능한가요
+    - 가능한가요?
+    - 할까요
+    - 할까요?
+    - 을까요
+    - 을까요?
+    - 는지요
+    - 는건지
+    - 어떤가요
+    - 어떤가요?
+    - 있을까요
+    - 있을까요?
+    - 인지요
+    - 어떻게
+    - 왜
+    - 무엇
+    - 뭐가
+    - 뭘
+    - 알려주세요
+    - 알려줘
+    - 설명해주세요
+    - 설명해줘
+    - 설명가능
+    - 파악되나요
+    - 되나요
+    - 있나요
+    - 없나요
+    - 알고싶어요
+    - 알고싶습니다
+    - 궁금합니다
+    - 궁금해요
+    - 궁금한데
+    - 말해줘
+    - 말해주세요
+  catch_all_suffix: "?"
+  # 질문 패턴이 있어도 이 단어가 함께 있으면 Action으로 처리
+  action_overrides:
+    - 해줘
+    - 해주세요
+    - 시작
+    - 실행
+    - 생성해
+    - 확정
+    - 추천해
+    - 바꿔줘
+    - 수정해줘
+    - 다시 생성
+
+# _run_inner question guard: LLM 위임 전 파이프라인 강제 리다이렉트 건너뛰기
+question_guard:
+  markers:
+    - 인가요
+    - 나요
+    - 하나요
+    - 한가요
+    - 할까요
+    - 가능한가요
+    - 알려줘
+    - 알려주
+    - 설명해
+    - 설명가능
+    - 어떻게
+    - 왜
+    - 무엇
+    - 뭔가요
+    - 뭐가
+    - 어떤
+    - "?"
+    - 있나요
+    - 없나요
+    - 되나요
+    - 파악
+    - 궁금
+    - 알고싶
+    - 말해줘
+  action_overrides:
+    - 해줘
+    - 시작
+    - 실행
+    - 생성해
+    - 확정
+    - 추천해
+    - 다시
+
+# Tab-context 기반 키워드 매핑 (classifier.py 하드코딩 대체)
+# intent: 해당 탭에서 action_verbs와 함께 쓰일 때 실행할 intent
+tab_keyword_map:
+  analysis:
+    keywords:
+      - 분석
+      - 데이터 분석
+      - 리포트
+      - analyze
+    intent: ANALYZE
+  structural_normalization:
+    keywords:
+      - 구조 정규화
+      - 구조정규화
+      - structural normalization
+      - phase 1
+      - 구조 변환
+    intent: STRUCTURAL_NORMALIZATION
+  data_normalization:
+    keywords:
+      - 데이터 정규화
+      - 정규화
+      - normalization
+      - 데이터 변환
+      - 매핑
+    intent: DATA_NORMALIZATION
+  problem_definition:
+    keywords:
+      - 문제 정의
+      - 문제정의
+      - problem definition
+    intent: PROBLEM_DEFINITION
+  math_model:
+    keywords:
+      - 수학 모델
+      - 수학모델
+      - 모델링
+      - 목적함수
+      - 제약조건
+      - 변수
+      - 수식
+    intent: MATH_MODEL
+  solver:
+    keywords:
+      - 솔버
+      - solver
+      - 추천
+      - 컴파일
+    intent: PRE_DECISION
+  result:
+    keywords:
+      - 결과
+      - 실행
+      - 최적화
+    intent: START_OPTIMIZATION
+
+# Tab-context 및 keyword+verb 매칭 시 사용할 행동동사 목록
+action_verbs:
+  - 해줘
+  - 해주세요
+  - 시작
+  - 실행
+  - 생성
+  - 바꿔
+  - 변경
+  - 수정
+  - 다시
+  - 재생성
+  - 만들어줘
+  - 만들어주세요
+  - 진행해줘
+  - 진행해주세요

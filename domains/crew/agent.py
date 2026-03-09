@@ -91,6 +91,21 @@ class CrewAgent:
             logger.warning("system.md not found")
             return "You are a crew scheduling optimization assistant."
 
+    def _load_skill_selection_prompt(self) -> str:
+        path = Path(__file__).parents[2] / "prompts" / "skill_selection.md"
+        try:
+            return path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            logger.warning("skill_selection.md not found, using inline fallback")
+            return (
+                "{state_block}\n{action_history}\n[USER MESSAGE]\n{message}\n\n"
+                "[CURRENT TAB] {current_tab}\n\n"
+                "사용 가능한 Skill: AnalyzeDataSkill, MathModelSkill, PreDecisionSkill, "
+                "StartOptimizationSkill, ShowResultSkill, AnswerQuestionSkill, GeneralReplySkill\n\n"
+                "질문형 메시지는 반드시 AnswerQuestionSkill을 선택하세요.\n"
+                "JSON만 출력: {{\"skill\": \"스킬명\", \"parameters\": {{}}}}"
+            )
+
     # ----------------------------------------------------------
     # 메인 라우터
     # ----------------------------------------------------------
@@ -155,25 +170,36 @@ class CrewAgent:
                     if any(kw in message for kw in confirm_keywords):
                         return await handle_math_model_confirm(self.model, session, project_id, message)
 
+                # ★ Action 스킬에 대해서도 질문 패턴이면 LLM으로 위임
+                # (quick_classify가 내용 키워드로 잘못 분류했을 경우 보정)
+                _action_intents = {
+                    "MATH_MODEL", "ANALYZE", "PRE_DECISION", "START_OPTIMIZATION",
+                    "PROBLEM_DEFINITION", "DATA_NORMALIZATION", "STRUCTURAL_NORMALIZATION",
+                }
+                if quick_intent in _action_intents:
+                    _qmarkers, _amarkers = InputClassifier.get_question_guard_config()
+                    _msg_q = message.lower().strip()
+                    if (any(m in _msg_q for m in _qmarkers)
+                            and not any(a in _msg_q for a in _amarkers)):
+                        logger.info(
+                            f"[{project_id}] Question override: quick_intent={quick_intent} → LLM"
+                        )
+                        return await self._llm_select_and_execute(session, project_id, message, current_tab)
 
                 # Guard: PROBLEM_DEFINITION requires structural normalization
                 if quick_intent == 'PROBLEM_DEFINITION' and not session.state.structural_normalization_done:
                     logger.info(f'[{project_id}] Structural normalization not done - running before problem definition')
                     await self._execute_skill(session, project_id, 'STRUCTURAL_NORMALIZATION', message, {})
-                    # After auto structural normalization, continue to problem definition
 
                 return await self._execute_skill(session, project_id, quick_intent, message, {})
 
             # ── 2차: LLM 스킬 선택 ──
             # ★ 질문/일반대화는 파이프라인 리다이렉트를 건너뛰고 LLM에게 직접 위임
+            # 패턴은 configs/classifier_keywords.yaml의 question_guard 섹션에서 로드
+            _qmarkers, _amarkers = InputClassifier.get_question_guard_config()
             _msg_q = message.lower().strip()
-            _question_markers = [
-                "인가요", "나요", "할까요", "알려줘", "알려주", "설명해",
-                "어떻게", "왜", "무엇", "뭔가요", "뭐가", "어떤", "?",
-                "있나요", "없나요", "되나요", "파악", "궁금",
-            ]
-            _action_markers = ["해줘", "시작", "실행", "생성해", "확정", "추천해", "다시"]
-            if any(m in _msg_q for m in _question_markers) and not any(a in _msg_q for a in _action_markers):
+            if (any(m in _msg_q for m in _qmarkers)
+                    and not any(a in _msg_q for a in _amarkers)):
                 logger.info(f"[{project_id}] Question detected — skipping pipeline redirects → LLM")
                 session.history.append({"role": "user", "content": message})
                 return await self._llm_select_and_execute(session, project_id, message, current_tab)
@@ -219,38 +245,17 @@ class CrewAgent:
             # 작업 이력 요약 생성
             action_history = self._build_action_history(session)
 
-            prompt = (
-                f"{state.to_state_block()}\n"
-                f"{action_history}\n"
-                f"[USER MESSAGE]\n{message}\n\n"
-                f"[CURRENT TAB] {current_tab or 'none'}\n"
-                f"(사용자가 현재 보고 있는 화면. 모호한 요청 해석 시 참고)\n\n"
-                f"[INSTRUCTIONS]\n"
-                f"위 상태와 사용자 메시지를 분석하여, 아래 Skill 중 하나를 선택하고 반드시 JSON으로만 응답하세요.\n\n"
-                f"사용 가능한 Skill 목록:\n"
-                f"- AnalyzeDataSkill: 데이터 분석 (재분석 포함)\n"
-                f"- MathModelSkill: 수학 모델 생성/재생성/수정\n"
-                f"- PreDecisionSkill: 솔버 추천/시뮬레이션\n"
-                f"- StartOptimizationSkill: 최적화 실행/재실행\n"
-                f"- ShowResultSkill: 이전 결과 재확인\n"
-                f"- AnswerQuestionSkill: 질문 답변 (데이터, 모델, 결과, 도메인 지식 등)\n"
-                f"- GeneralReplySkill: 일반 대화/인사/기타\n\n"
-                f"[파라미터 추출 규칙]\n"
-                f"사용자 메시지에서 핵심 정보를 구조화된 파라미터로 추출하세요:\n"
-                f"- MathModelSkill: user_objective(목적함수 변경 시), modify_constraints(제약조건 수정 시), regenerate(true/false)\n"
-                f"- StartOptimizationSkill: solver_preference(선호 솔버), rerun(재실행 여부)\n"
-                f"- AnswerQuestionSkill: query(질문 원문), about(질문 대상: model/result/data/domain/general)\n"
-                f"- AnalyzeDataSkill: reanalyze(재분석 여부), focus(특정 관점)\n\n"
-                f"[스킬 선택 기준]\n"
-                f"- 명확한 실행 요청(~해줘, ~시작, ~바꿔줘) -> 해당 Action 스킬\n"
-                f"- 질문형(~인가요?, 왜~?, ~알려줘) -> AnswerQuestionSkill\n"
-                f"- 모호한 경우: 질문이면 AnswerQuestionSkill, 실행이면 해당 Action 스킬\n\n"
-                f"응답 형식 (JSON만 출력, 다른 텍스트 금지):\n"
-                f'{{"skill": "스킬명", "parameters": {{"key": "value"}}}}\n\n'
-                f"예시:\n"
-                f'- 사용자가 질문하면: {{"skill": "AnswerQuestionSkill", "parameters": {{"query": "변수수는 어떻게 나오나요?"}}}}\n'
-                f'- 분석 요청: {{"skill": "AnalyzeDataSkill", "parameters": {{}}}}\n'
-                f'- 수학 모델 요청: {{"skill": "MathModelSkill", "parameters": {{}}}}\n'
+            # 현재 파이프라인 단계 계산
+            pipeline_phase = self._get_pipeline_phase(state)
+
+            # prompts/skill_selection.md 로드 후 변수 치환
+            prompt_template = self._load_skill_selection_prompt()
+            prompt = prompt_template.format(
+                state_block=state.to_state_block(),
+                action_history=action_history,
+                message=message,
+                current_tab=current_tab or "none",
+                pipeline_phase=pipeline_phase,
             )
 
             response = await asyncio.to_thread(
@@ -349,6 +354,29 @@ class CrewAgent:
             action_lines = action_lines[:1] + action_lines[-10:]
 
         return "\n".join(action_lines)
+
+    # ----------------------------------------------------------
+    # 현재 파이프라인 단계 텍스트 생성
+    # ----------------------------------------------------------
+    def _get_pipeline_phase(self, state: SessionState) -> str:
+        """현재 파이프라인 단계를 사람이 읽기 쉬운 문자열로 반환"""
+        if not state.file_uploaded:
+            return "Phase 0: 파일 미업로드 — 데이터 파일 업로드 대기 중"
+        if not state.analysis_completed:
+            return "Phase 1: 데이터 분석 단계 — 파일은 업로드되었으나 분석 미완료"
+        if not state.structural_normalization_done:
+            return "Phase 1.5: 구조 정규화 단계 — 분석 완료, 구조 정규화 진행 중"
+        if not state.problem_defined:
+            return "Phase 1.7: 문제 정의 단계 — 최적화 문제 유형/목적함수/제약조건 정의 중"
+        if not state.data_normalized:
+            return "Phase 2: 데이터 정규화 단계 — 문제 정의 완료, 데이터 정규화 진행 중"
+        if not state.math_model_confirmed:
+            return "Phase 3: 수학 모델 단계 — 수학 모델 생성/검토 중"
+        if not state.pre_decision_done:
+            return "Phase 4: 솔버 추천 단계 — 수학 모델 확정, 솔버 선택 중"
+        if not state.optimization_done:
+            return "Phase 5: 최적화 실행 단계 — 솔버 선택 완료, 실행 대기 중"
+        return "Phase 6: 완료 — 최적화 실행 완료, 결과 확인 가능"
 
     # ----------------------------------------------------------
     # Skill 실행 디스패처
