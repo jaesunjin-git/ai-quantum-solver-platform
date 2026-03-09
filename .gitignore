@@ -39,3 +39,8 @@ Thumbs.db
 # Logs
 *.log
 server_log.txt
+
+# Frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
