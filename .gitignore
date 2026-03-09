@@ -44,3 +44,6 @@ server_log.txt
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+
+# Claude Code
+.claude/
