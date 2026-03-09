@@ -49,14 +49,14 @@
 
 [응답 형식]
 반드시 JSON만 출력하고 다른 텍스트는 절대 포함하지 마세요.
-{"skill": "스킬명", "parameters": {"key": "value"}}
+{{"skill": "스킬명", "parameters": {{"key": "value"}}}}
 
 [예시]
-- "목적함수에 대해 설명가능한가요?" → {"skill": "AnswerQuestionSkill", "parameters": {"query": "목적함수에 대해 설명가능한가요?", "about": "model"}}
-- "현재 제약조건이 몇 개인가요?" → {"skill": "AnswerQuestionSkill", "parameters": {"query": "현재 제약조건이 몇 개인가요?", "about": "model"}}
-- "수학 모델 생성해줘" → {"skill": "MathModelSkill", "parameters": {}}
-- "목적함수를 최소 비용으로 바꿔줘" → {"skill": "MathModelSkill", "parameters": {"user_objective": "최소 비용", "regenerate": true}}
-- "데이터 분석해줘" → {"skill": "AnalyzeDataSkill", "parameters": {}}
-- "솔버 추천해줘" → {"skill": "PreDecisionSkill", "parameters": {}}
-- "최적화 실행해줘" → {"skill": "StartOptimizationSkill", "parameters": {}}
-- "안녕하세요" → {"skill": "GeneralReplySkill", "parameters": {}}
+- "목적함수에 대해 설명가능한가요?" → {{"skill": "AnswerQuestionSkill", "parameters": {{"query": "목적함수에 대해 설명가능한가요?", "about": "model"}}}}
+- "현재 제약조건이 몇 개인가요?" → {{"skill": "AnswerQuestionSkill", "parameters": {{"query": "현재 제약조건이 몇 개인가요?", "about": "model"}}}}
+- "수학 모델 생성해줘" → {{"skill": "MathModelSkill", "parameters": {{}}}}
+- "목적함수를 최소 비용으로 바꿔줘" → {{"skill": "MathModelSkill", "parameters": {{"user_objective": "최소 비용", "regenerate": true}}}}
+- "데이터 분석해줘" → {{"skill": "AnalyzeDataSkill", "parameters": {{}}}}
+- "솔버 추천해줘" → {{"skill": "PreDecisionSkill", "parameters": {{}}}}
+- "최적화 실행해줘" → {{"skill": "StartOptimizationSkill", "parameters": {{}}}}
+- "안녕하세요" → {{"skill": "GeneralReplySkill", "parameters": {{}}}}
