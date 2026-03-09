@@ -144,6 +144,7 @@ class SolverSettingDB(Base):
     solver_id = Column(String, unique=True, nullable=False, index=True)
     enabled = Column(Boolean, default=False)
     api_key = Column(String, nullable=True)
+    time_limit_sec = Column(Integer, nullable=True)  # NULL이면 YAML max_time_seconds 사용
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
     updated_by = Column(String, nullable=True)
 

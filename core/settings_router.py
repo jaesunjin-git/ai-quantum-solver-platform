@@ -22,12 +22,15 @@ class SolverSettingOut(BaseModel):
     description: str
     enabled: bool
     has_api_key: bool
+    time_limit_sec: Optional[int] = None   # NULL이면 YAML 기본값 사용
+    time_limit_default: Optional[int] = None  # YAML max_time_seconds (표시용)
 
 
 class SolverSettingUpdate(BaseModel):
     solver_id: str
     enabled: bool
     api_key: Optional[str] = None
+    time_limit_sec: Optional[int] = None   # NULL이면 YAML 기본값으로 복원
 
 
 class SolverSettingsBulkUpdate(BaseModel):
@@ -51,6 +54,7 @@ def get_solver_settings(
     for solver in all_solvers:
         sid = solver.get("id", "")
         db_row = db_settings.get(sid)
+        yaml_default = solver.get("time_profile", {}).get("max_time_seconds")
         result.append(SolverSettingOut(
             solver_id=sid,
             solver_name=solver.get("name", ""),
@@ -59,6 +63,8 @@ def get_solver_settings(
             description=solver.get("description", ""),
             enabled=db_row.enabled if db_row else False,
             has_api_key=bool(db_row.api_key) if db_row else False,
+            time_limit_sec=db_row.time_limit_sec if db_row else None,
+            time_limit_default=int(yaml_default) if yaml_default else None,
         ))
     return result
 
@@ -83,12 +89,14 @@ def update_solver_settings(
             row.enabled = item.enabled
             if item.api_key is not None:
                 row.api_key = item.api_key
+            row.time_limit_sec = item.time_limit_sec  # NULL이면 YAML 기본값으로 복원
             row.updated_by = "admin"
         else:
             row = models.SolverSettingDB(
                 solver_id=item.solver_id,
                 enabled=item.enabled,
                 api_key=item.api_key,
+                time_limit_sec=item.time_limit_sec,
                 updated_by="admin",
             )
             db.add(row)

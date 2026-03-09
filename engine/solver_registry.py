@@ -445,6 +445,35 @@ def recommend_solvers(
     }
 
 
+def get_solver_time_limit(solver_id: str, db=None) -> int:
+    """
+    솔버별 실행 time limit 조회.
+    우선순위: DB 설정값 > YAML max_time_seconds > 하드코딩 fallback(120s)
+    """
+    # 1. DB 설정값 (관리자 오버라이드)
+    if db is not None:
+        try:
+            from core import models
+            row = db.query(models.SolverSettingDB).filter_by(solver_id=solver_id).first()
+            if row and row.time_limit_sec is not None:
+                logger.debug(f"time_limit for {solver_id}: DB={row.time_limit_sec}s")
+                return row.time_limit_sec
+        except Exception as e:
+            logger.warning(f"DB time_limit lookup failed ({e}), falling back to YAML")
+
+    # 2. YAML max_time_seconds
+    solver = SolverRegistry.get_solver(solver_id)
+    if solver:
+        yaml_max = solver.get("time_profile", {}).get("max_time_seconds")
+        if yaml_max:
+            logger.debug(f"time_limit for {solver_id}: YAML={yaml_max}s")
+            return int(yaml_max)
+
+    # 3. 하드코딩 fallback
+    logger.debug(f"time_limit for {solver_id}: fallback=120s")
+    return 120
+
+
 def _classify_suitability(score: float) -> str:
     """점수를 적합도 등급으로 변환"""
     if score >= 80:

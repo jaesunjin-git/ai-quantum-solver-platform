@@ -53,6 +53,18 @@ app.include_router(version_router)       # /api/chat
 app.include_router(project_router)    # /api/projects
 app.include_router(settings_router)   # /api/settings
 
+def _migrate_solver_settings(db):
+    """기존 core.solver_settings 테이블에 새 컬럼을 안전하게 추가"""
+    try:
+        db.execute(text(
+            "ALTER TABLE core.solver_settings ADD COLUMN IF NOT EXISTS time_limit_sec INTEGER"
+        ))
+        db.commit()
+        print("Solver settings migration check completed.")
+    except Exception:
+        db.rollback()
+
+
 def _migrate_session_states(db):
     """기존 core.session_states 테이블에 새 컬럼을 안전하게 추가"""
     new_columns = {
@@ -102,6 +114,7 @@ def startup():
     db2 = SessionLocal()
     try:
         _migrate_session_states(db2)
+        _migrate_solver_settings(db2)
     except Exception as e:
         print(f"Migration warning: {e}")
         db2.rollback()

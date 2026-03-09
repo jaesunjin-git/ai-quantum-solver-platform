@@ -609,6 +609,7 @@ def _add_formatted_paragraph(doc, text: str) -> None:
 # 4) Solver Execution
 # ============================================================
 from engine.solver_pipeline import SolverPipeline
+from engine.solver_registry import get_solver_time_limit
 from domains.crew.agent import get_session, save_session_state
 from core.version import create_run_result
 
@@ -621,9 +622,8 @@ async def solve_optimization(request: dict, db: Session = Depends(get_db)):
     solver_id = request.get('solver_id')
     solver_name = request.get('solver_name', '')
     math_model = request.get('math_model')
-    time_limit = request.get('time_limit_sec', 120)
-    import logging as _tl_log
-    _tl_log.getLogger("chat.router").warning(f"SOLVE REQUEST: time_limit_sec={time_limit}, raw={request.get('time_limit_sec', 'NOT_SENT')}")
+    # 우선순위: DB 설정 > YAML max_time_seconds > fallback(120s)
+    time_limit = get_solver_time_limit(solver_id, db)
 
     if not project_id or not solver_id:
         raise HTTPException(status_code=400, detail='project_id and solver_id are required')
