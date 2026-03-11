@@ -73,6 +73,27 @@ export interface OptResult {
 }
 
 // ── Compile Summary (솔버 실행 결과의 컴파일 정보) ──
+export interface Gate3Result {
+  pass: boolean;
+  errors: string[];
+  warnings: string[];
+  stats: {
+    actual_variables?: number;
+    actual_constraints?: number;
+    compile_time?: number;
+    compile_warnings?: number;
+    defined_constraints?: number;
+    hard_defined?: number;
+    soft_defined?: number;
+    failed_constraints?: number;
+    skipped_soft?: number;
+    hard_apply_ratio?: number;
+    variable_match_ratio?: number;
+    unknown_operator_warnings?: number;
+    type_error_warnings?: number;
+  };
+}
+
 export interface CompileSummary {
   solver_name?: string;
   solver_type?: string;
@@ -88,6 +109,7 @@ export interface CompileSummary {
   warning_count?: number;
   parameter_sources?: Record<string, string>;
   parameter_warnings?: string[];
+  gate3?: Gate3Result;
 }
 
 // ── Result Data (솔버 실행 결과) ──

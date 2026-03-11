@@ -8,6 +8,7 @@
 
 import { useState, useCallback, useEffect } from 'react';
 import '../markdown.css';
+import { API_BASE_URL } from '../config';
 import { useAnalysis } from '../context/AnalysisContext';
 import type { StepId } from '../context/AnalysisContext';
 import { FlowStepBar } from './analysis/FlowStepBar';
@@ -126,29 +127,50 @@ export default function AnalysisReport({
   );
 
   // ── Validation handlers ──
+  const callApplyFix = useCallback(async (
+    stage: number,
+    fixes: { code: string; action: string; value?: any }[],
+  ) => {
+    if (!projectId) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/validation/apply-fix`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project_id: Number(projectId),
+          stage,
+          fixes,
+        }),
+      });
+      if (res.ok) {
+        const result = await res.json();
+        setStageValidation(result.validation);
+      }
+    } catch (err) {
+      console.error('Apply fix failed:', err);
+    }
+  }, [projectId]);
+
   const handleApplyFix = useCallback((code: string) => {
-    // TODO: POST /api/validation/apply-fix, then refresh stageValidation
-    console.log('Apply fix:', code);
-  }, []);
+    if (!stageValidation) return;
+    // auto_fix 정보를 찾아서 value로 전달
+    const item = stageValidation.items.find(i => i.code === code);
+    const fixValue = item?.auto_fix || {};
+    callApplyFix(stageValidation.stage, [{ code, action: 'auto_fix', value: fixValue }]);
+  }, [stageValidation, callApplyFix]);
 
   const handleDismiss = useCallback((code: string) => {
     if (!stageValidation) return;
-    setStageValidation({
-      ...stageValidation,
-      items: stageValidation.items.map(item =>
-        item.code === code ? { ...item, dismissed: true } : item,
-      ),
-    });
-  }, [stageValidation]);
+    callApplyFix(stageValidation.stage, [{ code, action: 'dismiss' }]);
+  }, [stageValidation, callApplyFix]);
 
   const handleUserInput = useCallback((code: string, value: any) => {
-    // TODO: POST /api/validation/apply-fix with user-provided value
-    console.log('User input for', code, ':', value);
-  }, []);
+    if (!stageValidation) return;
+    callApplyFix(stageValidation.stage, [{ code, action: 'user_input', value }]);
+  }, [stageValidation, callApplyFix]);
 
   const handleValidationProceed = useCallback(() => {
     setStageValidation(null);
-    // TODO: advance to next stage or re-run validation
   }, []);
 
   // ── Empty state ──

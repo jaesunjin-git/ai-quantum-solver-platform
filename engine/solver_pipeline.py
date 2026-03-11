@@ -158,6 +158,9 @@ class SolverPipeline:
                     error=f"Gate3 validation failed: {gate3_errors}"
                 )
 
+            # Gate3 결과 저장 (compile_summary에 포함)
+            self._gate3_result = gate3_result
+
             if gate3_result["warnings"]:
                 for gw in gate3_result["warnings"]:
                     logger.warning(f"Gate3 warning: {gw}")
@@ -315,6 +318,16 @@ class SolverPipeline:
             "parameter_sources": (bound_data or {}).get("parameter_sources", {}),
             "parameter_warnings": (bound_data or {}).get("parameter_warnings", []),
         }
+
+        # Gate3 결과 포함
+        gate3 = getattr(self, "_gate3_result", None)
+        if gate3:
+            compile_summary["gate3"] = {
+                "pass": gate3["pass"],
+                "errors": gate3.get("errors", []),
+                "warnings": gate3.get("warnings", []),
+                "stats": gate3.get("stats", {}),
+            }
 
         # ── execute_summary 구조화 ──
         execute_summary = {
