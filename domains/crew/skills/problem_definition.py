@@ -1505,14 +1505,17 @@ class ProblemDefinitionSkill:
         # ── 목적함수 변경 ──
         import re as _re
         obj_pattern = _re.compile(
-            r"목적함수[를을]?\s*(.*?)(?:로|으로)\s*변경|"
-            r"목적함수[를을]?\s*(.+?)(?:로|으로|을|를)?\s*(?:변경|바꿔|바꾸)|"
+            r"목적함수[를을]?\s*(.+?)(?:로|으로)\s*(?:변경|바꿔|바꾸|수정)|"
+            r"(.+?)(?:로|으로)\s*목적함수[를을]?\s*(?:변경|바꿔|바꾸|수정)|"
+            r"목적함수[를을]?\s*(.+?)(?:을|를)?\s*(?:변경|바꿔|바꾸|수정)|"
             r"objective\s+(?:to\s+)?(\w+)",
             _re.IGNORECASE
         )
         obj_match = obj_pattern.search(message)
         if obj_match and state.problem_definition:
-            requested = (obj_match.group(1) or obj_match.group(2) or obj_match.group(3) or "").strip()
+            requested = (obj_match.group(1) or obj_match.group(2) or obj_match.group(3) or obj_match.group(4) or "").strip()
+            if not requested:
+                obj_match = None  # 빈 문자열이면 매칭 실패 처리
 
             # dk에서 objectives 로드
             dk = self._load_domain(state)
@@ -1526,23 +1529,57 @@ class ProblemDefinitionSkill:
             except Exception:
                 objectives_map = {}
 
-            # 매칭: 이름 또는 description_ko에서 검색
+            # 매칭: 이름 또는 description_ko에서 유사도 스코어링
             matched_obj = None
+            best_score = 0
             for oname, odata in objectives_map.items():
                 desc_ko = odata.get("description_ko", "")
-                if (requested in oname or requested in desc_ko or
-                    oname in requested or desc_ko in requested):
+                desc_en = odata.get("description", "")
+                score = 0
+                # 정확히 일치
+                if requested == desc_ko or requested == oname:
+                    score = 100
+                elif requested == desc_en:
+                    score = 100
+                # desc_ko가 requested에 완전 포함 (사용자가 더 긴 텍스트 입력)
+                elif desc_ko and desc_ko in requested:
+                    score = 80 + len(desc_ko)
+                elif requested in desc_ko:
+                    score = 60 + len(requested)
+                elif requested in oname:
+                    score = 50 + len(requested)
+                # 단어 겹침 비교
+                else:
+                    req_words = set(requested.split())
+                    ko_words = set(desc_ko.split()) if desc_ko else set()
+                    overlap = req_words & ko_words
+                    if overlap:
+                        score = 30 + len(overlap) * 10
+                if score > best_score:
+                    best_score = score
                     matched_obj = (oname, odata)
-                    break
 
             if matched_obj:
                 oname, odata = matched_obj
+
+                # ── 목적함수 외 추가 지시사항 추출 ──
+                # "업무량 균형 최적화로 목적함수 변경 단 주간 근무 32명, 야간 근무 13명 조건으로"
+                # → 목적함수 변경 부분을 제거하고 나머지를 추가 지시사항으로 저장
+                _extra_instructions = ""
+                if obj_match:
+                    _matched_span = obj_match.group(0)
+                    _remainder = message.replace(_matched_span, "").strip()
+                    # "단", "그리고", "조건으로" 등 접속사 제거
+                    _remainder = _re.sub(r'^[\s,단\.그리고]+', '', _remainder).strip()
+                    if len(_remainder) >= 4:  # 의미 있는 텍스트만
+                        _extra_instructions = _remainder
 
                 # ── 경고 게이트: objective_changing 플래그 확인 ──
                 if not getattr(state, 'objective_changing', False):
                     # 첫 번째 요청 → 경고 메시지 + 확인 요청
                     state.objective_changing = True
                     state._pending_objective = {"name": oname, "data": odata}
+                    state._pending_extra_instructions = _extra_instructions
                     save_session_state(project_id, state)
 
                     old_obj = state.problem_definition.get("objective", {})
@@ -1554,6 +1591,10 @@ class ProblemDefinitionSkill:
                     if promote_list:
                         promote_info = f"\n- 자동 Hard 승격 제약: {', '.join(promote_list)}"
 
+                    extra_note = ""
+                    if _extra_instructions:
+                        extra_note = f"\n\n📋 **추가 조건 (목적함수 변경 후 적용):**\n> {_extra_instructions}"
+
                     return {
                         "type": "problem_definition",
                         "text": (
@@ -1562,7 +1603,8 @@ class ProblemDefinitionSkill:
                             f"- 변경: **{new_desc}**\n"
                             f"{promote_info}\n\n"
                             f"**목적함수를 변경하면 제약조건이 새로 구성됩니다.**\n"
-                            f"현재 수정한 제약조건 편집 내용은 초기화됩니다.\n\n"
+                            f"현재 수정한 제약조건 편집 내용은 초기화됩니다."
+                            f"{extra_note}\n\n"
                             f"계속하시겠습니까?"
                         ),
                         "data": {
@@ -1579,8 +1621,10 @@ class ProblemDefinitionSkill:
                     }
 
                 # ── 두 번째 요청 (확인됨) → 실제 변경 + 제약조건 재구성 ──
+                _extra_instr = getattr(state, '_pending_extra_instructions', '') or ''
                 state.objective_changing = False
                 state._pending_objective = None
+                state._pending_extra_instructions = None
                 old_obj = state.problem_definition.get("objective", {})
                 old_desc = old_obj.get("description", "알 수 없음")
 
@@ -1655,6 +1699,23 @@ class ProblemDefinitionSkill:
                 if changes:
                     change_text = "\n\n**자동 연동 변경:**\n" + "\n".join(changes)
 
+                # ── 추가 지시사항이 있으면 LLM Smart Apply로 처리 ──
+                extra_applied_text = ""
+                if _extra_instr:
+                    try:
+                        extra_result = await self._llm_smart_apply(
+                            model, state, project_id, _extra_instr
+                        )
+                        # _llm_smart_apply가 state를 직접 수정하므로 결과 텍스트만 추출
+                        extra_text = extra_result.get("text", "")
+                        if extra_text:
+                            extra_applied_text = f"\n\n**추가 조건 적용:**\n{extra_text}"
+                        # 업데이트된 proposal 사용
+                        save_session_state(project_id, state)
+                    except Exception as e:
+                        logger.warning(f"Extra instructions apply failed: {e}")
+                        extra_applied_text = f"\n\n⚠️ 추가 조건 적용 실패: 확인 후 별도로 입력해주세요.\n> {_extra_instr}"
+
                 return {
                     "type": "problem_definition",
                     "text": (
@@ -1663,7 +1724,8 @@ class ProblemDefinitionSkill:
                         f"- 변경: **{odata.get('description_ko', odata['description'])}**\n"
                         f"- 수식: {odata.get('expression', '')}\n"
                         f"- 재구성 결과: Hard {hard_count}개, Soft {soft_count}개"
-                        f"{change_text}\n\n"
+                        f"{change_text}"
+                        f"{extra_applied_text}\n\n"
                         f"아래에서 제약조건을 확인하고 필요시 수정해주세요."
                     ),
                     "data": {
@@ -1902,7 +1964,12 @@ class ProblemDefinitionSkill:
                     ],
                 }
 
-        # 기타
+        # 기타: 자유 텍스트 → LLM Smart Apply
+        # 사용자가 자연어로 요구사항을 전달하면 LLM이 구조화된 변경사항으로 변환하여 직접 적용
+        if model and len(message.strip()) > 5:
+            return await self._llm_smart_apply(model, state, project_id, message)
+
+        # LLM 사용 불가 시 fallback
         return {
             "type": "problem_definition",
             "text": (
@@ -1918,6 +1985,275 @@ class ProblemDefinitionSkill:
                 {"label": "확인", "action": "send", "message": "확인"},
                 {"label": "수정", "action": "send", "message": "수정"},
                 {"label": "다시 분석", "action": "send", "message": "다시 분석"},
+            ],
+        }
+
+    # ──────────────────────────────────────
+    # LLM Smart Apply: 자연어 → 구조화된 변경사항 적용
+    # ──────────────────────────────────────
+    async def _llm_smart_apply(
+        self, model, state, project_id: str, message: str
+    ) -> Dict:
+        """
+        사용자의 자연어 요구사항을 LLM이 구조화된 JSON 액션으로 변환하고,
+        변환된 액션을 problem_definition state에 직접 적용한다.
+        """
+        import asyncio
+        import json as _json
+
+        current_pd = state.problem_definition or {}
+        current_obj = current_pd.get("objective", {})
+        hard_constraints = current_pd.get("hard_constraints", {})
+        soft_constraints = current_pd.get("soft_constraints", {})
+        params = current_pd.get("parameters", {})
+
+        # 사용 가능한 목적함수 목록 로드
+        dk = self._load_domain(state)
+        domain_name = current_pd.get("domain", "railway")
+        objectives_map = {}
+        try:
+            import yaml as _yaml
+            _cpath = f"knowledge/domains/{domain_name}/constraints.yaml"
+            with open(_cpath, encoding="utf-8") as _f:
+                _cdata = _yaml.safe_load(_f)
+            objectives_map = _cdata.get("objectives", {})
+        except Exception:
+            pass
+
+        obj_list_str = "\n".join([
+            f"  - {k}: {v.get('description_ko', v.get('description', k))}"
+            for k, v in objectives_map.items()
+        ]) if objectives_map else "  (없음)"
+
+        hard_detail = "\n".join([
+            f"  - {k}: {v.get('name_ko', k)} (params: {list(v.get('values', {}).keys())})"
+            for k, v in hard_constraints.items()
+        ]) if hard_constraints else "  (없음)"
+
+        soft_detail = "\n".join([
+            f"  - {k}: {v.get('name_ko', k)} (params: {list(v.get('values', {}).keys())})"
+            for k, v in soft_constraints.items()
+        ]) if soft_constraints else "  (없음)"
+
+        param_detail = "\n".join([
+            f"  - {k}: value={v.get('value', 'N/A')}, description={v.get('description', '')}"
+            for k, v in params.items()
+        ]) if params else "  (없음)"
+
+        smart_prompt = f"""사용자가 최적화 문제 정의를 수정하려고 합니다.
+
+## 사용자 요청
+"{message}"
+
+## 현재 문제 정의
+목적함수: {current_obj.get('description_ko', current_obj.get('description', 'N/A'))} ({current_obj.get('target', 'N/A')})
+Hard 제약조건:
+{hard_detail}
+Soft 제약조건:
+{soft_detail}
+파라미터:
+{param_detail}
+
+## 사용 가능한 목적함수
+{obj_list_str}
+
+## 지시사항
+사용자 요청을 분석하여 아래 JSON 형식으로 정확히 응답하세요.
+반드시 JSON만 출력하고 다른 텍스트를 포함하지 마세요.
+
+```json
+{{
+  "actions": [
+    {{
+      "type": "set_param",
+      "param_id": "파라미터ID",
+      "value": 값(숫자),
+      "description": "설명"
+    }},
+    {{
+      "type": "change_objective",
+      "target": "목적함수ID (위 목록에서 선택)",
+      "reason": "변경 사유"
+    }},
+    {{
+      "type": "add_constraint",
+      "name": "제약조건_영문ID",
+      "name_ko": "한국어 이름",
+      "category": "hard 또는 soft",
+      "description": "제약조건 설명",
+      "parameters": {{"param_id": 값}}
+    }},
+    {{
+      "type": "move_constraint",
+      "name": "기존 제약조건명",
+      "to": "hard 또는 soft"
+    }},
+    {{
+      "type": "remove_constraint",
+      "name": "제거할 제약조건명"
+    }}
+  ],
+  "summary": "사용자에게 보여줄 변경 내용 요약 (한국어, markdown)"
+}}
+```
+
+규칙:
+- 파라미터 값을 설정할 때, 기존 파라미터 목록에 없으면 새로 추가합니다.
+- 목적함수 변경은 사용 가능한 목록에서 선택합니다.
+- 새 제약조건 추가 시 의미 있는 영문 ID를 생성하세요.
+- 사용자가 명시하지 않은 것은 변경하지 마세요.
+- actions 배열에 변경사항이 없으면 빈 배열을 반환하세요."""
+
+        try:
+            response = await asyncio.to_thread(model.generate_content, smart_prompt)
+            raw = response.text.strip()
+
+            # JSON 추출
+            code_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw, re.DOTALL)
+            if code_match:
+                raw = code_match.group(1)
+            brace_match = re.search(r'\{.*\}', raw, re.DOTALL)
+            if not brace_match:
+                raise ValueError("No JSON in LLM response")
+            parsed = _json.loads(brace_match.group(0))
+        except Exception as e:
+            logger.warning(f"LLM Smart Apply parse failed: {e}")
+            # fallback: 기존 분석 모드
+            try:
+                fallback_prompt = (
+                    f"사용자 요청: \"{message}\"\n\n"
+                    f"현재 목적함수: {current_obj.get('description', 'N/A')}\n"
+                    f"Hard 제약: {list(hard_constraints.keys())}\n"
+                    f"Soft 제약: {list(soft_constraints.keys())}\n\n"
+                    f"이 요청을 문제 정의에 어떻게 반영해야 할지 한국어로 안내하세요."
+                )
+                fb_resp = await asyncio.to_thread(model.generate_content, fallback_prompt)
+                return {
+                    "type": "problem_definition",
+                    "text": fb_resp.text.strip(),
+                    "data": {
+                        "view_mode": "problem_definition",
+                        "proposal": state.problem_definition,
+                        "agent_status": "llm_guidance",
+                    },
+                    "options": [
+                        {"label": "확인", "action": "send", "message": "확인"},
+                        {"label": "수정", "action": "send", "message": "수정"},
+                    ],
+                }
+            except Exception:
+                return {
+                    "type": "problem_definition",
+                    "text": "요청을 처리하지 못했습니다. `파라미터명 = 값` 형식으로 입력해 주세요.",
+                    "data": {"proposal": state.problem_definition},
+                    "options": [
+                        {"label": "확인", "action": "send", "message": "확인"},
+                        {"label": "수정", "action": "send", "message": "수정"},
+                    ],
+                }
+
+        # ── 액션 적용 ──
+        actions = parsed.get("actions", [])
+        summary = parsed.get("summary", "")
+        applied = []
+        pd = state.problem_definition
+
+        for action in actions:
+            atype = action.get("type", "")
+
+            if atype == "set_param":
+                pid = action.get("param_id", "")
+                val = action.get("value")
+                desc = action.get("description", "")
+                if pid and val is not None:
+                    if pid in pd.get("parameters", {}):
+                        pd["parameters"][pid]["value"] = val
+                        if desc:
+                            pd["parameters"][pid]["description"] = desc
+                    else:
+                        pd.setdefault("parameters", {})[pid] = {
+                            "value": val,
+                            "description": desc,
+                            "status": "user_set",
+                        }
+                    applied.append(f"파라미터 `{pid}` = {val}")
+
+            elif atype == "change_objective":
+                target = action.get("target", "")
+                if target and target in objectives_map:
+                    odata = objectives_map[target]
+                    pd["objective"] = {
+                        "type": odata["type"],
+                        "target": target,
+                        "description": odata["description"],
+                        "description_ko": odata.get("description_ko", odata["description"]),
+                        "expression": odata.get("expression", ""),
+                        "alternatives": [
+                            {"target": k, "description": v.get("description_ko", v["description"])}
+                            for k, v in objectives_map.items() if k != target
+                        ],
+                    }
+                    applied.append(f"목적함수 → **{odata.get('description_ko', target)}**")
+
+            elif atype == "add_constraint":
+                cname = action.get("name", "")
+                cat = action.get("category", "hard")
+                if cname:
+                    ckey = f"{cat}_constraints"
+                    pd.setdefault(ckey, {})[cname] = {
+                        "name_ko": action.get("name_ko", cname),
+                        "description": action.get("description", ""),
+                        "status": "confirmed",
+                        "values": action.get("parameters", {}),
+                    }
+                    applied.append(f"제약조건 추가: `{cname}` ({cat})")
+
+            elif atype == "move_constraint":
+                cname = action.get("name", "")
+                to_cat = action.get("to", "")
+                if cname and to_cat:
+                    from_cat = "soft" if to_cat == "hard" else "hard"
+                    from_key = f"{from_cat}_constraints"
+                    to_key = f"{to_cat}_constraints"
+                    if cname in pd.get(from_key, {}):
+                        moved = pd[from_key].pop(cname)
+                        pd.setdefault(to_key, {})[cname] = moved
+                        applied.append(f"제약조건 이동: `{cname}` → {to_cat}")
+
+            elif atype == "remove_constraint":
+                cname = action.get("name", "")
+                if cname:
+                    for ckey in ["hard_constraints", "soft_constraints"]:
+                        if cname in pd.get(ckey, {}):
+                            del pd[ckey][cname]
+                            applied.append(f"제약조건 제거: `{cname}`")
+                            break
+
+        state.problem_definition = pd
+        save_session_state(project_id, state)
+
+        if not applied:
+            result_text = summary if summary else "요청을 분석했지만 구체적인 변경 사항이 없습니다."
+        else:
+            changes_text = "\n".join([f"  - {a}" for a in applied])
+            result_text = (
+                f"✅ **{len(applied)}건의 변경사항을 적용했습니다:**\n{changes_text}"
+            )
+            if summary:
+                result_text += f"\n\n{summary}"
+
+        return {
+            "type": "problem_definition",
+            "text": result_text,
+            "data": {
+                "view_mode": "problem_definition",
+                "proposal": state.problem_definition,
+                "agent_status": "smart_apply_done",
+            },
+            "options": [
+                {"label": "✅ 확인 (문제 정의 확정)", "action": "send", "message": "확인"},
+                {"label": "✏️ 추가 수정", "action": "send", "message": "수정"},
+                {"label": "🔄 다시 분석", "action": "send", "message": "다시 분석"},
             ],
         }
 

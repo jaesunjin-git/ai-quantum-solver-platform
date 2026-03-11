@@ -23,6 +23,7 @@ class BuildContext:
         self.param_map = param_map
         self.set_map = set_map
         self.model = model  # optional: CP-SAT/LP model for auxiliary variable creation
+        self.missing_params: set = set()  # 바인딩 실패한 파라미터 이름 추적
 
         # ── 역색인 캐시: set value → index (O(1) 조회용) ──
         # get_param_indexed에서 list params의 list.index() O(N) 반복을 제거
@@ -316,7 +317,9 @@ def eval_node(node: Any, binding: Dict[str, Any], ctx: BuildContext) -> Any:
                         indexed_val = ctx.get_param_indexed(name, idx_key)
                         if indexed_val != 0 or ctx.param_map.get(name) is not None:
                             return _to_int_if_whole(indexed_val)
-                logger.warning(f"Parameter '{name}' not found in param_map, using 0")
+                if name not in ctx.missing_params:
+                    ctx.missing_params.add(name)
+                    logger.warning(f"Parameter '{name}' not found in param_map, using 0")
                 return 0
             return _to_int_if_whole(val)
         index_names = parse_index_string(index_str)
@@ -551,9 +554,14 @@ def build_constraint(
         extra_bindings = parse_for_each(remaining_fe, ctx) if remaining_fe else [{}]
 
         constraints = []
+        _limit = max_instances if max_instances > 0 else float('inf')
         for pair in overlap_pairs:
+            if len(constraints) >= _limit:
+                break
             pair_bind = {"i": pair[0], "j": pair[1]}
             for eb in extra_bindings:
+                if len(constraints) >= _limit:
+                    break
                 binding = {**pair_bind, **eb}
                 try:
                     lhs_val = eval_node(lhs_node, binding, ctx)
@@ -563,9 +571,10 @@ def build_constraint(
                     logger.warning(
                         f"Constraint eval failed for overlap binding {binding}: {e}"
                     )
+        _total_possible = len(overlap_pairs) * len(extra_bindings)
         logger.info(
-            f"Overlap filter: {len(overlap_pairs)} pairs x "
-            f"{len(extra_bindings)} extra = {len(constraints)} constraints"
+            f"Overlap filter: {len(constraints)}/{_total_possible} constraints"
+            f"{f' (truncated to {max_instances})' if len(constraints) < _total_possible else ''}"
         )
         return constraints
 

@@ -244,6 +244,12 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
       if (data.data) {
         console.log('📊 Analysis Data Received:', data.data);
+        console.log('📊 proposal keys:', data.data.proposal ? Object.keys(data.data.proposal) : 'no proposal');
+        if (data.data.proposal) {
+          console.log('📊 proposal.hard_constraints:', Object.keys(data.data.proposal.hard_constraints || {}));
+          console.log('📊 proposal.parameters:', Object.keys(data.data.proposal.parameters || {}));
+          console.log('📊 proposal.objective:', data.data.proposal.objective?.target);
+        }
         const incoming = data.data;
         const isMinimalResult = incoming.view_mode === 'result' && !incoming.compile_summary && !incoming.status;
         if (isMinimalResult) {

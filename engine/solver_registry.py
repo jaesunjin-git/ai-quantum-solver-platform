@@ -101,26 +101,40 @@ class SolverRegistry:
 # Problem Profile 생성 (v2.0 — 구조 분석 강화)
 # ============================================================
 
-# 문제 클래스 키워드 매핑 (v2.0 확장)
-_PROBLEM_CLASS_KEYWORDS = {
-    "scheduling": ["스케줄", "schedule", "scheduling", "근무", "시간표", "교대", "shift", "roster"],
-    "routing": ["라우팅", "routing", "경로", "배송", "TSP", "VRP", "vehicle"],
-    "assignment": ["배정", "assign", "할당", "매칭", "matching"],
-    "permutation": ["순열", "permutation", "순서", "ordering", "시퀀스", "sequence"],
-    "subset_selection": ["부분집합", "subset", "선택", "selection", "knapsack", "배낭"],
-    "knapsack": ["배낭", "knapsack", "bin_packing", "빈패킹", "적재"],
-    "set_covering": ["집합피복", "set_cover", "covering"],
-    "resource_allocation": ["자원배분", "resource", "allocation", "할당"],
-    "TSP": ["TSP", "외판원", "traveling", "travell"],
-    "simulation": ["시뮬레이션", "simulation"],
-}
+# 문제 클래스 키워드 매핑 — YAML 외부 설정에서 로드
+_PROBLEM_CLASS_KEYWORDS_PATH = Path(__file__).parent.parent / "configs" / "problem_class_keywords.yaml"
 
-# 제약조건에서 구조적 특성을 추출하는 키워드
-_CONSTRAINT_STRUCTURE_KEYWORDS = {
-    "permutation": ["all_different", "allDiff", "순열", "permutation", "각각 다른"],
-    "nonlinear": ["quadratic", "비선형", "nonlinear", "곱", "product", "min(", "max(", "abs("],
-    "conditional": ["if ", "조건부", "indicator", "implies", "→"],
-}
+def _load_problem_class_keywords() -> Dict:
+    if _PROBLEM_CLASS_KEYWORDS_PATH.exists():
+        try:
+            with open(_PROBLEM_CLASS_KEYWORDS_PATH, encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            return data.get("problem_classes", {})
+        except Exception as e:
+            logger.warning(f"Failed to load problem_class_keywords.yaml: {e}")
+    # fallback: minimal built-in defaults
+    return {
+        "scheduling": ["schedule", "scheduling", "shift", "roster"],
+        "routing": ["routing", "route", "TSP", "VRP"],
+        "assignment": ["assign", "assignment", "matching"],
+    }
+
+def _load_constraint_structure_keywords() -> Dict:
+    if _PROBLEM_CLASS_KEYWORDS_PATH.exists():
+        try:
+            with open(_PROBLEM_CLASS_KEYWORDS_PATH, encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            return data.get("constraint_structure", {})
+        except Exception as e:
+            logger.warning(f"Failed to load constraint_structure from YAML: {e}")
+    return {
+        "permutation": ["all_different", "allDiff", "permutation"],
+        "nonlinear": ["quadratic", "nonlinear", "product"],
+        "conditional": ["if ", "indicator", "implies"],
+    }
+
+_PROBLEM_CLASS_KEYWORDS = _load_problem_class_keywords()
+_CONSTRAINT_STRUCTURE_KEYWORDS = _load_constraint_structure_keywords()
 
 
 def build_problem_profile(math_model: Dict, data_facts: Optional[Dict] = None) -> Dict:

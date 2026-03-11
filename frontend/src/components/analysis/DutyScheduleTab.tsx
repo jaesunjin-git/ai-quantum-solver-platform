@@ -46,7 +46,7 @@ export function DutyScheduleTab({
           <option value="all">전체 ({interpreted.duties.length})</option>
           <option value="violations">위반만 ({interpreted.duties.filter(d => d.violations?.length).length})</option>
         </select>
-        <span className="text-[11px] text-slate-500 ml-auto">{sortedDuties.length}개 듀티</span>
+        <span className="text-xs text-slate-500 ml-auto">{sortedDuties.length}개 듀티</span>
       </div>
 
       {/* 듀티 목록 */}
@@ -73,14 +73,14 @@ export function DutyScheduleTab({
                     <span className="text-[13px] text-white font-medium">
                       {duty.start_hhmm} ~ {duty.end_hhmm}
                     </span>
-                    <span className="text-[11px] text-slate-500">
+                    <span className="text-xs text-slate-500">
                       {duty.trip_count}트립
                     </span>
                     {hasViolation && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400">위반</span>
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-red-500/20 text-red-400">위반</span>
                     )}
                   </div>
-                  <div className="flex gap-3 text-[11px] text-slate-500 mt-0.5">
+                  <div className="flex gap-3 text-xs text-slate-500 mt-0.5">
                     <span>운전 {duty.total_driving_min}분</span>
                     <span>대기 {duty.idle_min}분</span>
                     <span>체류 {duty.total_stay_min}분</span>
@@ -96,7 +96,7 @@ export function DutyScheduleTab({
                   {hasViolation && (
                     <div className="mt-2 mb-2">
                       {duty.violations!.map((v, i) => (
-                        <div key={i} className="flex items-center gap-1 text-[11px] text-red-400">
+                        <div key={i} className="flex items-center gap-1 text-xs text-red-400">
                           <XCircle size={10} /> {v}
                         </div>
                       ))}
@@ -108,7 +108,7 @@ export function DutyScheduleTab({
                   <div className="mt-2 space-y-1">
                     {duty.trips.map((trip, i) => (
                       <div key={trip.trip_id}
-                        className="flex items-center gap-2 text-[11px] py-1 px-2 rounded bg-slate-800/50">
+                        className="flex items-center gap-2 text-xs py-1 px-2 rounded bg-slate-800/50">
                         <span className="text-slate-600 w-4">{i+1}</span>
                         <span className="text-cyan-400 font-mono w-16">{trip.dep_hhmm}→{trip.arr_hhmm}</span>
                         <span className="text-slate-400 flex-1 truncate">
@@ -122,7 +122,7 @@ export function DutyScheduleTab({
                     ))}
                   </div>
                   {/* 듀티 요약 바 */}
-                  <div className="mt-2 flex gap-2 text-[10px] text-slate-500">
+                  <div className="mt-2 flex gap-2 text-xs text-slate-500">
                     {duty.crew_id && <span>승무원 #{duty.crew_id}</span>}
                     <span>근무 {duty.total_work_min}분</span>
                     <span>체류 {duty.total_stay_min}분</span>

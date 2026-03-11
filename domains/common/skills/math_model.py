@@ -242,7 +242,8 @@ async def skill_math_model(model, session: CrewSession, project_id: str, message
             binder.load_files()
             from engine.gates.gate1_data_profile import run as run_gate1
             data_profile = run_gate1(binder._dataframes)
-            gate2_result = run_gate2(model, data_profile=data_profile, dataframes=binder._dataframes)
+            gate2_result = run_gate2(model, data_profile=data_profile, dataframes=binder._dataframes,
+                                     confirmed_problem=state.confirmed_problem or {})
 
             # 템플릿 경로: overlap_pairs 크기 에러는 컴파일에 영향 없으므로 경고로 다운그레이드
             _real_errors = [
@@ -468,7 +469,8 @@ async def skill_math_model(model, session: CrewSession, project_id: str, message
             except Exception as _oe:
                 logger.warning(f'YAML expression overwrite failed: {_oe}')
 
-            gate2_result = run_gate2(model, data_profile=data_profile, dataframes=binder._dataframes)
+            gate2_result = run_gate2(model, data_profile=data_profile, dataframes=binder._dataframes,
+                                     confirmed_problem=state.confirmed_problem or {})
 
             # ★ Gate2 corrections를 모델에 실제 적용 (column_name_fix)
             if gate2_result.get("corrections"):

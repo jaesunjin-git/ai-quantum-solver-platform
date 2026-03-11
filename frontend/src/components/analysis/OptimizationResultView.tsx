@@ -105,7 +105,7 @@ export function OptimizationResultView({
             const TabIcon = tab.icon;
             return (
               <button key={tab.key} onClick={() => setActiveTab(tab.key)}
-                className={`flex-1 py-1.5 px-2 rounded-md text-[11px] font-medium transition-all flex items-center justify-center gap-1 ${
+                className={`flex-1 py-1.5 px-2 rounded-md text-xs font-medium transition-all flex items-center justify-center gap-1 ${
                   activeTab === tab.key
                     ? 'bg-slate-700 text-white shadow-sm'
                     : 'text-slate-400 hover:text-slate-300'
@@ -113,7 +113,7 @@ export function OptimizationResultView({
                 <TabIcon size={12} />
                 {tab.label}
                 {tab.badge && (
-                  <span className={`ml-0.5 px-1 py-0 text-[9px] rounded-full ${
+                  <span className={`ml-0.5 px-1 py-0 text-xs rounded-full ${
                     tab.key === 'constraints' && interpreted?.kpi.constraint_violations
                       ? 'bg-red-500/20 text-red-400'
                       : 'bg-slate-600/50 text-slate-400'

@@ -866,7 +866,13 @@ def run(math_model: Dict,
             import os as _os
             import yaml as _yaml
             _base = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-            _ref_path = _os.path.join(_base, "knowledge", "domains", "railway", "reference_ranges.yaml")
+            # 도메인을 math_model 또는 confirmed_problem에서 동적으로 결정
+            _domain = math_model.get("domain", "")
+            if not _domain and confirmed_problem:
+                _domain = confirmed_problem.get("domain", "")
+            if not _domain:
+                _domain = "railway"  # legacy fallback
+            _ref_path = _os.path.join(_base, "knowledge", "domains", _domain, "reference_ranges.yaml")
             if _os.path.isfile(_ref_path):
                 with open(_ref_path, "r", encoding="utf-8") as _rf:
                     _ref_data = _yaml.safe_load(_rf) or {}
@@ -916,6 +922,75 @@ def run(math_model: Dict,
                 logger.info(f"Ref-range bind: {_ref_bound} bound, {len(unbound_params)} still unbound: {unbound_params}")
         except Exception as _e:
             logger.warning(f"Reference range fallback failed: {_e}")
+
+    # --- Big M 자동 계산 (데이터 기반) ---
+    _bigm_names = {"big_m", "bigm", "big m", "빅 m", "빅m"}
+    _needs_bigm = any(
+        (p.get("id", "").lower() in _bigm_names or p.get("name", "").lower() in _bigm_names)
+        and p.get("default_value", p.get("default")) is None
+        and not (p.get("source_file") or "")
+        for p in math_model.get("parameters", [])
+    )
+    if _needs_bigm and dataframes:
+        # Big M 계산: 야간→새벽 커버를 고려한 duty 시간 범위
+        # 야간 근무자가 자정을 넘겨 새벽 열차를 커버하면
+        # duty 시간이 1440분(24시간)을 초과할 수 있음
+        # Big M = 1440 + max(arr_time) 으로 설정 (익일 도착까지 커버)
+        _dep_cols = {"trip_dep_time", "dep_time", "departure_time", "start_time"}
+        _arr_cols = {"trip_arr_time", "arr_time", "arrival_time", "end_time"}
+        _dep_times = []
+        _arr_times = []
+        for _dk, _df in dataframes.items():
+            for _col in _df.columns:
+                _cl = _col.lower()
+                try:
+                    _vals = _df[_col].dropna().astype(float).tolist()
+                except (ValueError, TypeError):
+                    continue
+                if _cl in _dep_cols or any(tc in _cl for tc in _dep_cols):
+                    _dep_times.extend(_vals)
+                elif _cl in _arr_cols or any(tc in _cl for tc in _arr_cols):
+                    _arr_times.extend(_vals)
+        _all_times = _dep_times + _arr_times
+        if _all_times:
+            _max_time = max(_all_times)
+            _min_time = min(_all_times)
+            # 자정 넘김 감지: arr_time에 0 근처 값이 있으면 야간→새벽 패턴
+            _has_midnight_wrap = _arr_times and min(_arr_times) < 360  # 06:00 이전 도착
+            if _has_midnight_wrap:
+                # 익일 새벽 도착까지 커버: 1440 + max(새벽 도착시간) + 여유
+                _early_arrivals = [t for t in _arr_times if t < 360]
+                _bigm_val = 1440 + max(_early_arrivals) + 120  # 2시간 여유
+            else:
+                _bigm_val = _max_time - _min_time + 120
+            _bigm_val = max(_bigm_val, 1440)  # 최소 24시간(분)
+            _bigm_reason = (
+                f"Big M = {'1440 + max(새벽도착) + 120' if _has_midnight_wrap else 'time_range + 120'}"
+                f" = {int(_bigm_val)}분 ({'야간→새벽 커버 감지' if _has_midnight_wrap else '일반'})"
+            )
+        else:
+            _bigm_val = 1440  # fallback: 24시간(분)
+            _bigm_reason = "Big M = 1440분 (fallback: 24시간)"
+
+        for p in math_model.get("parameters", []):
+            _pid = p.get("id", "")
+            _pname = p.get("name", "")
+            if (_pid.lower() in _bigm_names or _pname.lower() in _bigm_names) \
+                    and p.get("default_value", p.get("default")) is None \
+                    and not (p.get("source_file") or ""):
+                p["default_value"] = int(_bigm_val)
+                p["auto_bound"] = True
+                p["auto_bound_source"] = "auto_calculated (time_range)"
+                p["auto_bound_reasoning"] = _bigm_reason
+                p.pop("user_input_required", None)
+                if _pid in [u for u in unbound_params]:
+                    unbound_params.remove(_pid)
+                elif _pname in [u for u in unbound_params]:
+                    unbound_params.remove(_pname)
+                corrections.setdefault("bigm_auto", []).append(
+                    f"{_pid or _pname} = {int(_bigm_val)} (auto: time range)"
+                )
+                logger.info(f"Big-M auto-calc: {_pid or _pname} = {int(_bigm_val)} (time range + 60)")
 
     # --- 범용 자동 바인딩 시도 ---
     if unbound_params and dataframes:
@@ -972,7 +1047,7 @@ def run(math_model: Dict,
             continue
         pid = p.get("id", "")
         sf = p.get("source_file") or ""
-        dv = p.get("default_value", p.get("default"))
+        dv = p.get("default_value", p.get("default", p.get("value")))
         if (not sf or sf == "None") and dv is None:
             _layer2_need_input.append(pid)
             p["user_input_required"] = True

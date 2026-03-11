@@ -150,7 +150,7 @@ class CrewAgent:
             # quick_classify가 "목적함수"를 MATH_MODEL 키워드로 잘못 분류하는 것을 방지
             _msg_lower = message.lower()
             # Case 1: "목적함수 변경/바꿔" — 명시적 변경 요청
-            _obj_change_verb = "목적함수" in message and any(kw in _msg_lower for kw in ["변경", "바꿔", "바꾸"])
+            _obj_change_verb = "목적함수" in message and any(kw in _msg_lower for kw in ["변경", "바꿔", "바꾸", "수정", "추가", "제거"])
             # Case 2: "목적함수를 ..." — 조사 '를/을' 포함 → 목적함수를 지정/수정하려는 의도
             #         단, "보여줘" 등 단순 조회 요청은 제외
             _obj_spec = ("목적함수를" in message or "목적함수을" in message) and not any(kw in _msg_lower for kw in ["보여"])
@@ -216,11 +216,15 @@ class CrewAgent:
 
             # ── 2차: LLM 스킬 선택 ──
             # ★ 질문/일반대화는 파이프라인 리다이렉트를 건너뛰고 LLM에게 직접 위임
-            # 패턴은 configs/classifier_keywords.yaml의 question_guard 섹션에서 로드
+            # 패턴은 configs/classifier_keywords.yaml의 question_guard + question_patterns 섹션에서 로드
             _qmarkers, _amarkers = InputClassifier.get_question_guard_config()
             _msg_q = message.lower().strip()
-            if (any(m in _msg_q for m in _qmarkers)
-                    and not any(a in _msg_q for a in _amarkers)):
+            _is_question = (
+                any(m in _msg_q for m in _qmarkers)
+                or _msg_q.endswith("?")
+                or any(_msg_q.endswith(e) for e in InputClassifier._question_endings)
+            )
+            if _is_question and not any(a in _msg_q for a in _amarkers):
                 logger.info(f"[{project_id}] Question detected — skipping pipeline redirects → LLM")
                 session.history.append({"role": "user", "content": message})
                 return await self._llm_select_and_execute(session, project_id, message, current_tab)

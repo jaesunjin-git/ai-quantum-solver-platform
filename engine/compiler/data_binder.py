@@ -492,14 +492,59 @@ class DataBinder:
 
         # ── Parameter alias: expression에서 사용하는 일반 이름에 대한 fallback 매핑 ──
         import re as _re
-        _known_non_params = {"x", "y", "duty_start", "duty_end", "is_night",
-                             "i", "j", "i1", "i2", "for", "in", "sum", "if", "else",
-                             "and", "or", "not", "trip_duration", "trip_dep_time", "trip_arr_time"}
+        # 공통 예약어/변수명 (도메인 무관)
+        _known_non_params = {"x", "y", "i", "j", "i1", "i2",
+                             "for", "in", "sum", "if", "else",
+                             "and", "or", "not"}
+        # 도메인별 변수명은 math_model의 variables/sets에서 동적 수집
+        for _v in math_model.get("variables", math_model.get("decision_variables", [])):
+            _vid = _v.get("id", "")
+            if _vid:
+                _known_non_params.add(_vid)
+        for _s in math_model.get("sets", []):
+            _sid = _s.get("id", "")
+            if _sid:
+                _known_non_params.add(_sid)
+        def _collect_param_names_from_node(node):
+            """구조화된 lhs/rhs JSON 노드에서 param 이름을 재귀 수집"""
+            if not isinstance(node, dict):
+                return set()
+            names = set()
+            if 'param' in node:
+                pi = node['param']
+                if isinstance(pi, dict):
+                    n = pi.get('name', '')
+                elif isinstance(pi, str):
+                    n = pi
+                else:
+                    n = ''
+                if n and n not in _known_non_params:
+                    names.add(n)
+            # 재귀: sum, add, subtract, multiply, negate, lhs, rhs 등 하위 노드
+            for key in ('lhs', 'rhs', 'negate'):
+                if key in node and isinstance(node[key], dict):
+                    names.update(_collect_param_names_from_node(node[key]))
+            for key in ('sum', 'add', 'subtract', 'multiply'):
+                child = node.get(key)
+                if isinstance(child, list):
+                    for item in child:
+                        if isinstance(item, dict):
+                            names.update(_collect_param_names_from_node(item))
+                elif isinstance(child, dict):
+                    names.update(_collect_param_names_from_node(child))
+            return names
+
         _expr_params = set()
         for _c in math_model.get("constraints", []):
+            # expression/expression_template 텍스트에서 추출
             _expr = _c.get("expression", "") or _c.get("expression_template", "") or ""
             _words = set(_re.findall(r'[a-z][a-z_]+[a-z]', _expr))
             _expr_params.update(_words - _known_non_params)
+            # 구조화된 lhs/rhs JSON 노드에서도 추출
+            for _side in ('lhs', 'rhs'):
+                _node = _c.get(_side)
+                if isinstance(_node, dict):
+                    _expr_params.update(_collect_param_names_from_node(_node))
 
         for _name in _expr_params:
             if _name in bound["parameters"] and bound["parameters"][_name] is not None:

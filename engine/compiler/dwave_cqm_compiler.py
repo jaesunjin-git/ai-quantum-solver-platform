@@ -119,13 +119,28 @@ class DWaveCQMCompiler(BaseCompiler):
             # hard 우선 (priority 내림차순), soft는 weight 내림차순
             # model.json의 'priority' 필드 활용; 없으면 50 기본값
             raw_constraints = math_model.get("constraints", [])
+            def _safe_priority(c):
+                v = c.get("priority", 50)
+                if isinstance(v, (int, float)):
+                    return v
+                # 문자열 우선순위를 숫자로 변환
+                _map = {"critical": 100, "high": 80, "medium": 50, "low": 20}
+                return _map.get(str(v).lower(), 50)
+
+            def _safe_weight(c):
+                v = c.get("weight", 0)
+                try:
+                    return float(v) if v else 0.0
+                except (ValueError, TypeError):
+                    return 0.0
+
             hard_cons = sorted(
                 [(i, c) for i, c in enumerate(raw_constraints) if c.get("category", "hard") == "hard"],
-                key=lambda x: (-x[1].get("priority", 50), x[0])
+                key=lambda x: (-_safe_priority(x[1]), x[0])
             )
             soft_cons = sorted(
                 [(i, c) for i, c in enumerate(raw_constraints) if c.get("category", "hard") != "hard"],
-                key=lambda x: (-(x[1].get("weight") or 0), x[0])
+                key=lambda x: (-_safe_weight(x[1]), x[0])
             )
             sorted_constraints = [c for _, c in hard_cons] + [c for _, c in soft_cons]
 
@@ -138,7 +153,8 @@ class DWaveCQMCompiler(BaseCompiler):
                 w = c.get("weight", "-")
                 logger.info(f"  [{cat}] {cname} (priority={pri}, weight={w})")
 
-            for con_def in sorted_constraints:
+            num_constraints = len(sorted_constraints)
+            for con_idx, con_def in enumerate(sorted_constraints):
                 cid = con_def.get("id") or con_def.get("name", "unknown")
                 category = con_def.get("category", "hard")
                 weight = con_def.get("weight")
@@ -153,6 +169,16 @@ class DWaveCQMCompiler(BaseCompiler):
                     warnings.append(f"Constraint {cid}: skipped (budget exhausted {total_constraints}/{cqm_budget})")
                     logger.warning(f"CQM budget exhausted at {total_constraints}, skipping '{cid}'")
                     continue
+
+                # ── Per-constraint budget cap ──
+                # 단일 제약이 전체 예산의 40%를 초과할 수 없음 (나머지 제약 보호)
+                # 남은 제약이 1~2개면 제한 해제 (마지막에는 자유롭게 사용)
+                constraints_left = max(1, num_constraints - con_idx)
+                if constraints_left <= 2:
+                    per_constraint_cap = remaining
+                else:
+                    per_constraint_cap = max(500, int(cqm_budget * 0.4))
+                explicit_max = con_def.get("max_instances")
 
                 if has_lhs and has_rhs:
                     # ── compact activation linking 감지 및 변환 ──
@@ -173,25 +199,27 @@ class DWaveCQMCompiler(BaseCompiler):
                         continue
 
                     # 구조화된 제약 -> build_constraint로 dimod 표현식 생성
-                    # model.json의 max_instances 필드 또는 remaining 중 작은 값으로 제한
-                    con_max = con_def.get("max_instances")
+                    con_max = explicit_max
                     # for_each가 두 집합 이상 (예: i in I, j in J)이면 max_instances 미설정 시 1000 기본 적용
                     if not con_max:
                         _fe = con_def.get("for_each", "")
                         if _fe.count(" in ") >= 2:
                             con_max = 1000
-                    effective_max = min(remaining, con_max) if con_max else remaining
+                    # per-constraint cap 적용: 단일 제약이 전체 예산의 40%를 초과할 수 없음
+                    effective_max = min(remaining, per_constraint_cap, con_max) if con_max else min(remaining, per_constraint_cap)
                     try:
+                        _missing_before = set(ctx.missing_params) if hasattr(ctx, 'missing_params') else set()
                         tuples = build_constraint(con_def, ctx, max_instances=effective_max)
-                        # 안전망: 혹시 남은 초과분 잘라내기
-                        if len(tuples) > remaining:
+                        _missing_after = getattr(ctx, 'missing_params', set()) - _missing_before
+                        # 안전망: per_constraint_cap 초과분 잘라내기
+                        if len(tuples) > per_constraint_cap:
                             logger.warning(
-                                f"Constraint '{cid}': {len(tuples)} instances truncated to {remaining} (budget)"
+                                f"Constraint '{cid}': {len(tuples)} instances capped to {per_constraint_cap} (per-constraint cap)"
                             )
                             warnings.append(
-                                f"Constraint {cid}: truncated {len(tuples)}→{remaining} (CQM budget)"
+                                f"Constraint {cid}: capped {len(tuples)}→{per_constraint_cap} (fair-share budget)"
                             )
-                            tuples = tuples[:remaining]
+                            tuples = tuples[:per_constraint_cap]
                         added = 0
                         for idx, (lhs_val, op_str, rhs_val) in enumerate(tuples):
                             label = f"{cid}_{idx}"
@@ -207,17 +235,22 @@ class DWaveCQMCompiler(BaseCompiler):
 
                         if added > 0:
                             total_constraints += added
-                            logger.info(f"Constraint '{cid}': {added} instances (structured)")
+                            logger.info(f"Constraint '{cid}': {added} instances (structured, budget={per_constraint_cap})")
                         else:
-                            # 구조화 경로 실패 시 expression_parser로 fallback
-                            if con_def.get("expression"):
-                                remaining2 = cqm_budget - total_constraints
+                            # 누락 파라미터가 있으면 expr fallback도 동일하게 실패할 것이므로 스킵
+                            if _missing_after:
+                                _mp = ", ".join(sorted(_missing_after))
+                                warnings.append(f"Constraint {cid}: skipped (missing params: {_mp})")
+                                logger.warning(f"Constraint '{cid}': skipped — missing params: {_mp}")
+                            elif con_def.get("expression"):
+                                # 구조화 경로 실패 시 expression_parser로 fallback
+                                remaining2 = min(cqm_budget - total_constraints, per_constraint_cap)
                                 count = self._parse_constraint_expr_cqm(
                                     cqm, var_map, con_def, ctx, max_count=remaining2
                                 )
                                 if count > 0:
                                     total_constraints += count
-                                    logger.info(f"Constraint '{cid}': {count} instances (structured→expr fallback)")
+                                    logger.info(f"Constraint '{cid}': {count} instances (structured→expr fallback, budget={per_constraint_cap})")
                                 else:
                                     warnings.append(f"Constraint {cid}: 0 instances (structured+expr both failed)")
                             else:
@@ -228,10 +261,11 @@ class DWaveCQMCompiler(BaseCompiler):
                         warnings.append(f"Constraint {cid}: structured parse error")
                 else:
                     # expression_parser 경유 CQM 적용 시도
-                    count = self._parse_constraint_expr_cqm(cqm, var_map, con_def, ctx, max_count=remaining)
+                    expr_budget = min(remaining, per_constraint_cap)
+                    count = self._parse_constraint_expr_cqm(cqm, var_map, con_def, ctx, max_count=expr_budget)
                     if count > 0:
                         total_constraints += count
-                        logger.info(f"Constraint '{cid}': {count} instances (expression_parser→cqm)")
+                        logger.info(f"Constraint '{cid}': {count} instances (expression_parser→cqm, budget={per_constraint_cap})")
                     else:
                         # 레거시 expression 파싱 (폴백)
                         count = self._parse_constraint_legacy(cqm, var_map, con_def, set_map, param_map)
@@ -484,30 +518,48 @@ class DWaveCQMCompiler(BaseCompiler):
         rhs_node = con_def.get("rhs", {})
         op = con_def.get("operator", "")
 
-        if op != ">=":
-            return 0
         if not (isinstance(lhs_node, dict) and isinstance(rhs_node, dict)):
             return 0
 
-        lhs_type = lhs_node.get("type", "")
-        rhs_type = rhs_node.get("type", "")
-        if lhs_type != "variable" or rhs_type != "variable":
+        # ── 패턴 감지: x[i,d] <= u[d] 또는 u[d] >= x[i,d] ──
+        # 두 형식 모두 지원: {"type":"variable"} 및 {"var":{"name":...}}
+        def _extract_var_info(node):
+            """노드에서 (var_name, indices_list) 추출. 실패 시 (None, [])"""
+            if node.get("type") == "variable":
+                return node.get("id", ""), node.get("indices", [])
+            if "var" in node and isinstance(node["var"], dict):
+                vn = node["var"].get("name", node["var"].get("id", ""))
+                idx_raw = node["var"].get("index", "")
+                if isinstance(idx_raw, str):
+                    idx_list = [s.strip() for s in idx_raw.strip("[]").split(",") if s.strip()]
+                else:
+                    idx_list = list(idx_raw) if idx_raw else []
+                return vn, idx_list
+            return None, []
+
+        lhs_name, lhs_indices = _extract_var_info(lhs_node)
+        rhs_name, rhs_indices = _extract_var_info(rhs_node)
+        if lhs_name is None or rhs_name is None:
             return 0
 
-        lhs_indices = lhs_node.get("indices", [])
-        rhs_indices = rhs_node.get("indices", [])
-
-        # lhs: [j], rhs: [i, j] — 마지막 인덱스가 공유되어야 함
-        if len(lhs_indices) != 1 or len(rhs_indices) != 2:
+        # x[i,d] <= u[d] → assign=lhs(2 idx), act=rhs(1 idx)
+        # u[d] >= x[i,d] → act=lhs(1 idx), assign=rhs(2 idx)
+        if op == "<=" and len(lhs_indices) == 2 and len(rhs_indices) == 1:
+            assign_var_name, assign_indices = lhs_name, lhs_indices
+            act_var_name, act_indices = rhs_name, rhs_indices
+        elif op == ">=" and len(lhs_indices) == 1 and len(rhs_indices) == 2:
+            act_var_name, act_indices = lhs_name, lhs_indices
+            assign_var_name, assign_indices = rhs_name, rhs_indices
+        else:
             return 0
-        shared_idx = lhs_indices[0]
-        if rhs_indices[1] != shared_idx:
+
+        # 마지막 인덱스가 공유되어야 함
+        shared_idx = act_indices[0]
+        if assign_indices[-1] != shared_idx:
             return 0
 
-        act_var_name = lhs_node.get("id", "")    # y
-        assign_var_name = rhs_node.get("id", "")  # x
-        inner_idx = rhs_indices[0]                # i (sum over)
-        outer_idx = shared_idx                     # j (outer loop)
+        inner_idx = assign_indices[0]  # i (sum over)
+        outer_idx = shared_idx          # d (outer loop)
 
         # 대문자 규칙으로 set 이름 추론: "i" → "I", "j" → "J"
         inner_set = set_map.get(inner_idx.upper(), [])
@@ -581,27 +633,53 @@ class DWaveCQMCompiler(BaseCompiler):
         rhs_node = con_def.get("rhs", {})
         if con_def.get("operator", "") != "<=":
             return 0
-        if not isinstance(lhs_node, dict) or lhs_node.get("type") != "sum":
-            return 0
-        if not isinstance(rhs_node, dict) or rhs_node.get("type") != "constant":
+
+        # ── RHS: 상수 1 감지 (두 형식 지원) ──
+        rhs_val = None
+        if isinstance(rhs_node, dict):
+            if rhs_node.get("type") == "constant":
+                rhs_val = rhs_node.get("value", 1)
+            elif "value" in rhs_node and len(rhs_node) <= 2:
+                rhs_val = rhs_node["value"]
+        if rhs_val is None:
             return 0
 
-        rhs_val = rhs_node.get("value", 1)
-        terms = lhs_node.get("terms", [])
-        if len(terms) != 2 or not all(t.get("type") == "variable" for t in terms):
+        # ── LHS: x[i1,d] + x[i2,d] 감지 (두 형식 지원) ──
+        # 형식1: {"type":"sum", "terms":[{"type":"variable","id":"x","indices":["i1","d"]}, ...]}
+        # 형식2: {"add":[{"var":{"name":"x","index":"[i1,d]"}}, ...]}
+        terms = []
+        if lhs_node.get("type") == "sum":
+            terms = lhs_node.get("terms", [])
+        elif "add" in lhs_node and isinstance(lhs_node["add"], list):
+            terms = lhs_node["add"]
+
+        if len(terms) != 2:
             return 0
 
-        var_name = terms[0].get("id", "")
-        if var_name != terms[1].get("id", ""):
+        def _extract_var_idx(term):
+            """term에서 (var_name, [idx1, idx2]) 추출"""
+            if term.get("type") == "variable":
+                return term.get("id", ""), term.get("indices", [])
+            if "var" in term and isinstance(term["var"], dict):
+                vn = term["var"].get("name", term["var"].get("id", ""))
+                idx_raw = term["var"].get("index", "")
+                if isinstance(idx_raw, str):
+                    idx_list = [s.strip() for s in idx_raw.strip("[]").split(",") if s.strip()]
+                else:
+                    idx_list = list(idx_raw) if idx_raw else []
+                return vn, idx_list
+            return None, []
+
+        name0, idx0 = _extract_var_idx(terms[0])
+        name1, idx1 = _extract_var_idx(terms[1])
+        if not name0 or name0 != name1:
+            return 0
+        var_name = name0
+
+        if len(idx0) != 2 or len(idx1) != 2 or idx0[1] != idx1[1]:
             return 0
 
-        t0_idx = terms[0].get("indices", [])
-        t1_idx = terms[1].get("indices", [])
-        # 두 인덱스 모두 2개, 마지막 인덱스가 공유되어야 함 (j)
-        if len(t0_idx) != 2 or len(t1_idx) != 2 or t0_idx[1] != t1_idx[1]:
-            return 0
-
-        shared_idx = t0_idx[1]                        # "j"
+        shared_idx = idx0[1]                        # "d"
         outer_set = set_map.get(shared_idx.upper(), [])  # J
         overlap_pairs = set_map.get("overlap_pairs", [])
 

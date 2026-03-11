@@ -88,15 +88,33 @@ def extract_text_from_llm(text: str) -> str:
 
 
 def domain_display(domain: Optional[str]) -> str:
-    display_map = {
-        "aviation": "✈️ 항공 (Aviation)",
-        "railway": "🚄 철도 (Railway)",
-        "bus": "🚌 버스 (Bus)",
-        "logistics": "📦 물류 (Logistics)",
-        "hospital": "🏥 병원 (Hospital)",
-        "general": "🔧 일반 (General)",
-    }
-    return display_map.get(domain, f"🔧 {domain or '미감지'}")
+    """도메인 프로파일 YAML에서 icon + display_name 로드. 미등록 도메인은 fallback."""
+    return _get_domain_display_map().get(domain, f"🔧 {domain or 'Unknown'}")
+
+
+def _get_domain_display_map() -> Dict[str, str]:
+    """domain_profiles.yaml에서 display_map 캐시 로드."""
+    if not hasattr(_get_domain_display_map, "_cache"):
+        display_map: Dict[str, str] = {}
+        try:
+            from pathlib import Path
+            import yaml
+            profiles_path = Path(__file__).resolve().parent.parent.parent / "knowledge" / "domain_profiles.yaml"
+            if profiles_path.exists():
+                with open(profiles_path, encoding="utf-8") as f:
+                    profiles = yaml.safe_load(f) or {}
+                for key, val in profiles.items():
+                    if isinstance(val, dict):
+                        icon = val.get("icon", "🔧")
+                        name = val.get("display_name", key)
+                        display_map[key] = f"{icon} {name}"
+        except Exception:
+            pass
+        # "general" alias for "generic"
+        if "generic" in display_map and "general" not in display_map:
+            display_map["general"] = display_map["generic"]
+        _get_domain_display_map._cache = display_map
+    return _get_domain_display_map._cache
 
 
 def build_guide_text(state: SessionState) -> str:

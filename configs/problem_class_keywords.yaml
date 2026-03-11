@@ -1,0 +1,118 @@
+# Problem class detection keywords (solver_registry.py)
+# ──────────────────────────────────────────────────────
+# 입력 감지용: 사용자 메시지/모델 텍스트에서 문제 유형을 분류.
+# 언어 구분 없이 모든 키워드를 하나의 리스트에 통합.
+# (UI 표시 라벨은 i18n / terminology 레이어에서 별도 처리)
+
+problem_classes:
+  scheduling:
+    - schedule
+    - scheduling
+    - shift
+    - roster
+    - timetable
+    - 스케줄
+    - 근무
+    - 시간표
+    - 교대
+    - スケジュール
+    - シフト
+    - 勤務
+    - ロスター
+  routing:
+    - routing
+    - route
+    - TSP
+    - VRP
+    - vehicle
+    - 라우팅
+    - 경로
+    - 배송
+    - ルーティング
+    - 経路
+    - 配送
+  assignment:
+    - assign
+    - assignment
+    - matching
+    - 배정
+    - 할당
+    - 매칭
+    - 割当
+    - マッチング
+  permutation:
+    - permutation
+    - ordering
+    - sequence
+    - 순열
+    - 순서
+    - 시퀀스
+    - 順列
+    - 順序
+  subset_selection:
+    - subset
+    - selection
+    - knapsack
+    - 부분집합
+    - 선택
+    - 배낭
+    - 部分集合
+    - 選択
+    - ナップサック
+  knapsack:
+    - knapsack
+    - bin_packing
+    - 배낭
+    - 빈패킹
+    - 적재
+    - ナップサック
+    - ビンパッキング
+    - 積載
+  set_covering:
+    - set_cover
+    - covering
+    - 집합피복
+    - 集合被覆
+  resource_allocation:
+    - resource
+    - allocation
+    - 자원배분
+    - 할당
+    - 資源配分
+    - リソース
+  TSP:
+    - TSP
+    - traveling
+    - travell
+    - 외판원
+    - 巡回セールスマン
+  simulation:
+    - simulation
+    - 시뮬레이션
+    - シミュレーション
+
+# Constraint structure detection keywords
+constraint_structure:
+  permutation:
+    - all_different
+    - allDiff
+    - permutation
+    - 순열
+    - 각각 다른
+    - 順列
+  nonlinear:
+    - quadratic
+    - nonlinear
+    - product
+    - "min("
+    - "max("
+    - "abs("
+    - 비선형
+    - 곱
+    - 非線形
+  conditional:
+    - "if "
+    - indicator
+    - implies
+    - 조건부
+    - 条件付き

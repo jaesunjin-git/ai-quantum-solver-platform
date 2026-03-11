@@ -76,6 +76,18 @@ export function ProblemDefinitionView({
   const softConstraints = proposal?.soft_constraints || {};
   const objective = proposal?.objective || {};
   const parameters = proposal?.parameters || {};
+
+  // DEBUG: 패널 업데이트 추적
+  console.log('🔍 ProblemDefinitionView render:', {
+    agentStatus,
+    viewMode: data.view_mode,
+    objectiveTarget: objective?.target,
+    hardCount: Object.keys(hardConstraints).length,
+    softCount: Object.keys(softConstraints).length,
+    paramCount: Object.keys(parameters).length,
+    hardKeys: Object.keys(hardConstraints),
+    paramKeys: Object.keys(parameters),
+  });
   const availableConstraints: AvailableConstraint[] = (proposal as any)?.available_constraints || [];
 
   // 추가 패널: 검색 필터링
@@ -127,6 +139,16 @@ export function ProblemDefinitionView({
   const dataParams = Object.entries(parameters).filter(([, v]: [string, any]) => v.source === 'data');
   const defaultParams = Object.entries(parameters).filter(([, v]: [string, any]) => v.source === 'default');
   const missingParams = Object.entries(parameters).filter(([, v]: [string, any]) => v.source === 'user_input_required');
+  const userSetParams = Object.entries(parameters).filter(([, v]: [string, any]) =>
+    v.source === 'user_set' || v.status === 'user_set' || v.source === 'user_modified'
+  );
+  const classifiedKeys = new Set([
+    ...dataParams.map(([k]) => k),
+    ...defaultParams.map(([k]) => k),
+    ...missingParams.map(([k]) => k),
+    ...userSetParams.map(([k]) => k),
+  ]);
+  const otherParams = Object.entries(parameters).filter(([k]) => !classifiedKeys.has(k));
 
   const enterEditMode = useCallback(() => {
     setEdits(buildEdits(hardConstraints, softConstraints));
@@ -394,7 +416,7 @@ export function ProblemDefinitionView({
                     {'필수 (Hard) - ' + hardEdits.length + '개'}
                   </p>
                   {selectedHardCount > 0 && (
-                    <span className="text-[10px] text-amber-400">{selectedHardCount + '개 선택'}</span>
+                    <span className="text-xs text-amber-400">{selectedHardCount + '개 선택'}</span>
                   )}
                 </div>
                 {hardEdits.map((e) => {
@@ -423,12 +445,12 @@ export function ProblemDefinitionView({
                           <div className="flex items-center gap-1.5 flex-wrap">
                             <span className="text-slate-200 font-medium">{e.nameKo || e.name}</span>
                             {e.fixed && (
-                              <span className="inline-flex items-center gap-0.5 text-[10px] bg-slate-700 text-slate-500 px-1.5 py-0.5 rounded flex-shrink-0">
+                              <span className="inline-flex items-center gap-0.5 text-xs bg-slate-700 text-slate-500 px-1.5 py-0.5 rounded flex-shrink-0">
                                 <Lock size={9} /> {'고정'}
                               </span>
                             )}
                             {e.changed && (
-                              <span className="text-[10px] bg-amber-500/30 text-amber-400 px-1.5 py-0.5 rounded flex-shrink-0">
+                              <span className="text-xs bg-amber-500/30 text-amber-400 px-1.5 py-0.5 rounded flex-shrink-0">
                                 {'변경됨'}
                               </span>
                             )}
@@ -437,7 +459,7 @@ export function ProblemDefinitionView({
                         </div>
                       </div>
                       {e.changeable && !e.fixed && (
-                        <span className="text-[10px] text-red-400/60 ml-2 whitespace-nowrap flex-shrink-0">{'→ Soft'}</span>
+                        <span className="text-xs text-red-400/60 ml-2 whitespace-nowrap flex-shrink-0">{'→ Soft'}</span>
                       )}
                     </div>
                   );
@@ -451,7 +473,7 @@ export function ProblemDefinitionView({
                     {'선호 (Soft) - ' + softEdits.length + '개'}
                   </p>
                   {selectedSoftCount > 0 && (
-                    <span className="text-[10px] text-amber-400">{selectedSoftCount + '개 선택'}</span>
+                    <span className="text-xs text-amber-400">{selectedSoftCount + '개 선택'}</span>
                   )}
                 </div>
                 {softEdits.map((e) => {
@@ -480,7 +502,7 @@ export function ProblemDefinitionView({
                           <div className="flex items-center gap-1.5 flex-wrap">
                             <span className="text-slate-200 font-medium">{e.nameKo || e.name}</span>
                             {e.changed && (
-                              <span className="text-[10px] bg-amber-500/30 text-amber-400 px-1.5 py-0.5 rounded flex-shrink-0">
+                              <span className="text-xs bg-amber-500/30 text-amber-400 px-1.5 py-0.5 rounded flex-shrink-0">
                                 {'변경됨'}
                               </span>
                             )}
@@ -489,7 +511,7 @@ export function ProblemDefinitionView({
                         </div>
                       </div>
                       {e.changeable && !e.fixed && (
-                        <span className="text-[10px] text-blue-400/60 ml-2 whitespace-nowrap flex-shrink-0">{'→ Hard'}</span>
+                        <span className="text-xs text-blue-400/60 ml-2 whitespace-nowrap flex-shrink-0">{'→ Hard'}</span>
                       )}
                     </div>
                   );
@@ -503,7 +525,7 @@ export function ProblemDefinitionView({
         {isEditMode && (
           <div className="flex items-start gap-2 p-3 bg-blue-500/10 rounded-xl border border-blue-500/20">
             <Info size={13} className="text-blue-400 mt-0.5 flex-shrink-0" />
-            <p className="text-[11px] text-blue-300 leading-relaxed">
+            <p className="text-xs text-blue-300 leading-relaxed">
               {'체크박스로 변경할 제약을 선택 후 [일괄 변경] 버튼을 누르면 즉시 반영됩니다. 확정 전까지 계속 수정 가능합니다.'}
             </p>
           </div>
@@ -526,7 +548,7 @@ export function ProblemDefinitionView({
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-indigo-300">{'템플릿에서 제약조건 추가'}</h3>
               {selectedToAdd.size > 0 && (
-                <span className="text-[11px] bg-indigo-500/30 text-indigo-300 px-2 py-0.5 rounded">
+                <span className="text-xs bg-indigo-500/30 text-indigo-300 px-2 py-0.5 rounded">
                   {selectedToAdd.size + '개 선택'}
                 </span>
               )}
@@ -581,7 +603,7 @@ export function ProblemDefinitionView({
                                 [c.name]: cat === 'hard' ? 'soft' : 'hard',
                               }));
                             }}
-                            className={`text-[10px] px-1.5 py-0.5 rounded transition-colors ${
+                            className={`text-xs px-1.5 py-0.5 rounded transition-colors ${
                               cat === 'hard'
                                 ? 'bg-red-500/20 text-red-400 hover:bg-amber-500/20 hover:text-amber-400'
                                 : 'bg-amber-500/20 text-amber-400 hover:bg-red-500/20 hover:text-red-400'
@@ -591,16 +613,16 @@ export function ProblemDefinitionView({
                           </button>
                         )}
                         {!isSelected && (
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                          <span className={`text-xs px-1.5 py-0.5 rounded ${
                             c.default_category === 'hard' ? 'bg-red-500/10 text-red-400/70' : 'bg-amber-500/10 text-amber-400/70'
                           }`}>
                             {c.default_category === 'hard' ? 'Hard' : 'Soft'}
                           </span>
                         )}
                       </div>
-                      <p className="text-[10px] text-slate-500 font-mono mt-0.5">{c.name}</p>
+                      <p className="text-xs text-slate-500 font-mono mt-0.5">{c.name}</p>
                       {c.parameters.length > 0 && (
-                        <p className="text-[10px] text-slate-500 mt-0.5">
+                        <p className="text-xs text-slate-500 mt-0.5">
                           {'파라미터: ' + c.parameters.join(', ')}
                           {c.typical_range && ` (범위: ${c.typical_range.join('~')})`}
                         </p>
@@ -647,6 +669,17 @@ export function ProblemDefinitionView({
                   ))}
                 </div>
               )}
+              {userSetParams.length > 0 && (
+                <div>
+                  <p className="text-xs text-blue-400 mb-1">{'사용자 설정'}</p>
+                  {userSetParams.map(([k, v]: [string, any]) => (
+                    <div key={k} className="flex justify-between text-sm py-0.5">
+                      <span className="text-slate-400">{v.description || k}</span>
+                      <span className="text-blue-300 font-mono">{v.value ?? '-'}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
               {missingParams.length > 0 && (
                 <div>
                   <p className="text-xs text-red-400 mb-1">{'입력 필요'}</p>
@@ -654,6 +687,17 @@ export function ProblemDefinitionView({
                     <div key={k} className="flex justify-between text-sm py-0.5">
                       <span className="text-slate-400">{k}</span>
                       <span className="text-red-400 font-mono">{'???'}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {otherParams.length > 0 && (
+                <div>
+                  <p className="text-xs text-slate-500 mb-1">{'기타'}</p>
+                  {otherParams.map(([k, v]: [string, any]) => (
+                    <div key={k} className="flex justify-between text-sm py-0.5">
+                      <span className="text-slate-400">{v.description || k}</span>
+                      <span className="text-slate-300 font-mono">{v.value ?? '-'}</span>
                     </div>
                   ))}
                 </div>

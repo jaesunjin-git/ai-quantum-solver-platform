@@ -118,7 +118,7 @@ solvers:
     supports_constraints: true
     max_variables: 2000000
     max_constraints: 2000000
-    problem_classes: [scheduling, TSP, permutation, subset_selection, resource_allocation, routing]
+    problem_classes: [scheduling, TSP, permutation, subset_selection, resource_allocation, routing, assignment]
     strengths:
       - 순열/부분집합 네이티브 지원 (QUBO 변환 불필요)
       - 비선형 목적함수 지원

@@ -386,7 +386,7 @@ class SolverPipeline:
                 )
                 saved = save_artifacts(
                     project_dir, execute_result.solution, interpreted, solver_id,
-                    domain=math_model.get("domain", "railway"),
+                    domain=math_model.get("domain", "general"),
                 )
                 summary["interpreted_result"] = interpreted
                 summary["artifacts"] = {k: str(v) for k, v in saved.items()}

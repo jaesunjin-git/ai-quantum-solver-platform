@@ -93,9 +93,12 @@ sections:
     {data_columns_text}
 
     '
-  parameters: '[1계층 파라미터 (시스템 자동 주입)]
+  parameters: '[1계층 파라미터 (시스템 자동 주입 — 중복 생성 금지)]
 
-    아래 {param_count}개 파라미터는 시스템이 자동 주입합니다:
+    아래 {param_count}개 파라미터는 시스템이 자동 주입합니다.
+    이 파라미터를 parameters 배열에 포함하지 마세요 (자동 병합됨).
+    이 파라미터의 합계/파생 파라미터를 새로 만들지 마세요.
+    제약조건에서 이 파라미터를 참조할 때는 정확히 같은 id를 사용하세요.
 
     {param_list_text}
 
