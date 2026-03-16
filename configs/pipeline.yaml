@@ -1,0 +1,165 @@
+# ============================================================
+# Pipeline Stage 정의
+# ============================================================
+# 각 단계의 순서, 진입 조건, 완료 플래그, 역방향 복귀 시 초기화 대상을 선언.
+# StageManager가 이 설정을 읽어 순방향 진행/역방향 복귀를 자동 관리한다.
+#
+# intent_codes: 이 단계에 속하는 L1 intent 코드 목록
+#   → agent.py의 quick_classify/LLM이 반환하는 intent를 이 단계에 매핑
+# requires: 진입에 필요한 state 플래그 (모두 True여야 진입 가능)
+# state_flag: 이 단계 완료 시 True로 설정되는 플래그
+# resets_on_reentry: 역방향 복귀(현재 단계보다 order가 낮은 단계로 이동) 시
+#                    False/None으로 초기화할 state 필드 목록
+#   - bool 필드: False로 초기화
+#   - Optional 필드: None으로 초기화
+# ============================================================
+
+stages:
+  analysis:
+    order: 1
+    intent_codes: [ANALYZE, SHOW_ANALYSIS]
+    requires: [file_uploaded]
+    state_flag: analysis_completed
+    resets_on_reentry:
+      # 분석부터 다시 → 이후 모든 단계 초기화
+      - analysis_completed
+      - last_analysis_report
+      - csv_summary
+      - data_facts
+      - data_profile
+      - structural_normalization_done
+      - phase1_summary
+      - problem_definition_proposed
+      - problem_definition
+      - problem_defined
+      - confirmed_problem
+      - constraints_confirmed
+      - confirmed_constraints
+      - clarification_done
+      - clarification_answers
+      - pending_clarifications
+      - normalization_mapping
+      - normalization_confirmed
+      - data_normalized
+      - normalized_data_summary
+      - math_model
+      - math_model_confirmed
+      - pending_param_inputs
+      - pre_decision_done
+      - last_pre_decision_result
+      - solver_selected
+      - optimization_done
+      - last_optimization_result
+
+  structural_normalization:
+    order: 2
+    intent_codes: [STRUCTURAL_NORMALIZATION]
+    requires: [analysis_completed]
+    state_flag: structural_normalization_done
+    resets_on_reentry:
+      - structural_normalization_done
+      - phase1_summary
+      - problem_definition_proposed
+      - problem_definition
+      - problem_defined
+      - confirmed_problem
+      - constraints_confirmed
+      - confirmed_constraints
+      - clarification_done
+      - clarification_answers
+      - pending_clarifications
+      - normalization_mapping
+      - normalization_confirmed
+      - data_normalized
+      - normalized_data_summary
+      - math_model
+      - math_model_confirmed
+      - pending_param_inputs
+      - pre_decision_done
+      - last_pre_decision_result
+      - solver_selected
+      - optimization_done
+      - last_optimization_result
+
+  problem_definition:
+    order: 3
+    intent_codes: [PROBLEM_DEFINITION]
+    requires: [structural_normalization_done]
+    state_flag: problem_defined
+    resets_on_reentry:
+      - problem_definition_proposed
+      - problem_definition
+      - problem_defined
+      - confirmed_problem
+      - constraints_confirmed
+      - confirmed_constraints
+      - clarification_done
+      - clarification_answers
+      - pending_clarifications
+      - normalization_mapping
+      - normalization_confirmed
+      - data_normalized
+      - normalized_data_summary
+      - math_model
+      - math_model_confirmed
+      - pending_param_inputs
+      - pre_decision_done
+      - last_pre_decision_result
+      - solver_selected
+      - optimization_done
+      - last_optimization_result
+
+  data_normalization:
+    order: 4
+    intent_codes: [DATA_NORMALIZATION]
+    requires: [problem_defined]
+    state_flag: data_normalized
+    resets_on_reentry:
+      - normalization_mapping
+      - normalization_confirmed
+      - data_normalized
+      - normalized_data_summary
+      - math_model
+      - math_model_confirmed
+      - pending_param_inputs
+      - pre_decision_done
+      - last_pre_decision_result
+      - solver_selected
+      - optimization_done
+      - last_optimization_result
+
+  math_model:
+    order: 5
+    intent_codes: [MATH_MODEL, SHOW_MATH_MODEL]
+    requires: [data_normalized]
+    state_flag: math_model_confirmed
+    resets_on_reentry:
+      - math_model
+      - math_model_confirmed
+      - pending_param_inputs
+      - pre_decision_done
+      - last_pre_decision_result
+      - solver_selected
+      - optimization_done
+      - last_optimization_result
+
+  pre_decision:
+    order: 6
+    intent_codes: [PRE_DECISION, SHOW_SOLVER]
+    requires: [math_model_confirmed]
+    state_flag: pre_decision_done
+    resets_on_reentry:
+      - pre_decision_done
+      - last_pre_decision_result
+      - solver_selected
+      - optimization_done
+      - last_optimization_result
+
+  optimization:
+    order: 7
+    intent_codes: [START_OPTIMIZATION, SHOW_OPT_RESULT]
+    requires: [pre_decision_done]
+    state_flag: optimization_done
+    resets_on_reentry:
+      - optimization_done
+      - last_optimization_result

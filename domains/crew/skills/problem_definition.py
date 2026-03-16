@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import yaml
 import pandas as pd
 
+from core.platform.ambiguity_detector import _safe_eval, _DotDict
 from domains.crew.session import CrewSession, save_session_state
 
 logger = logging.getLogger(__name__)
@@ -147,6 +148,12 @@ class ProblemDefinitionSkill:
         if params.get("event_type") == "problem_definition_confirm":
             return await self._handle_pd_confirm(session, project_id, params.get("event_data", {}))
 
+        # ── Clarification 답변 처리 (질문 대기 중일 때) ──
+        if state.pending_clarifications and not state.clarification_done:
+            return await self._handle_clarification_answer(
+                model, session, project_id, message, params
+            )
+
         # 이미 제안을 보냈고 사용자 응답 대기 중
         if state.problem_definition_proposed and not state.problem_defined:
             return await self._handle_user_response(model, session, project_id, message)
@@ -166,6 +173,9 @@ class ProblemDefinitionSkill:
         # 파라미터 수집 (Phase 1 데이터 우선)
         parameters = self._collect_parameters(state, project_id, dk, constraints)
 
+        # ── Ambiguity Detection은 확정(confirm) 시점에 실행 ──
+        # 사용자가 목적함수/제약조건을 검토·수정한 후, 확정된 제약에 대해서만 질문
+
         proposal = {
             "stage": problem_type.get("stage", "task_generation"),
             "variant": problem_type.get("variant"),
@@ -184,6 +194,7 @@ class ProblemDefinitionSkill:
 
         state.problem_definition = proposal
         state.problem_definition_proposed = True
+        state.clarification_done = True
         save_session_state(project_id, state)
 
         response_text = self._format_proposal(state, dk, proposal)
@@ -378,12 +389,16 @@ class ProblemDefinitionSkill:
     # ══════════════════════════════════════
     async def _determine_constraints_phased(
         self, model, state, project_id: str, dk,
-        detected_data_types: Set[str], topology: Optional[str]
+        detected_data_types: Set[str], topology: Optional[str],
+        resolved_params: Optional[dict] = None,
     ) -> dict:
         """
-        Phase A: 적용 가능성 필터링
+        Phase A: 적용 가능성 필터링 (activation_condition 포함)
         Phase B: 타입별 값 추출
         Phase C: 결과 정리 (사용자 확인용)
+
+        resolved_params: clarification 답변 등으로 확정된 파라미터 dict.
+            activation_condition 평가에 사용됨.
         """
         if not dk:
             return {"hard": {}, "soft": {}}
@@ -397,7 +412,8 @@ class ProblemDefinitionSkill:
         # ── Phase A: 적용 가능성 필터링 ──
         for cname, cdata in dk.hard_constraints.items():
             applicability = self._check_applicability(
-                cdata, detected_data_types, topology, phase1_data
+                cdata, detected_data_types, topology, phase1_data,
+                resolved_params=resolved_params,
             )
             if not applicability["applicable"]:
                 logger.debug(f"Constraint {cname} skipped: {applicability['reason']}")
@@ -428,7 +444,8 @@ class ProblemDefinitionSkill:
         # Soft constraints
         for cname, cdata in dk.soft_constraints.items():
             applicability = self._check_applicability(
-                cdata, detected_data_types, topology, phase1_data
+                cdata, detected_data_types, topology, phase1_data,
+                resolved_params=resolved_params,
             )
             if not applicability["applicable"]:
                 continue
@@ -473,7 +490,8 @@ class ProblemDefinitionSkill:
     # ── Phase A: 적용 가능성 검사 ──
     def _check_applicability(
         self, cdata: dict, detected_data_types: Set[str],
-        topology: Optional[str], phase1_data: dict
+        topology: Optional[str], phase1_data: dict,
+        resolved_params: Optional[dict] = None,
     ) -> dict:
         """제약조건이 현재 데이터/토폴로지에 적용 가능한지 판단"""
 
@@ -508,6 +526,17 @@ class ProblemDefinitionSkill:
                     return {"applicable": False, "reason": f"condition not met: {cond}"}
                 if "roster_assignment" in cond_lower:
                     pass  # 추후 단계 구분 시 필터링
+
+        # 3. activation_condition: 파라미터 기반 조건부 활성화
+        activation_cond = cdata.get("activation_condition")
+        if activation_cond:
+            if not resolved_params:
+                # 조건 평가에 필요한 파라미터가 아직 없음 → 비활성
+                return {"applicable": False, "reason": f"activation_condition pending: {activation_cond}"}
+            ctx = _DotDict({"params": _DotDict(resolved_params)})
+            result = _safe_eval(activation_cond, ctx)
+            if result is None or result is False:
+                return {"applicable": False, "reason": f"activation_condition not met: {activation_cond}"}
 
         return {"applicable": True, "reason": "ok"}
 
@@ -1382,8 +1411,22 @@ class ProblemDefinitionSkill:
                 direction = "Hard → Soft" if to_cat == "soft" else "Soft → Hard"
                 changed_lines.append(f"  - **{cname}**: {direction}")
 
-        # 문제 정의 확정
+        # ── 확정 시점 Ambiguity Detection ──
         state.problem_definition = pd
+        if not state.clarification_done:
+            parameters = pd.get("parameters", {})
+            confirmed_constraints = {
+                "hard": pd.get("hard_constraints", {}),
+                "soft": pd.get("soft_constraints", {}),
+            }
+            clarification_result = self._run_ambiguity_detection(
+                state, project_id, parameters, confirmed_constraints
+            )
+            if clarification_result:
+                save_session_state(project_id, state)
+                return clarification_result
+
+        # 문제 정의 확정
         state.problem_defined = True
         state.confirmed_problem = pd
         state.constraints_confirmed = True
@@ -1414,562 +1457,661 @@ class ProblemDefinitionSkill:
     # ──────────────────────────────────────
     # 사용자 응답 처리
     # ──────────────────────────────────────
+    # ──────────────────────────────────────
+    # Intent-based Dispatch (Phase E)
+    # ──────────────────────────────────────
     async def _handle_user_response(
         self, model, session: CrewSession, project_id: str, message: str
     ) -> Dict:
+        """Fast-Path + LLM Intent Classifier → Handler dispatch"""
+        from core.platform.intent_classifier import get_intent_classifier, log_intent
+
         state = session.state
-        keywords = self.prompt_config.get("confirmation_keywords", {})
+        classifier = get_intent_classifier()
+
+        # ── 1. Fast-Path: 버튼 클릭 (정확한 문자열 매칭) ──
+        fast = classifier.fast_path("problem_definition", message)
+        if fast:
+            logger.info(f"[{project_id}] PD fast_path: {fast.intent}")
+            log_intent(project_id, message, fast, skill_name="problem_definition")
+            return await self._dispatch_pd_intent(
+                fast.intent, fast.params, model, session, project_id, message
+            )
+
+        # ── 2. LLM Intent Classification ──
+        state_summary = self._build_pd_state_summary(state)
+        pending = self._get_pd_pending_action(state)
+        intent_result = await classifier.classify(
+            model, "problem_definition", message, state_summary, pending
+        )
+        logger.info(
+            f"[{project_id}] PD LLM intent: {intent_result.intent} "
+            f"(conf={intent_result.confidence:.2f}, src={intent_result.source})"
+        )
+        log_intent(project_id, message, intent_result, skill_name="problem_definition")
+
+        # ── 3. Confidence 충분 → dispatch ──
+        if intent_result.confidence >= classifier.CONFIDENCE_THRESHOLD:
+            return await self._dispatch_pd_intent(
+                intent_result.intent, intent_result.params,
+                model, session, project_id, message
+            )
+
+        # ── 4. Low confidence → LLM Smart Apply fallback ──
+        if model and len(message.strip()) > 5:
+            return await self._llm_smart_apply(model, state, project_id, message)
+
+        return self._pd_awaiting_response(state)
+
+    async def _dispatch_pd_intent(
+        self, intent: str, params: Dict,
+        model, session: CrewSession, project_id: str, message: str
+    ) -> Dict:
+        """intent에 따라 해당 handler 호출"""
+        state = session.state
+
+        if intent == "confirm":
+            return await self._pd_handle_confirm(model, session, project_id)
+        elif intent == "change_objective":
+            return await self._pd_handle_objective_change(model, session, project_id, message)
+        elif intent == "change_category":
+            return await self._pd_handle_category_change(model, session, project_id, message)
+        elif intent == "set_parameter":
+            return await self._pd_handle_parameter_set(model, session, project_id, message)
+        elif intent == "modify_general":
+            return self._pd_handle_modify_general(state)
+        elif intent == "restart":
+            return self._pd_handle_restart(state, project_id)
+        elif intent == "cancel":
+            return self._pd_handle_cancel(state, project_id)
+        elif intent == "remove_constraint" or intent == "add_constraint":
+            if model and len(message.strip()) > 5:
+                return await self._llm_smart_apply(model, state, project_id, message)
+        elif intent == "question":
+            if model:
+                return await self._llm_smart_apply(model, state, project_id, message)
+
+        return self._pd_awaiting_response(state)
+
+    # ──────────────────────────────────────
+    # Handler: confirm
+    # ──────────────────────────────────────
+    async def _pd_handle_confirm(
+        self, model, session: CrewSession, project_id: str
+    ) -> Dict:
+        state = session.state
+
+        # 확정 시점 Ambiguity Detection
+        if not state.clarification_done:
+            pd = state.problem_definition or {}
+            parameters = pd.get("parameters", {})
+            confirmed_constraints = {
+                "hard": pd.get("hard_constraints", {}),
+                "soft": pd.get("soft_constraints", {}),
+            }
+            clarification_result = self._run_ambiguity_detection(
+                state, project_id, parameters, confirmed_constraints
+            )
+            if clarification_result:
+                save_session_state(project_id, state)
+                return clarification_result
+
+        state.problem_defined = True
+        state.confirmed_problem = state.problem_definition
+        state.constraints_confirmed = True
+        state.confirmed_constraints = {
+            "hard": state.problem_definition.get("hard_constraints", {}),
+            "soft": state.problem_definition.get("soft_constraints", {}),
+        }
+        save_session_state(project_id, state)
+
+        return {
+            "type": "problem_definition",
+            "text": (
+                "**문제 정의가 확정되었습니다.**\n\n"
+                "데이터 정규화를 자동으로 진행합니다..."
+            ),
+            "data": {
+                "view_mode": "problem_defined",
+                "confirmed_problem": state.confirmed_problem,
+                "agent_status": "problem_defined",
+                "auto_next": "data_normalization",
+            },
+            "options": [],
+        }
+
+    # ──────────────────────────────────────
+    # Handler: modify_general
+    # ──────────────────────────────────────
+    def _pd_handle_modify_general(self, state) -> Dict:
+        return {
+            "type": "problem_definition",
+            "text": (
+                "수정할 항목을 알려주세요. 예시:\n\n"
+                "- 목적함수를 [목적함수명]으로 변경\n"
+                "- [파라미터명] = [값]\n"
+                "- [제약조건명] 제거\n"
+                "- [제약조건명] soft로 변경 (Hard→Soft)\n"
+                "- [제약조건명] hard로 변경 (Soft→Hard)\n"
+            ),
+            "data": {
+                "view_mode": "problem_definition",
+                "proposal": state.problem_definition,
+                "agent_status": "modification_pending",
+            },
+            "options": [],
+        }
+
+    # ──────────────────────────────────────
+    # Handler: restart
+    # ──────────────────────────────────────
+    def _pd_handle_restart(self, state, project_id: str) -> Dict:
+        state.problem_definition = None
+        state.problem_definition_proposed = False
+        state.problem_defined = False
+        state.confirmed_problem = None
+        state.constraints_confirmed = False
+        state.confirmed_constraints = None
+        save_session_state(project_id, state)
+
+        return {
+            "type": "info",
+            "text": "문제 정의를 초기화했습니다. 다시 분석을 시작합니다.",
+            "data": {"agent_status": "reset"},
+            "options": [
+                {"label": "분석 시작", "action": "send", "message": "분석 시작해줘"},
+            ],
+        }
+
+    # ──────────────────────────────────────
+    # Handler: cancel
+    # ──────────────────────────────────────
+    def _pd_handle_cancel(self, state, project_id: str) -> Dict:
+        state.objective_changing = False
+        state.pending_objective = None
+        state.pending_category_change = None
+        save_session_state(project_id, state)
+        return {
+            "type": "problem_definition",
+            "text": "작업을 취소했습니다. 현재 설정을 유지합니다.",
+            "data": {
+                "proposal": state.problem_definition,
+                "agent_status": "cancelled",
+            },
+            "options": [
+                {"label": "✅ 확인", "action": "send", "message": "확인"},
+                {"label": "✏️ 수정", "action": "send", "message": "수정"},
+            ],
+        }
+
+    # ──────────────────────────────────────
+    # Handler: change_objective
+    # ──────────────────────────────────────
+    async def _pd_handle_objective_change(
+        self, model, session: CrewSession, project_id: str, message: str
+    ) -> Dict:
+        state = session.state
         msg_lower = message.strip().lower()
 
-        positive = [k.lower() for k in keywords.get("positive", [])]
-        modify = [k.lower() for k in keywords.get("modify", [])]
-        restart = [k.lower() for k in keywords.get("restart", [])]
+        if not state.problem_definition:
+            return self._pd_awaiting_response(state)
 
-        # 확인
-        if any(kw in msg_lower for kw in positive):
-            state.problem_defined = True
-            state.confirmed_problem = state.problem_definition
-            state.constraints_confirmed = True
-            state.confirmed_constraints = {
-                "hard": state.problem_definition.get("hard_constraints", {}),
-                "soft": state.problem_definition.get("soft_constraints", {}),
-            }
-            save_session_state(project_id, state)
-
-            return {
-                "type": "problem_definition",
-                "text": (
-                    "**문제 정의가 확정되었습니다.**\n\n"
-                    "데이터 정규화를 자동으로 진행합니다..."
-                ),
-                "data": {
-                    "view_mode": "problem_defined",
-                    "confirmed_problem": state.confirmed_problem,
-                    "agent_status": "problem_defined",
-                    "auto_next": "data_normalization",
-                },
-                "options": [],
-            }
-
-        # ── 목적함수 변경 early detection (before modify keyword catch) ──
-        _is_objective_change = bool(
-            state.problem_definition and
-            ("목적함수" in message or "objective" in msg_lower)
-        )
-
-        # ── 제약조건 카테고리 변경 early detection (before modify keyword catch) ──
-        _cat_early = re.search(r'(\w+)\s+(?:를\s*|을\s*)?(?:로\s*)?(hard|soft)(?:로)?(?:\s*변경|\s*전환|\s*바꿔)', message, re.IGNORECASE)
-        if not _cat_early:
-            _cat_early = re.search(r'(?:change|move|switch|set)\s+(\w+)\s+(?:to\s+)?(hard|soft)', message, re.IGNORECASE)
-        _is_category_change = bool(_cat_early and state.problem_definition)
-
-        # 수정 요청 (목적함수 변경, 카테고리 변경은 전용 핸들러로 처리)
-        if not _is_category_change and not _is_objective_change and any(kw in msg_lower for kw in modify):
-            return {
-                "type": "problem_definition",
-                "text": (
-                    "수정할 항목을 알려주세요. 예시:\n\n"
-                    "- 목적함수를 [목적함수명]으로 변경\n"
-                    "- [파라미터명] = [값]\n"
-                    "- [제약조건명] 제거\n"
-                    "- [제약조건명] soft로 변경 (Hard→Soft)\n"
-                    "- [제약조건명] hard로 변경 (Soft→Hard)\n"
-                ),
-                "data": {
-                    "view_mode": "problem_definition",
-                    "proposal": state.problem_definition,
-                    "agent_status": "modification_pending",
-                },
-                "options": [],
-            }
-
-        # 재시작
-        if any(kw in msg_lower for kw in restart):
-            state.problem_definition = None
-            state.problem_definition_proposed = False
-            state.problem_defined = False
-            state.confirmed_problem = None
-            state.constraints_confirmed = False
-            state.confirmed_constraints = None
-            save_session_state(project_id, state)
-
-            return {
-                "type": "info",
-                "text": "문제 정의를 초기화했습니다. 다시 분석을 시작합니다.",
-                "data": {"agent_status": "reset"},
-                "options": [
-                    {"label": "분석 시작", "action": "send", "message": "분석 시작해줘"},
-                ],
-            }
-
-        # ── 목적함수 변경 ──
-        import re as _re
-        obj_pattern = _re.compile(
+        # regex 기반 목적함수 추출
+        obj_pattern = re.compile(
             r"목적함수[를을]?\s*(.+?)(?:로|으로)\s*(?:변경|바꿔|바꾸|수정)|"
             r"(.+?)(?:로|으로)\s*목적함수[를을]?\s*(?:변경|바꿔|바꾸|수정)|"
             r"목적함수[를을]?\s*(.+?)(?:을|를)?\s*(?:변경|바꿔|바꾸|수정)|"
             r"objective\s+(?:to\s+)?(\w+)",
-            _re.IGNORECASE
+            re.IGNORECASE
         )
         obj_match = obj_pattern.search(message)
-        if obj_match and state.problem_definition:
+        requested = ""
+        if obj_match:
             requested = (obj_match.group(1) or obj_match.group(2) or obj_match.group(3) or obj_match.group(4) or "").strip()
             if not requested:
-                obj_match = None  # 빈 문자열이면 매칭 실패 처리
+                obj_match = None
 
-            # dk에서 objectives 로드
-            dk = self._load_domain(state)
-            import yaml as _yaml
-            domain_name = state.problem_definition.get("domain", "railway")
-            _constraints_path = f"knowledge/domains/{domain_name}/constraints.yaml"
-            try:
-                with open(_constraints_path, encoding="utf-8") as _f:
-                    _cdata = _yaml.safe_load(_f)
-                objectives_map = _cdata.get("objectives", {})
-            except Exception:
-                objectives_map = {}
+        _obj_use_full_message = not obj_match or (obj_match and len(requested) > 30)
 
-            # 매칭: 이름 또는 description_ko에서 유사도 스코어링
-            matched_obj = None
-            best_score = 0
-            for oname, odata in objectives_map.items():
-                desc_ko = odata.get("description_ko", "")
-                desc_en = odata.get("description", "")
-                score = 0
-                # 정확히 일치
+        # objectives 로드
+        dk = self._load_domain(state)
+        domain_name = state.problem_definition.get("domain", "railway")
+        _constraints_path = f"knowledge/domains/{domain_name}/constraints.yaml"
+        try:
+            with open(_constraints_path, encoding="utf-8") as _f:
+                _cdata = yaml.safe_load(_f)
+            objectives_map = _cdata.get("objectives", {})
+        except Exception:
+            objectives_map = {}
+
+        if not objectives_map:
+            return self._pd_awaiting_response(state)
+
+        # 매칭 텍스트
+        _match_text = requested if (obj_match and len(requested) <= 30) else message
+
+        # 유사도 스코어링
+        matched_obj = None
+        best_score = 0
+        for oname, odata in objectives_map.items():
+            desc_ko = odata.get("description_ko", "")
+            desc_en = odata.get("description", "")
+            kws = odata.get("keywords", [])
+            score = 0
+
+            if obj_match and len(requested) <= 30:
                 if requested == desc_ko or requested == oname:
                     score = 100
                 elif requested == desc_en:
                     score = 100
-                # desc_ko가 requested에 완전 포함 (사용자가 더 긴 텍스트 입력)
                 elif desc_ko and desc_ko in requested:
                     score = 80 + len(desc_ko)
                 elif requested in desc_ko:
                     score = 60 + len(requested)
                 elif requested in oname:
                     score = 50 + len(requested)
-                # 단어 겹침 비교
-                else:
-                    req_words = set(requested.split())
-                    ko_words = set(desc_ko.split()) if desc_ko else set()
-                    overlap = req_words & ko_words
-                    if overlap:
-                        score = 30 + len(overlap) * 10
-                if score > best_score:
-                    best_score = score
-                    matched_obj = (oname, odata)
 
-            if matched_obj:
-                oname, odata = matched_obj
+            if score < 50 and kws:
+                kw_hits = sum(1 for kw in kws if kw in msg_lower)
+                if kw_hits >= 2:
+                    score = max(score, 70 + kw_hits * 5)
+                elif kw_hits == 1:
+                    score = max(score, 40 + len([kw for kw in kws if kw in msg_lower][0]) * 2)
 
-                # ── 목적함수 외 추가 지시사항 추출 ──
-                # "업무량 균형 최적화로 목적함수 변경 단 주간 근무 32명, 야간 근무 13명 조건으로"
-                # → 목적함수 변경 부분을 제거하고 나머지를 추가 지시사항으로 저장
-                _extra_instructions = ""
-                if obj_match:
-                    _matched_span = obj_match.group(0)
-                    _remainder = message.replace(_matched_span, "").strip()
-                    # "단", "그리고", "조건으로" 등 접속사 제거
-                    _remainder = _re.sub(r'^[\s,단\.그리고]+', '', _remainder).strip()
-                    if len(_remainder) >= 4:  # 의미 있는 텍스트만
-                        _extra_instructions = _remainder
+            if score < 30:
+                match_words = set(_match_text.split())
+                ko_words = set(desc_ko.split()) if desc_ko else set()
+                overlap = match_words & ko_words
+                if overlap:
+                    score = max(score, 30 + len(overlap) * 10)
 
-                # ── 경고 게이트: objective_changing 플래그 확인 ──
-                if not getattr(state, 'objective_changing', False):
-                    # 첫 번째 요청 → 경고 메시지 + 확인 요청
-                    state.objective_changing = True
-                    state._pending_objective = {"name": oname, "data": odata}
-                    state._pending_extra_instructions = _extra_instructions
-                    save_session_state(project_id, state)
+            if score > best_score:
+                best_score = score
+                matched_obj = (oname, odata)
 
-                    old_obj = state.problem_definition.get("objective", {})
-                    old_desc = old_obj.get("description", old_obj.get("description_ko", "현재 목적함수"))
-                    new_desc = odata.get("description_ko", odata["description"])
-
-                    promote_info = ""
-                    promote_list = odata.get("promote_to_hard", [])
-                    if promote_list:
-                        promote_info = f"\n- 자동 Hard 승격 제약: {', '.join(promote_list)}"
-
-                    extra_note = ""
-                    if _extra_instructions:
-                        extra_note = f"\n\n📋 **추가 조건 (목적함수 변경 후 적용):**\n> {_extra_instructions}"
-
-                    return {
-                        "type": "problem_definition",
-                        "text": (
-                            f"⚠️ **목적함수 변경 확인**\n\n"
-                            f"- 현재: {old_desc}\n"
-                            f"- 변경: **{new_desc}**\n"
-                            f"{promote_info}\n\n"
-                            f"**목적함수를 변경하면 제약조건이 새로 구성됩니다.**\n"
-                            f"현재 수정한 제약조건 편집 내용은 초기화됩니다."
-                            f"{extra_note}\n\n"
-                            f"계속하시겠습니까?"
-                        ),
-                        "data": {
-                            "view_mode": "problem_definition",
-                            "proposal": state.problem_definition,
-                            "agent_status": "objective_change_warning",
-                            "pending_objective": oname,
-                        },
-                        "options": [
-                            {"label": "✅ 계속 변경", "action": "send",
-                             "message": f"목적함수를 {new_desc}으로 변경"},
-                            {"label": "❌ 취소", "action": "send", "message": "취소"},
-                        ],
-                    }
-
-                # ── 두 번째 요청 (확인됨) → 실제 변경 + 제약조건 재구성 ──
-                _extra_instr = getattr(state, '_pending_extra_instructions', '') or ''
-                state.objective_changing = False
-                state._pending_objective = None
-                state._pending_extra_instructions = None
-                old_obj = state.problem_definition.get("objective", {})
-                old_desc = old_obj.get("description", "알 수 없음")
-
-                # 목적함수 업데이트
-                state.problem_definition["objective"] = {
-                    "type": odata["type"],
-                    "target": oname,
-                    "description": odata["description"],
-                    "description_ko": odata.get("description_ko", odata["description"]),
-                    "expression": odata.get("expression", ""),
-                    "alternatives": [
-                        {"target": k, "description": v.get("description_ko", v["description"])}
-                        for k, v in objectives_map.items() if k != oname
-                    ],
-                }
-
-                # ── 제약조건 재구성 ──
-                detected_data_types = set(state.problem_definition.get("detected_data_types", []))
-                topology = state.problem_definition.get("topology")
-                try:
-                    import asyncio
-                    loop = asyncio.get_event_loop()
-                    new_constraints = loop.run_until_complete(
-                        self._determine_constraints_phased(
-                            None, state, project_id, dk,
-                            detected_data_types, topology
-                        )
-                    ) if not asyncio.get_event_loop().is_running() else (
-                        await self._determine_constraints_phased(
-                            None, state, project_id, dk,
-                            detected_data_types, topology
-                        )
-                    )
-                except Exception:
-                    new_constraints = await self._determine_constraints_phased(
-                        None, state, project_id, dk,
-                        detected_data_types, topology
-                    )
-
-                state.problem_definition["hard_constraints"] = new_constraints.get("hard", {})
-                state.problem_definition["soft_constraints"] = new_constraints.get("soft", {})
-
-                # promote_to_hard 처리
-                changes = []
-                promote_list = odata.get("promote_to_hard", [])
-                for cname in promote_list:
-                    if cname in state.problem_definition.get("soft_constraints", {}):
-                        moved = state.problem_definition["soft_constraints"].pop(cname)
-                        state.problem_definition["hard_constraints"][cname] = moved
-                        changes.append(f"  - **{cname}**: Soft → Hard (목적함수 연동)")
-                        if dk:
-                            dk.move_constraint(cname, "hard", force=True)
-
-                # 파라미터 재수집 (제약조건 변경에 따라 필요 파라미터도 달라짐)
-                new_all_constraints = {
-                    "hard": state.problem_definition.get("hard_constraints", {}),
-                    "soft": state.problem_definition.get("soft_constraints", {}),
-                }
-                state.problem_definition["parameters"] = self._collect_parameters(
-                    state, project_id, dk, new_all_constraints
-                )
-
-                # 확정 상태 초기화 (재확인 필요)
-                state.constraints_confirmed = False
-                state.confirmed_constraints = None
-                save_session_state(project_id, state)
-
-                hard_count = len(state.problem_definition.get("hard_constraints", {}))
-                soft_count = len(state.problem_definition.get("soft_constraints", {}))
-
-                change_text = ""
-                if changes:
-                    change_text = "\n\n**자동 연동 변경:**\n" + "\n".join(changes)
-
-                # ── 추가 지시사항이 있으면 LLM Smart Apply로 처리 ──
-                extra_applied_text = ""
-                if _extra_instr:
-                    try:
-                        extra_result = await self._llm_smart_apply(
-                            model, state, project_id, _extra_instr
-                        )
-                        # _llm_smart_apply가 state를 직접 수정하므로 결과 텍스트만 추출
-                        extra_text = extra_result.get("text", "")
-                        if extra_text:
-                            extra_applied_text = f"\n\n**추가 조건 적용:**\n{extra_text}"
-                        # 업데이트된 proposal 사용
-                        save_session_state(project_id, state)
-                    except Exception as e:
-                        logger.warning(f"Extra instructions apply failed: {e}")
-                        extra_applied_text = f"\n\n⚠️ 추가 조건 적용 실패: 확인 후 별도로 입력해주세요.\n> {_extra_instr}"
-
-                return {
-                    "type": "problem_definition",
-                    "text": (
-                        f"✅ 목적함수를 변경하고 제약조건을 재구성했습니다.\n\n"
-                        f"- 이전: {old_desc}\n"
-                        f"- 변경: **{odata.get('description_ko', odata['description'])}**\n"
-                        f"- 수식: {odata.get('expression', '')}\n"
-                        f"- 재구성 결과: Hard {hard_count}개, Soft {soft_count}개"
-                        f"{change_text}"
-                        f"{extra_applied_text}\n\n"
-                        f"아래에서 제약조건을 확인하고 필요시 수정해주세요."
-                    ),
-                    "data": {
-                        "view_mode": "problem_definition",
-                        "proposal": state.problem_definition,
-                        "agent_status": "objective_changed_constraints_rebuilt",
-                    },
-                    "options": [
-                        {"label": "✅ 확인", "action": "send", "message": "확인"},
-                        {"label": "✏️ 제약조건 수정", "action": "send", "message": "수정"},
-                    ],
-                }
-
-            else:
-                # 매칭 실패
-                obj_list = "\n".join([
-                    f"- **{k}**: {v.get('description_ko', v['description'])}"
-                    for k, v in objectives_map.items()
-                ])
-                return {
-                    "type": "problem_definition",
-                    "text": (
-                        f"'{requested}'에 해당하는 목적함수를 찾을 수 없습니다.\n\n"
-                        f"**사용 가능한 목적함수:**\n{obj_list}\n\n"
-                        f"위 이름으로 다시 입력해주세요."
-                    ),
-                    "data": {"agent_status": "objective_change_failed"},
-                    "options": [
-                        {"label": k, "action": "send",
-                         "message": f"목적함수를 {v.get('description_ko', k)}로 변경"}
-                        for k, v in list(objectives_map.items())[:4]
-                    ],
-                }
-
-        # ── 목적함수 변경 fallback: early detection 매치했으나 regex 미매치 시 ──
-        if _is_objective_change and state.problem_definition:
-            dk = self._load_domain(state)
-            import yaml as _yaml2
-            domain_name = state.problem_definition.get("domain", "railway")
-            _constraints_path2 = f"knowledge/domains/{domain_name}/constraints.yaml"
-            try:
-                with open(_constraints_path2, encoding="utf-8") as _f2:
-                    _cdata2 = _yaml2.safe_load(_f2)
-                objectives_map2 = _cdata2.get("objectives", {})
-            except Exception:
-                objectives_map2 = {}
-
-            if objectives_map2:
-                obj_list = "\n".join([
-                    f"- **{k}**: {v.get('description_ko', v['description'])}"
-                    for k, v in objectives_map2.items()
-                ])
-                current_obj = state.problem_definition.get("objective", {})
-                current_desc = current_obj.get("description_ko", current_obj.get("description", ""))
-                return {
-                    "type": "problem_definition",
-                    "text": (
-                        f"현재 목적함수: **{current_desc}**\n\n"
-                        f"**변경 가능한 목적함수:**\n{obj_list}\n\n"
-                        f"변경할 목적함수를 선택해주세요."
-                    ),
-                    "data": {
-                        "view_mode": "problem_definition",
-                        "proposal": state.problem_definition,
-                        "agent_status": "objective_change_selection",
-                    },
-                    "options": [
-                        {"label": v.get("description_ko", k), "action": "send",
-                         "message": f"목적함수를 {v.get('description_ko', k)}로 변경"}
-                        for k, v in list(objectives_map2.items())[:4]
-                    ],
-                }
-
-        # ── 취소 처리 (objective_changing 중일 때) ──
-        if getattr(state, 'objective_changing', False) and ('취소' in msg_lower or 'cancel' in msg_lower):
-            state.objective_changing = False
-            state._pending_objective = None
-            save_session_state(project_id, state)
+        # 매칭 실패 → 선택지 표시
+        if not matched_obj:
+            obj_list = "\n".join([
+                f"- **{k}**: {v.get('description_ko', v['description'])}"
+                for k, v in objectives_map.items()
+            ])
+            current_obj = state.problem_definition.get("objective", {})
+            current_desc = current_obj.get("description_ko", current_obj.get("description", ""))
             return {
                 "type": "problem_definition",
-                "text": "목적함수 변경을 취소했습니다. 현재 설정을 유지합니다.",
+                "text": (
+                    f"현재 목적함수: **{current_desc}**\n\n"
+                    f"**변경 가능한 목적함수:**\n{obj_list}\n\n"
+                    f"변경할 목적함수를 선택해주세요."
+                ),
                 "data": {
+                    "view_mode": "problem_definition",
                     "proposal": state.problem_definition,
-                    "agent_status": "objective_change_cancelled",
+                    "agent_status": "objective_change_selection",
                 },
                 "options": [
-                    {"label": "✅ 확인", "action": "send", "message": "확인"},
-                    {"label": "✏️ 수정", "action": "send", "message": "수정"},
+                    {"label": v.get("description_ko", k), "action": "send",
+                     "message": f"목적함수를 {v.get('description_ko', k)}로 변경"}
+                    for k, v in list(objectives_map.items())[:4]
                 ],
             }
 
-        # ── 제약조건 카테고리 변경 (hard↔soft) ──
-        category_pattern = re.compile(
-            r"(\w+)\s+(?:를\s*|을\s*)?(?:로\s*)?(hard|soft)(?:로)?(?:\s*변경|\s*전환|\s*바꿔|\s*바꾸)",
-            re.IGNORECASE
+        oname, odata = matched_obj
+
+        # 추가 지시사항 추출
+        _extra_instructions = ""
+        if obj_match and not _obj_use_full_message:
+            _matched_span = obj_match.group(0)
+            _remainder = message.replace(_matched_span, "").strip()
+        else:
+            _remainder = re.sub(
+                r'목적함수[를을]?\s*|(?:로|으로)\s*(?:변경|바꿔|바꾸고?\s*싶|수정)|'
+                r'(?:변경|바꿔|바꾸고?\s*싶|수정)\s*(?:합니다|해주세요|하고)?',
+                '', message
+            ).strip()
+        _remainder = re.sub(r'^[\s,단\.그리고]+', '', _remainder).strip()
+        _remainder = re.sub(r'[\s\.습니다]+$', '', _remainder).strip()
+        if len(_remainder) >= 4:
+            _extra_instructions = _remainder
+
+        # 경고 게이트
+        if not state.objective_changing:
+            state.objective_changing = True
+            state.pending_objective = {"name": oname, "data": odata}
+            state.pending_extra_instructions = _extra_instructions
+            save_session_state(project_id, state)
+
+            old_obj = state.problem_definition.get("objective", {})
+            old_desc = old_obj.get("description", old_obj.get("description_ko", "현재 목적함수"))
+            new_desc = odata.get("description_ko", odata["description"])
+
+            promote_info = ""
+            promote_list = odata.get("promote_to_hard", [])
+            if promote_list:
+                promote_info = f"\n- 자동 Hard 승격 제약: {', '.join(promote_list)}"
+
+            extra_note = ""
+            if _extra_instructions:
+                extra_note = f"\n\n📋 **추가 조건 (목적함수 변경 후 적용):**\n> {_extra_instructions}"
+
+            return {
+                "type": "problem_definition",
+                "text": (
+                    f"⚠️ **목적함수 변경 확인**\n\n"
+                    f"- 현재: {old_desc}\n"
+                    f"- 변경: **{new_desc}**\n"
+                    f"{promote_info}\n\n"
+                    f"**목적함수를 변경하면 제약조건이 새로 구성됩니다.**\n"
+                    f"현재 수정한 제약조건 편집 내용은 초기화됩니다."
+                    f"{extra_note}\n\n"
+                    f"계속하시겠습니까?"
+                ),
+                "data": {
+                    "view_mode": "problem_definition",
+                    "proposal": state.problem_definition,
+                    "agent_status": "objective_change_warning",
+                    "pending_objective": oname,
+                },
+                "options": [
+                    {"label": "✅ 계속 변경", "action": "send",
+                     "message": f"목적함수를 {new_desc}으로 변경"},
+                    {"label": "❌ 취소", "action": "send", "message": "취소"},
+                ],
+            }
+
+        # 두 번째 요청 (확인됨) → 실제 변경 + 제약조건 재구성
+        _extra_instr = state.pending_extra_instructions or ''
+        state.objective_changing = False
+        state.pending_objective = None
+        state.pending_extra_instructions = None
+        old_obj = state.problem_definition.get("objective", {})
+        old_desc = old_obj.get("description", "알 수 없음")
+
+        state.problem_definition["objective"] = {
+            "type": odata["type"],
+            "target": oname,
+            "description": odata["description"],
+            "description_ko": odata.get("description_ko", odata["description"]),
+            "expression": odata.get("expression", ""),
+            "alternatives": [
+                {"target": k, "description": v.get("description_ko", v["description"])}
+                for k, v in objectives_map.items() if k != oname
+            ],
+        }
+
+        # 제약조건 재구성
+        detected_data_types = set(state.problem_definition.get("detected_data_types", []))
+        topology = state.problem_definition.get("topology")
+        new_constraints = await self._determine_constraints_phased(
+            None, state, project_id, dk, detected_data_types, topology
         )
-        cat_match = category_pattern.search(message)
+
+        state.problem_definition["hard_constraints"] = new_constraints.get("hard", {})
+        state.problem_definition["soft_constraints"] = new_constraints.get("soft", {})
+
+        # promote_to_hard
+        changes = []
+        promote_list = odata.get("promote_to_hard", [])
+        for cname in promote_list:
+            if cname in state.problem_definition.get("soft_constraints", {}):
+                moved = state.problem_definition["soft_constraints"].pop(cname)
+                state.problem_definition["hard_constraints"][cname] = moved
+                changes.append(f"  - **{cname}**: Soft → Hard (목적함수 연동)")
+                if dk:
+                    dk.move_constraint(cname, "hard", force=True)
+
+        # 파라미터 재수집
+        new_all_constraints = {
+            "hard": state.problem_definition.get("hard_constraints", {}),
+            "soft": state.problem_definition.get("soft_constraints", {}),
+        }
+        state.problem_definition["parameters"] = self._collect_parameters(
+            state, project_id, dk, new_all_constraints
+        )
+
+        state.constraints_confirmed = False
+        state.confirmed_constraints = None
+        save_session_state(project_id, state)
+
+        hard_count = len(state.problem_definition.get("hard_constraints", {}))
+        soft_count = len(state.problem_definition.get("soft_constraints", {}))
+        change_text = ""
+        if changes:
+            change_text = "\n\n**자동 연동 변경:**\n" + "\n".join(changes)
+
+        # 추가 지시사항 → LLM Smart Apply
+        extra_applied_text = ""
+        if _extra_instr:
+            try:
+                extra_result = await self._llm_smart_apply(model, state, project_id, _extra_instr)
+                extra_text = extra_result.get("text", "")
+                if extra_text:
+                    extra_applied_text = f"\n\n**추가 조건 적용:**\n{extra_text}"
+                save_session_state(project_id, state)
+            except Exception as e:
+                logger.warning(f"Extra instructions apply failed: {e}")
+                extra_applied_text = f"\n\n⚠️ 추가 조건 적용 실패: 확인 후 별도로 입력해주세요.\n> {_extra_instr}"
+
+        return {
+            "type": "problem_definition",
+            "text": (
+                f"✅ 목적함수를 변경하고 제약조건을 재구성했습니다.\n\n"
+                f"- 이전: {old_desc}\n"
+                f"- 변경: **{odata.get('description_ko', odata['description'])}**\n"
+                f"- 수식: {odata.get('expression', '')}\n"
+                f"- 재구성 결과: Hard {hard_count}개, Soft {soft_count}개"
+                f"{change_text}"
+                f"{extra_applied_text}\n\n"
+                f"아래에서 제약조건을 확인하고 필요시 수정해주세요."
+            ),
+            "data": {
+                "view_mode": "problem_definition",
+                "proposal": state.problem_definition,
+                "agent_status": "objective_changed_constraints_rebuilt",
+            },
+            "options": [
+                {"label": "✅ 확인", "action": "send", "message": "확인"},
+                {"label": "✏️ 제약조건 수정", "action": "send", "message": "수정"},
+            ],
+        }
+
+    # ──────────────────────────────────────
+    # Handler: change_category (hard↔soft)
+    # ──────────────────────────────────────
+    async def _pd_handle_category_change(
+        self, model, session: CrewSession, project_id: str, message: str
+    ) -> Dict:
+        state = session.state
+        if not state.problem_definition:
+            return self._pd_awaiting_response(state)
+
+        # regex 기반 카테고리 변경 추출
+        cat_match = re.search(
+            r"(\w+)\s+(?:를\s*|을\s*)?(?:로\s*)?(hard|soft)(?:로)?(?:\s*변경|\s*전환|\s*바꿔|\s*바꾸)",
+            message, re.IGNORECASE
+        )
         if not cat_match:
-            # 영어 패턴: "change max_total_stay_time to hard"
-            cat_pattern_en = re.compile(
+            cat_match = re.search(
                 r"(?:change|move|switch|set)\s+(\w+)\s+(?:to\s+)?(hard|soft)",
-                re.IGNORECASE
+                message, re.IGNORECASE
             )
-            cat_match = cat_pattern_en.search(message)
 
-        if cat_match and state.problem_definition:
-            cname = cat_match.group(1)
-            to_cat = cat_match.group(2).lower()
+        if not cat_match:
+            # LLM이 change_category로 분류했지만 regex 추출 실패 → smart apply
+            if model:
+                return await self._llm_smart_apply(model, state, project_id, message)
+            return self._pd_awaiting_response(state)
 
-            # dk 로드
-            dk = self._load_domain(state)
+        cname = cat_match.group(1)
+        to_cat = cat_match.group(2).lower()
+        dk = self._load_domain(state)
 
-            # pending_category_change가 있으면 사용자가 경고에 확인한 것
-            pending = getattr(state, '_pending_category_change', None)
-            if pending and pending.get("constraint") == cname and pending.get("to") == to_cat:
-                # 사용자가 이전 경고에 대해 다시 같은 명령 → force
-                force = True
-                state._pending_category_change = None
+        pending = state.pending_category_change
+        if pending and pending.get("constraint") == cname and pending.get("to") == to_cat:
+            force = True
+            state.pending_category_change = None
+        else:
+            force = False
+
+        result = dk.move_constraint(cname, to_cat, force=force)
+
+        if result["success"]:
+            from_cat = "soft" if to_cat == "hard" else "hard"
+            from_key = f"{from_cat}_constraints"
+            to_key = f"{to_cat}_constraints"
+
+            if cname in state.problem_definition.get(from_key, {}):
+                moved_data = state.problem_definition[from_key].pop(cname)
+                if to_key not in state.problem_definition:
+                    state.problem_definition[to_key] = {}
+                state.problem_definition[to_key][cname] = moved_data
+
+            save_session_state(project_id, state)
+
+            name_ko = dk.get_constraint(cname)
+            if name_ko and isinstance(name_ko, dict):
+                name_ko = name_ko.get("description", cname)
             else:
-                force = False
+                name_ko = cname
 
-            result = dk.move_constraint(cname, to_cat, force=force)
+            return {
+                "type": "problem_definition",
+                "text": (
+                    f"✅ **{name_ko}** 제약을 **{to_cat.upper()}**로 변경했습니다.\n\n"
+                    f"아래 제안을 확인하시고, 추가 수정이 필요하면 오른쪽 패널에서 수정해주세요."
+                ),
+                "data": {
+                    "view_mode": "problem_definition",
+                    "proposal": state.problem_definition,
+                    "hard_constraints": state.problem_definition.get("hard_constraints", {}),
+                    "soft_constraints": state.problem_definition.get("soft_constraints", {}),
+                    "objective": state.problem_definition.get("objective"),
+                    "parameters": state.problem_definition.get("parameters", {}),
+                    "agent_status": "category_modified",
+                },
+                "options": [
+                    {"label": "확인", "action": "send", "message": "확인"},
+                    {"label": "수정", "action": "send", "message": "수정"},
+                    {"label": "다시 분석", "action": "send", "message": "다시 분석"},
+                ],
+            }
 
-            if result["success"]:
-                # problem_definition의 hard/soft 딕셔너리도 업데이트
-                from_cat = "soft" if to_cat == "hard" else "hard"
-                from_key = f"{from_cat}_constraints"
-                to_key = f"{to_cat}_constraints"
+        elif result["needs_confirm"]:
+            state.pending_category_change = {"constraint": cname, "to": to_cat}
+            save_session_state(project_id, state)
+            return {
+                "type": "problem_definition",
+                "text": (
+                    f"{result['warning']}\n\n"
+                    f"변경을 확정하려면 동일한 명령을 다시 입력하세요:\n"
+                    f"{cname} {to_cat}로 변경"
+                ),
+                "data": {"agent_status": "category_change_pending"},
+                "options": [
+                    {"label": f"{cname} {to_cat}로 변경", "action": "send",
+                     "message": f"{cname} {to_cat}로 변경"},
+                    {"label": "취소", "action": "send", "message": "취소"},
+                ],
+            }
 
-                if cname in state.problem_definition.get(from_key, {}):
-                    moved_data = state.problem_definition[from_key].pop(cname)
-                    if to_key not in state.problem_definition:
-                        state.problem_definition[to_key] = {}
-                    state.problem_definition[to_key][cname] = moved_data
+        else:
+            return {
+                "type": "problem_definition",
+                "text": f"❌ {result['warning']}",
+                "data": {"agent_status": "category_change_failed"},
+                "options": [{"label": "확인", "action": "send", "message": "확인"}],
+            }
 
-                save_session_state(project_id, state)
+    # ──────────────────────────────────────
+    # Handler: set_parameter
+    # ──────────────────────────────────────
+    async def _pd_handle_parameter_set(
+        self, model, session: CrewSession, project_id: str, message: str
+    ) -> Dict:
+        state = session.state
+        if not state.problem_definition:
+            return self._pd_awaiting_response(state)
 
-                name_ko = dk.get_constraint(cname)
-                if name_ko and isinstance(name_ko, dict):
-                    name_ko = name_ko.get("description", cname)
-                else:
-                    name_ko = cname
-
-                return {
-                    "type": "problem_definition",
-                    "text": (
-                        f"\u2705 **{name_ko}** \uc81c\uc57d\uc744 **{to_cat.upper()}**\ub85c \ubcc0\uacbd\ud588\uc2b5\ub2c8\ub2e4.\n\n"
-                        f"\uc544\ub798 \uc81c\uc548\uc744 \ud655\uc778\ud558\uc2dc\uace0, \ucd94\uac00 \uc218\uc815\uc774 \ud544\uc694\ud558\uba74 \uc624\ub978\ucabd \ud328\ub110\uc5d0\uc11c \uc218\uc815\ud574\uc8fc\uc138\uc694."
-                    ),
-                    "data": {
-                        "view_mode": "problem_definition",
-                        "proposal": state.problem_definition,
-                        "hard_constraints": state.problem_definition.get("hard_constraints", {}),
-                        "soft_constraints": state.problem_definition.get("soft_constraints", {}),
-                        "objective": state.problem_definition.get("objective"),
-                        "parameters": state.problem_definition.get("parameters", {}),
-                        "agent_status": "category_modified",
-                    },
-                    "options": [
-                        {"label": "\ud655\uc778", "action": "send", "message": "\ud655\uc778"},
-                        {"label": "\uc218\uc815", "action": "send", "message": "\uc218\uc815"},
-                        {"label": "\ub2e4\uc2dc \ubd84\uc11d", "action": "send", "message": "\ub2e4\uc2dc \ubd84\uc11d"},
-                    ],
-                }
-
-            elif result["needs_confirm"]:
-                # 경고 표시, 다시 같은 명령을 보내면 force 적용
-                state._pending_category_change = {"constraint": cname, "to": to_cat}
-                save_session_state(project_id, state)
-
-                return {
-                    "type": "problem_definition",
-                    "text": (
-                        f"{result['warning']}\n\n"
-                        f"변경을 확정하려면 동일한 명령을 다시 입력하세요:\n"
-                        f"{cname} {to_cat}로 변경"
-                    ),
-                    "data": {"agent_status": "category_change_pending"},
-                    "options": [
-                        {"label": f"{cname} {to_cat}로 변경", "action": "send", "message": f"{cname} {to_cat}로 변경"},
-                        {"label": "취소", "action": "send", "message": "취소"},
-                    ],
-                }
-
-            else:
-                return {
-                    "type": "problem_definition",
-                    "text": f"❌ {result['warning']}",
-                    "data": {"agent_status": "category_change_failed"},
-                    "options": [
-                        {"label": "확인", "action": "send", "message": "확인"},
-                    ],
-                }
-
-        # 파라미터 수정 (key = value 패턴)
         param_pattern = re.compile(r"(\w+)\s*[=:：]\s*(\d+(?:\.\d+)?)")
         matches = param_pattern.findall(message)
-        if matches and state.problem_definition:
-            params = state.problem_definition.get("parameters", {})
-            updated = []
-            for key, val in matches:
-                val_num = float(val)
-                if key in params:
-                    params[key]["value"] = val_num
-                    params[key]["source"] = "user_modified"
-                    updated.append(f"{key} = {val_num}")
-                else:
-                    params[key] = {"value": val_num, "source": "user_input"}
-                    updated.append(f"{key} = {val_num}")
 
-                # 제약조건 values에도 반영
-                for category in ["hard_constraints", "soft_constraints"]:
-                    for cname, cdata in state.problem_definition.get(category, {}).items():
-                        if key in cdata.get("values", {}):
-                            cdata["values"][key]["value"] = val_num
-                            cdata["values"][key]["source"] = "user_modified"
-                            if cdata.get("status") == "user_input_required":
-                                cdata["status"] = "user_provided"
+        if not matches:
+            # LLM이 set_parameter로 분류했지만 key=value 패턴 없음 → smart apply
+            if model:
+                return await self._llm_smart_apply(model, state, project_id, message)
+            return self._pd_awaiting_response(state)
 
-            if updated:
-                save_session_state(project_id, state)
-                return {
-                    "type": "problem_definition",
-                    "text": (
-                        f"파라미터를 수정했습니다: {', '.join(updated)}\n\n"
-                        "**확인**을 입력하면 문제 정의가 확정됩니다."
-                    ),
-                    "data": {
-                        "view_mode": "problem_definition",
-                        "proposal": state.problem_definition,
-                        "agent_status": "parameters_modified",
-                    },
-                    "options": [
-                        {"label": "확인", "action": "send", "message": "확인"},
-                        {"label": "추가 수정", "action": "send", "message": "수정"},
-                    ],
-                }
+        params = state.problem_definition.get("parameters", {})
+        updated = []
+        for key, val in matches:
+            val_num = float(val)
+            if key in params:
+                params[key]["value"] = val_num
+                params[key]["source"] = "user_modified"
+            else:
+                params[key] = {"value": val_num, "source": "user_input"}
+            updated.append(f"{key} = {val_num}")
 
-        # 기타: 자유 텍스트 → LLM Smart Apply
-        # 사용자가 자연어로 요구사항을 전달하면 LLM이 구조화된 변경사항으로 변환하여 직접 적용
-        if model and len(message.strip()) > 5:
-            return await self._llm_smart_apply(model, state, project_id, message)
+            for category in ["hard_constraints", "soft_constraints"]:
+                for cname, cdata in state.problem_definition.get(category, {}).items():
+                    if key in cdata.get("values", {}):
+                        cdata["values"][key]["value"] = val_num
+                        cdata["values"][key]["source"] = "user_modified"
+                        if cdata.get("status") == "user_input_required":
+                            cdata["status"] = "user_provided"
 
-        # LLM 사용 불가 시 fallback
+        if updated:
+            save_session_state(project_id, state)
+            return {
+                "type": "problem_definition",
+                "text": (
+                    f"파라미터를 수정했습니다: {', '.join(updated)}\n\n"
+                    "**확인**을 입력하면 문제 정의가 확정됩니다."
+                ),
+                "data": {
+                    "view_mode": "problem_definition",
+                    "proposal": state.problem_definition,
+                    "agent_status": "parameters_modified",
+                },
+                "options": [
+                    {"label": "확인", "action": "send", "message": "확인"},
+                    {"label": "추가 수정", "action": "send", "message": "수정"},
+                ],
+            }
+
+        return self._pd_awaiting_response(state)
+
+    # ──────────────────────────────────────
+    # Helpers
+    # ──────────────────────────────────────
+    def _build_pd_state_summary(self, state) -> str:
+        """LLM에게 전달할 현재 PD 상태 요약"""
+        parts = []
+        if state.problem_definition:
+            obj = state.problem_definition.get("objective", {})
+            parts.append(f"목적함수: {obj.get('description_ko', obj.get('description', '미설정'))}")
+            hard_n = len(state.problem_definition.get("hard_constraints", {}))
+            soft_n = len(state.problem_definition.get("soft_constraints", {}))
+            parts.append(f"제약: Hard {hard_n}, Soft {soft_n}")
+        if state.objective_changing:
+            parts.append("목적함수 변경 확인 대기 중")
+        if state.problem_defined:
+            parts.append("문제 정의 확정됨")
+        return "; ".join(parts) if parts else "제안 생성 중"
+
+    def _get_pd_pending_action(self, state) -> str:
+        """진행 중인 보류 작업 설명"""
+        if state.objective_changing:
+            pending = state.pending_objective
+            if pending:
+                return f"목적함수 변경 확인 대기: {pending.get('name', '?')}"
+            return "목적함수 변경 확인 대기"
+        if state.pending_category_change:
+            pc = state.pending_category_change
+            return f"카테고리 변경 확인 대기: {pc.get('constraint', '?')} → {pc.get('to', '?')}"
+        return ""
+
+    def _pd_awaiting_response(self, state) -> Dict:
         return {
             "type": "problem_definition",
             "text": (
@@ -2256,6 +2398,389 @@ Soft 제약조건:
                 {"label": "🔄 다시 분석", "action": "send", "message": "다시 분석"},
             ],
         }
+
+
+    # ──────────────────────────────────────
+    # Ambiguity Detection & Clarification
+    # ──────────────────────────────────────
+
+    def _run_ambiguity_detection(
+        self, state, project_id: str, parameters: dict, constraints: dict
+    ) -> Optional[Dict]:
+        """
+        모호성 감지 실행. 질문이 있으면 첫 번째 질문을 반환, 없으면 None.
+        범용 엔진(AmbiguityDetector)에 위임 — 도메인 특화 로직 없음.
+        """
+        from core.platform.ambiguity_detector import AmbiguityDetector
+
+        domain = state.detected_domain or state.problem_definition.get("domain", "") if state.problem_definition else ""
+        if not domain:
+            domain = "railway"  # fallback (프로젝트 도메인 미설정 시)
+
+        try:
+            detector = AmbiguityDetector(domain)
+        except Exception as e:
+            logger.warning(f"AmbiguityDetector init failed: {e}")
+            return None
+
+        phase1_data = self._load_phase1_data(project_id)
+        answered = set((state.clarification_answers or {}).keys())
+
+        questions = detector.detect(
+            parameters=parameters,
+            phase1_data=phase1_data,
+            data_facts=state.data_facts,
+            phase1_summary=state.phase1_summary,
+            constraints=constraints,
+            answered_ids=answered,
+        )
+
+        if not questions:
+            state.clarification_done = True
+            return None
+
+        # 질문을 직렬화하여 state에 저장
+        state.pending_clarifications = [q.to_dict() for q in questions]
+        if state.clarification_answers is None:
+            state.clarification_answers = {}
+        save_session_state(project_id, state)
+
+        # 첫 번째 질문을 대화 메시지로 반환
+        return self._format_clarification_question(questions[0], state)
+
+    def _format_clarification_question(
+        self, question, state
+    ) -> Dict:
+        """ClarificationQuestion을 채팅 응답 형식으로 변환"""
+        from core.platform.ambiguity_detector import ClarificationQuestion
+
+        # question이 dict이면 ClarificationQuestion이 아님 → 변환
+        if isinstance(question, dict):
+            q = question
+            q_type = q.get("type", "yes_no")
+            text = q.get("text", "")
+            qid = q.get("question_id", "")
+            choices = q.get("choices", [])
+            fields = q.get("fields", [])
+        else:
+            q_type = question.q_type
+            text = question.text
+            qid = question.question_id
+            choices = question.choices
+            fields = question.fields
+
+        # 질문 유형별 options 생성
+        options = []
+        if q_type == "yes_no":
+            options = [
+                {"label": "예", "action": "send",
+                 "message": f"[clarify:{qid}] 예"},
+                {"label": "아니오", "action": "send",
+                 "message": f"[clarify:{qid}] 아니오"},
+            ]
+        elif q_type == "choice":
+            for c in choices:
+                options.append({
+                    "label": c.get("label", c.get("id", "")),
+                    "action": "send",
+                    "message": f"[clarify:{qid}] {c.get('id', '')}",
+                })
+        elif q_type in ("numeric", "numeric_optional"):
+            default_val = question.default if not isinstance(question, dict) else q.get("default")
+            hint = f" (기본값: {default_val})" if default_val else ""
+            text += f"\n\n값을 입력해주세요{hint}."
+        elif q_type == "multi_input":
+            field_labels = [f"- {f.get('label', f.get('id', ''))}" for f in fields]
+            text += "\n\n" + "\n".join(field_labels)
+            text += "\n\n예: `주간 32, 야간 13` 형식으로 입력해주세요."
+
+        # 남은 질문 수 표시
+        pending = state.pending_clarifications or []
+        answered_count = len(state.clarification_answers or {})
+        remaining = len(pending) - answered_count
+        if remaining > 1:
+            text = f"**[확인 {answered_count + 1}/{len(pending)}]** {text}"
+
+        return {
+            "type": "problem_definition",
+            "text": f"❓ **데이터 확인이 필요합니다**\n\n{text}",
+            "data": {
+                "agent_status": "clarification_pending",
+                "clarification_question": qid,
+                "clarification_total": len(pending),
+                "clarification_answered": answered_count,
+            },
+            "options": options,
+        }
+
+    async def _handle_clarification_answer(
+        self, model, session, project_id: str, message: str, params: Dict
+    ) -> Dict:
+        """사용자의 clarification 답변 처리"""
+        from core.platform.ambiguity_detector import AmbiguityDetector, ClarificationQuestion
+        import re as _re
+
+        state = session.state
+        pending = state.pending_clarifications or []
+        answers = state.clarification_answers or {}
+
+        if not pending:
+            state.clarification_done = True
+            save_session_state(project_id, state)
+            return await self.handle(model, session, project_id, message, params)
+
+        # [clarify:question_id] 패턴으로 답변 파싱
+        clarify_match = _re.match(r'\[clarify:([^\]]+)\]\s*(.*)', message, _re.DOTALL)
+        if clarify_match:
+            qid = clarify_match.group(1)
+            raw_answer = clarify_match.group(2).strip()
+        else:
+            # 패턴 없으면 현재 대기 중인 첫 번째 미답변 질문에 대한 답변으로 처리
+            qid = None
+            for q in pending:
+                if q.get("question_id", "") not in answers:
+                    qid = q["question_id"]
+                    break
+            raw_answer = message.strip()
+
+        if not qid:
+            state.clarification_done = True
+            save_session_state(project_id, state)
+            return await self.handle(model, session, project_id, message, params)
+
+        # 해당 질문 찾기
+        q_def = None
+        for q in pending:
+            if q.get("question_id") == qid:
+                q_def = q
+                break
+        if not q_def:
+            state.clarification_done = True
+            save_session_state(project_id, state)
+            return await self.handle(model, session, project_id, message, params)
+
+        # 답변 파싱
+        q_type = q_def.get("type", "yes_no")
+        parsed_answer = self._parse_clarification_answer(q_type, raw_answer, q_def)
+
+        # 답변 저장
+        answers[qid] = parsed_answer
+        state.clarification_answers = answers
+
+        # AmbiguityDetector로 답변 적용
+        domain = state.detected_domain or "railway"
+        detector = AmbiguityDetector(domain)
+        parameters = state.problem_definition.get("parameters", {}) if state.problem_definition else {}
+
+        # ClarificationQuestion 객체 재구성
+        cq = ClarificationQuestion(
+            rule_id=q_def.get("rule_id", ""),
+            question_def=q_def,
+            resolved_text=q_def.get("text", ""),
+        )
+        cq.question_id = qid
+        cq.q_type = q_type
+        cq.dynamic_meta = q_def.get("dynamic_meta", {})
+
+        result = detector.apply_answer(cq, parsed_answer, parameters)
+
+        # 파라미터 업데이트
+        if state.problem_definition:
+            state.problem_definition["parameters"] = parameters
+
+        # follow_up 질문이 있으면 해당 질문을 pending에서 찾아서 다음으로
+        follow_ups = result.get("follow_up", [])
+
+        # suppressed_by 조건 업데이트 (yes/no 답변 기록)
+        if q_type == "yes_no":
+            answer_label = "yes" if parsed_answer else "no"
+            answers[f"{qid}={answer_label}"] = True
+
+        save_session_state(project_id, state)
+
+        # 다음 미답변 질문 찾기
+        next_question = None
+        for q in pending:
+            next_qid = q.get("question_id", "")
+            if next_qid in answers:
+                continue
+            # follow_up 체크: follow_up 목록에 있는 질문만 활성화
+            # (follow_up이 비어있으면 모든 질문 활성화)
+            if follow_ups:
+                # follow_up에 해당하는 질문인지 확인
+                q_short_id = next_qid.split(".")[-1] if "." in next_qid else next_qid
+                if q_short_id not in follow_ups and next_qid not in follow_ups:
+                    # 이 질문의 rule_id가 현재 rule과 같으면 follow_up 필터 적용
+                    if q.get("rule_id") == q_def.get("rule_id"):
+                        continue
+            next_question = q
+            break
+
+        if next_question:
+            return self._format_clarification_question(next_question, state)
+
+        # 모든 질문 완료 → 확정 진행
+        state.clarification_done = True
+        save_session_state(project_id, state)
+
+        # clarification 답변이 반영된 파라미터로 최종 확정
+        return await self._finalize_after_clarification(
+            model, session, project_id
+        )
+
+    def _parse_clarification_answer(self, q_type: str, raw: str, q_def: dict) -> Any:
+        """사용자 답변을 질문 유형에 맞게 파싱"""
+        import re as _re
+
+        if q_type == "yes_no":
+            positive = {"예", "네", "yes", "y", "맞습니다", "맞아요", "그렇습니다", "응"}
+            return raw.lower().strip() in positive
+
+        elif q_type in ("numeric", "numeric_optional"):
+            nums = _re.findall(r'[\d.]+', raw)
+            if nums:
+                return float(nums[0])
+            return q_def.get("default")
+
+        elif q_type == "multi_input":
+            # "주간 32, 야간 13" → field_id별 매핑
+            fields = q_def.get("fields", [])
+            result = {}
+            nums = _re.findall(r'[\d.]+', raw)
+            for i, field in enumerate(fields):
+                fid = field.get("id", "")
+                if i < len(nums):
+                    result[fid] = float(nums[i])
+            return result
+
+        elif q_type == "choice":
+            # choice id 매칭
+            for c in q_def.get("choices", []):
+                cid = c.get("id", "")
+                if cid in raw or c.get("label", "") in raw:
+                    return cid
+            return raw
+
+        return raw
+
+    def _build_resolved_params(self, state) -> dict:
+        """clarification 답변 + 기존 parameters에서 확정된 파라미터 dict 구성.
+        activation_condition 평가에 사용."""
+        resolved = {}
+        # 1. problem_definition에 저장된 parameters
+        pd = state.problem_definition or {}
+        for pname, pdata in pd.get("parameters", {}).items():
+            if isinstance(pdata, dict) and pdata.get("value") is not None:
+                resolved[pname] = pdata
+        # 2. clarification_answers에서 set_params로 적용된 값 (우선)
+        answers = state.clarification_answers or {}
+        pending = state.pending_clarifications or []
+        for q in pending:
+            qid = q.get("question_id", "")
+            if qid not in answers:
+                continue
+            # set_params 적용된 파라미터 추출
+            q_def = q.get("question_def", q)
+            answer_val = answers[qid]
+            if q.get("type") == "yes_no":
+                branch = q_def.get("on_yes") if answer_val else q_def.get("on_no")
+                if branch and "set_params" in branch:
+                    for pk, pv in branch["set_params"].items():
+                        resolved[pk] = pv if isinstance(pv, dict) else {"value": pv}
+        return resolved
+
+    async def _finalize_after_clarification(
+        self, model, session, project_id: str
+    ) -> Dict:
+        """Clarification 답변 완료 후 문제 정의 최종 확정"""
+        state = session.state
+        dk = self._load_domain(state)
+
+        if not state.problem_definition:
+            state.clarification_done = True
+            save_session_state(project_id, state)
+            return await self.handle(model, session, project_id, "분석", {})
+
+        pd = state.problem_definition
+
+        # ── activation_condition 재평가: clarification 답변으로 새 제약 활성화 ──
+        resolved_params = self._build_resolved_params(state)
+        if resolved_params:
+            detected_data_types = set(pd.get("detected_data_types", []))
+            topology = pd.get("topology")
+            new_constraints = await self._determine_constraints_phased(
+                model, state, project_id, dk, detected_data_types, topology,
+                resolved_params=resolved_params,
+            )
+            # 기존 제약 유지 + 새로 활성화된 제약 추가
+            activated = []
+            for cname, cval in new_constraints.get("hard", {}).items():
+                if cname not in pd.get("hard_constraints", {}):
+                    pd.setdefault("hard_constraints", {})[cname] = cval
+                    activated.append(f"  - **{cval.get('name_ko', cname)}** (HARD)")
+                    logger.info(f"Constraint activated by clarification: {cname}")
+            for cname, cval in new_constraints.get("soft", {}).items():
+                if cname not in pd.get("soft_constraints", {}):
+                    pd.setdefault("soft_constraints", {})[cname] = cval
+                    activated.append(f"  - **{cval.get('name_ko', cname)}** (SOFT)")
+                    logger.info(f"Soft constraint activated by clarification: {cname}")
+
+        # 문제 정의 확정
+        state.problem_definition = pd
+        state.problem_defined = True
+        state.confirmed_problem = pd
+        state.constraints_confirmed = True
+        state.confirmed_constraints = {
+            "hard": pd.get("hard_constraints", {}),
+            "soft": pd.get("soft_constraints", {}),
+        }
+        save_session_state(project_id, state)
+
+        # 답변 요약 텍스트
+        answers = state.clarification_answers or {}
+        answer_summary = self._format_clarification_summary(answers, state.pending_clarifications)
+
+        text = "**✅ 문제 정의가 확정되었습니다.**\n\n"
+        if answer_summary:
+            text += f"**데이터 확인 결과:**\n{answer_summary}\n\n"
+        if resolved_params and activated:
+            text += f"**답변에 따라 활성화된 제약조건:**\n" + "\n".join(activated) + "\n\n"
+        text += "데이터 정규화 단계로 진행합니다."
+
+        return {
+            "type": "problem_definition",
+            "text": text,
+            "data": {
+                "view_mode": "problem_defined",
+                "proposal": pd,
+                "confirmed_problem": pd,
+                "agent_status": "problem_defined",
+                "clarification_applied": True,
+                "auto_next": "data_normalization",
+            },
+            "options": [],
+        }
+
+    def _format_clarification_summary(self, answers: dict, pending: Optional[list]) -> str:
+        """답변 요약 텍스트 생성"""
+        if not answers or not pending:
+            return ""
+        lines = []
+        for q in (pending or []):
+            qid = q.get("question_id", "")
+            if qid in answers:
+                answer = answers[qid]
+                # yes_no는 예/아니오로 표시
+                if q.get("type") == "yes_no":
+                    display = "예" if answer else "아니오"
+                elif isinstance(answer, dict):
+                    display = ", ".join(f"{k}={v}" for k, v in answer.items())
+                else:
+                    display = str(answer)
+                # 질문 텍스트에서 첫 문장만 추출
+                q_text = q.get("text", "").split("\n")[0][:60]
+                lines.append(f"- {q_text} → **{display}**")
+        return "\n".join(lines) if lines else ""
 
 
 # ── 모듈 레벨 함수 ──

@@ -967,8 +967,24 @@ async def handle_math_model_confirm(model, session: CrewSession, project_id: str
     state = session.state
     msg = message.lower()
 
+    # IntentClassifier fast_path → 키워드 fallback
+    from core.platform.intent_classifier import get_intent_classifier, log_intent
+    _ic = get_intent_classifier()
+    _mm_intent = _ic.fast_path("math_model", message)
+    if _mm_intent:
+        log_intent(project_id, message, _mm_intent, skill_name="math_model")
+    _is_confirm = _mm_intent and _mm_intent.intent == "confirm"
+    _is_regenerate = _mm_intent and _mm_intent.intent == "regenerate"
+
+    if not _mm_intent:
+        # fallback: 기존 키워드 매칭
+        if "확정" in msg or "확인" in msg or "맞" in msg:
+            _is_confirm = True
+        elif "다시" in msg or "재생성" in msg:
+            _is_regenerate = True
+
     # 모델 확정
-    if "확정" in msg or "확인" in msg or "맞" in msg:
+    if _is_confirm:
         state.math_model_confirmed = True
         meta = state.math_model.get("metadata", {}) if state.math_model else {}
 
@@ -1008,7 +1024,7 @@ async def handle_math_model_confirm(model, session: CrewSession, project_id: str
         }
 
     # 재생성 요청
-    if "다시" in msg or "재생성" in msg:
+    if _is_regenerate:
         state.reset_from_math_model()
         return await skill_math_model(model, session, project_id, message, {})
 

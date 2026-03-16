@@ -51,6 +51,8 @@ from domains.crew.classifier import (
     InputClassifier, SKILL_TO_INTENT, parse_skill_from_llm
 )
 
+from core.platform.intent_classifier import IntentResult, log_intent
+
 # skills/ 패키지에서 분리된 스킬 함수 (Step 4 리팩토링)
 from domains.crew.skills.problem_definition import skill_problem_definition
 from domains.crew.skills.data_normalization import skill_data_normalization
@@ -136,6 +138,9 @@ class CrewAgent:
         event_data: Optional[Dict] = None,
         current_tab: Optional[str] = None,
     ) -> Dict[str, Any]:
+            from core.platform.stage_manager import get_stage_manager
+            stage_mgr = get_stage_manager()
+
             # ── 이벤트 기반 ──
             if event_type == "file_upload":
                 return await handle_file_upload(session, project_id, event_data)
@@ -146,53 +151,32 @@ class CrewAgent:
                     {"event_type": event_type, "event_data": event_data or {}},
                 )
 
-            # ── 0-A. 목적함수 변경/지정 요청 → 문제 정의 단계로 라우팅 ──
-            # quick_classify가 "목적함수"를 MATH_MODEL 키워드로 잘못 분류하는 것을 방지
-            _msg_lower = message.lower()
-            # Case 1: "목적함수 변경/바꿔" — 명시적 변경 요청
-            _obj_change_verb = "목적함수" in message and any(kw in _msg_lower for kw in ["변경", "바꿔", "바꾸", "수정", "추가", "제거"])
-            # Case 2: "목적함수를 ..." — 조사 '를/을' 포함 → 목적함수를 지정/수정하려는 의도
-            #         단, "보여줘" 등 단순 조회 요청은 제외
-            _obj_spec = ("목적함수를" in message or "목적함수을" in message) and not any(kw in _msg_lower for kw in ["보여"])
-            if _obj_change_verb or _obj_spec:
-                logger.info(f"[{project_id}] Objective change detected → PROBLEM_DEFINITION")
-                session.history.append({"role": "user", "content": message})
-                if session.state.math_model:
-                    session.state.reset_from_math_model()
-                session.state.problem_defined = False
-                save_session_state(project_id, session.state)
-                return await self._execute_skill(session, project_id, "PROBLEM_DEFINITION", message, {})
-
-            # ── 0-B. 수학 모델 확정/재생성 최우선 체크 ──
-            # quick_classify → LLM 경로 어디에서도 스킵되지 않도록 가장 먼저 처리
-            if session.state.math_model and not session.state.math_model_confirmed:
-                _confirm_kw = ["확정", "확인", "맞", "다시", "재생성"]
-                if any(kw in message for kw in _confirm_kw):
-                    session.history.append({"role": "user", "content": message})
-                    return await handle_math_model_confirm(self.model, session, project_id, message)
-
             # ── 1차: 키워드 빠른 우선분류 ──
             quick_intent = InputClassifier.quick_classify(message, has_file=has_file, current_tab=current_tab)
+            _cur_stage = stage_mgr.current_stage(session.state)
 
             if quick_intent:
                 logger.info(f"[{project_id}] quick_intent={quick_intent}")
+                log_intent(
+                    project_id, message,
+                    IntentResult(intent=quick_intent, confidence=1.0, source="quick_classify"),
+                    pipeline_stage=_cur_stage,
+                )
                 session.history.append({"role": "user", "content": message})
 
+                # 비파이프라인 intent (RESET, GUIDE 등)는 바로 실행
                 direct_handlers = {
                     "RESET": handle_reset,
                     "GUIDE": handle_guide,
                     "DOMAIN_CHANGE": handle_domain_change,
                     "FILE_UPLOAD": handle_file_upload,
                 }
-
                 if quick_intent in direct_handlers:
                     if quick_intent == "FILE_UPLOAD":
                         return await direct_handlers[quick_intent](session, project_id, event_data)
                     return await direct_handlers[quick_intent](session, project_id, message)
 
-
                 # ★ Action 스킬에 대해서도 질문 패턴이면 LLM으로 위임
-                # (quick_classify가 내용 키워드로 잘못 분류했을 경우 보정)
                 _action_intents = {
                     "MATH_MODEL", "ANALYZE", "PRE_DECISION", "START_OPTIMIZATION",
                     "PROBLEM_DEFINITION", "DATA_NORMALIZATION", "STRUCTURAL_NORMALIZATION",
@@ -207,16 +191,13 @@ class CrewAgent:
                         )
                         return await self._llm_select_and_execute(session, project_id, message, current_tab)
 
-                # Guard: PROBLEM_DEFINITION requires structural normalization
-                if quick_intent == 'PROBLEM_DEFINITION' and not session.state.structural_normalization_done:
-                    logger.info(f'[{project_id}] Structural normalization not done - running before problem definition')
-                    await self._execute_skill(session, project_id, 'STRUCTURAL_NORMALIZATION', message, {})
+                # ── StageManager: 진입 가능 여부 + 역방향 초기화 ──
+                intent_to_route = self._apply_stage_transition(
+                    stage_mgr, session, project_id, quick_intent
+                )
+                return await self._execute_skill(session, project_id, intent_to_route, message, {})
 
-                return await self._execute_skill(session, project_id, quick_intent, message, {})
-
-            # ── 2차: LLM 스킬 선택 ──
-            # ★ 질문/일반대화는 파이프라인 리다이렉트를 건너뛰고 LLM에게 직접 위임
-            # 패턴은 configs/classifier_keywords.yaml의 question_guard + question_patterns 섹션에서 로드
+            # ── 2차: 질문 감지 → LLM 직접 위임 (파이프라인 리다이렉트 건너뜀) ──
             _qmarkers, _amarkers = InputClassifier.get_question_guard_config()
             _msg_q = message.lower().strip()
             _is_question = (
@@ -225,35 +206,64 @@ class CrewAgent:
                 or any(_msg_q.endswith(e) for e in InputClassifier._question_endings)
             )
             if _is_question and not any(a in _msg_q for a in _amarkers):
-                logger.info(f"[{project_id}] Question detected — skipping pipeline redirects → LLM")
+                logger.info(f"[{project_id}] Question detected → LLM")
                 session.history.append({"role": "user", "content": message})
                 return await self._llm_select_and_execute(session, project_id, message, current_tab)
 
-            # ★ Phase1: 분석 미완료 시 모델 생성 차단
-            if not session.state.analysis_completed:
-                logger.info(f"[{project_id}] Analysis not completed — redirecting to ANALYZE")
-                return await self._execute_skill(session, project_id, "ANALYZE", message, {})
+            # ── 3차: 파이프라인 순방향 자동 진행 ──
+            # 현재 미완료된 가장 낮은 단계로 리다이렉트
+            next_stage = stage_mgr.current_stage(session.state)
+            if next_stage:
+                stage_def = stage_mgr.get_stage_info(next_stage)
+                if stage_def:
+                    # 해당 단계의 첫 번째 intent_code로 라우팅
+                    redirect_intent = stage_def["intent_codes"][0]
+                    logger.info(
+                        f"[{project_id}] Pipeline auto-redirect → {redirect_intent} "
+                        f"(stage={next_stage})"
+                    )
+                    return await self._execute_skill(session, project_id, redirect_intent, message, {})
 
-            # ★ Phase1.5: 분석 완료 but 구조 정규화 미완료 시 Phase 1 리다이렉트
-            if session.state.analysis_completed and not session.state.structural_normalization_done:
-                logger.info(f"[{project_id}] Structural normalization not done — redirecting to STRUCTURAL_NORMALIZATION")
-                return await self._execute_skill(session, project_id, "STRUCTURAL_NORMALIZATION", message, {})
-
-            # ★ Phase1.7: 구조 정규화 완료 but 문제 미정의 시 문제정의로 리다이렉트
-            if session.state.structural_normalization_done and not session.state.problem_defined:
-                logger.info(f"[{project_id}] Problem not defined — redirecting to PROBLEM_DEFINITION")
-                return await self._execute_skill(session, project_id, "PROBLEM_DEFINITION", message, {})
-
-            # ★ Phase2: 문제 정의 완료 but 데이터 미정규화 시
-            if session.state.problem_defined and not session.state.data_normalized:
-                logger.info(f"[{project_id}] Data not normalized — redirecting to DATA_NORMALIZATION")
-                return await self._execute_skill(session, project_id, "DATA_NORMALIZATION", message, {})
-
-
-
+            # ── 4차: LLM 스킬 선택 (모든 파이프라인 완료 후) ──
             logger.info(f"[{project_id}] → LLM skill selection")
             session.history.append({"role": "user", "content": message})
             return await self._llm_select_and_execute(session, project_id, message, current_tab)
+
+    # ----------------------------------------------------------
+    # Stage Transition: 진입 가능 여부 + 역방향 초기화
+    # ----------------------------------------------------------
+    def _apply_stage_transition(
+        self, stage_mgr, session: CrewSession, project_id: str, intent: str
+    ) -> str:
+        """
+        StageManager를 사용하여:
+        1. 역방향이면 후속 상태 초기화
+        2. 진입 불가능하면 리다이렉트 intent 반환
+        """
+        state = session.state
+
+        # 역방향 복귀 감지 → 자동 초기화
+        if stage_mgr.is_backward(state, intent):
+            reset_fields = stage_mgr.prepare_reentry(state, intent)
+            if reset_fields:
+                logger.info(
+                    f"[{project_id}] Backward reentry: {intent} — "
+                    f"reset {len(reset_fields)} fields"
+                )
+                save_session_state(project_id, state)
+
+        # 진입 가능 여부 확인
+        can_enter, target_or_redirect = stage_mgr.can_enter(state, intent)
+        if not can_enter and target_or_redirect:
+            logger.info(
+                f"[{project_id}] Stage guard: {intent} blocked → {target_or_redirect}"
+            )
+            # 리다이렉트 단계의 첫 번째 intent_code
+            redirect_def = stage_mgr.get_stage_info(target_or_redirect)
+            if redirect_def:
+                return redirect_def["intent_codes"][0]
+
+        return intent
 
     # ----------------------------------------------------------
     # LLM Skill 선택 → 파싱 → 실행
@@ -294,6 +304,11 @@ class CrewAgent:
 
             if intent:
                 logger.info(f"[{project_id}] LLM selected: {intent}")
+                log_intent(
+                    project_id, message,
+                    IntentResult(intent=intent, params=parameters or {}, confidence=0.8, source="llm_skill_select"),
+                    pipeline_stage=stage_mgr.current_stage(session.state) if hasattr(self, '_run_inner') else None,
+                )
                 return await self._execute_skill(session, project_id, intent, message, parameters)
 
             # JSON 파싱 실패 → 텍스트에서 스킬명 감지 시도
@@ -385,23 +400,8 @@ class CrewAgent:
     # ----------------------------------------------------------
     def _get_pipeline_phase(self, state: SessionState) -> str:
         """현재 파이프라인 단계를 사람이 읽기 쉬운 문자열로 반환"""
-        if not state.file_uploaded:
-            return "Phase 0: 파일 미업로드 — 데이터 파일 업로드 대기 중"
-        if not state.analysis_completed:
-            return "Phase 1: 데이터 분석 단계 — 파일은 업로드되었으나 분석 미완료"
-        if not state.structural_normalization_done:
-            return "Phase 1.5: 구조 정규화 단계 — 분석 완료, 구조 정규화 진행 중"
-        if not state.problem_defined:
-            return "Phase 1.7: 문제 정의 단계 — 최적화 문제 유형/목적함수/제약조건 정의 중"
-        if not state.data_normalized:
-            return "Phase 2: 데이터 정규화 단계 — 문제 정의 완료, 데이터 정규화 진행 중"
-        if not state.math_model_confirmed:
-            return "Phase 3: 수학 모델 단계 — 수학 모델 생성/검토 중"
-        if not state.pre_decision_done:
-            return "Phase 4: 솔버 추천 단계 — 수학 모델 확정, 솔버 선택 중"
-        if not state.optimization_done:
-            return "Phase 5: 최적화 실행 단계 — 솔버 선택 완료, 실행 대기 중"
-        return "Phase 6: 완료 — 최적화 실행 완료, 결과 확인 가능"
+        from core.platform.stage_manager import get_stage_manager
+        return get_stage_manager().get_pipeline_phase_text(state)
 
     # ----------------------------------------------------------
     # Skill 실행 디스패처

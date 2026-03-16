@@ -127,6 +127,8 @@ class SessionStateDB(Base):
     data_facts = Column(Text, nullable=True)                # ★ JSON string
     solver_selected = Column(String, nullable=True)         # 선택된 솔버 이름/ID
     pending_param_inputs = Column(Text, nullable=True)      # JSON string: 파라미터 입력 대기 목록
+    clarification_answers = Column(Text, nullable=True)    # JSON string: 모호성 질문 답변
+    pending_clarifications = Column(Text, nullable=True)   # JSON string: 대기 중 질문 목록
 
     # Problem Definition
     problem_defined = Column(Boolean, default=False)
@@ -145,6 +147,12 @@ class SessionStateDB(Base):
     # Constraint Confirmation – TASK 3
     constraints_confirmed = Column(Boolean, default=False)
     confirmed_constraints = Column(Text, nullable=True)
+
+    # Pending actions (목적함수/카테고리 변경 중간 상태)
+    objective_changing = Column(Boolean, default=False)
+    pending_objective = Column(Text, nullable=True)          # JSON string
+    pending_extra_instructions = Column(String, nullable=True)
+    pending_category_change = Column(Text, nullable=True)    # JSON string
 
     # 도메인 정보
     detected_domain = Column(String, nullable=True)
@@ -249,4 +257,21 @@ class RunResultDB(Base):
 
     project = relationship("ProjectDB")
     model_version = relationship("ModelVersionDB")
+
+
+# 9. [Core] Intent 분류 로그
+class IntentLogDB(Base):
+    __tablename__ = "intent_logs"
+    __table_args__ = {"schema": "core"}
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("core.projects.id"), nullable=True, index=True)
+    skill_name = Column(String, nullable=True)           # 분류 대상 스킬
+    message = Column(Text, nullable=False)                # 사용자 원문 메시지
+    intent = Column(String, nullable=False)               # 분류된 intent
+    confidence = Column(Float, nullable=False, default=1.0)
+    source = Column(String, nullable=False)               # fast_path | llm | fallback | quick_classify
+    params_json = Column(Text, nullable=True)             # 추출된 파라미터 (JSON)
+    pipeline_stage = Column(String, nullable=True)        # 분류 시점의 파이프라인 단계
+    created_at = Column(DateTime, server_default=func.now())
 

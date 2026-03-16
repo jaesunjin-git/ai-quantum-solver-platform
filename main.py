@@ -30,6 +30,7 @@ from core.project_router import router as project_router
 from core.auth_router import router as auth_router
 from engine.validation.router import router as validation_router
 from core.job_router import router as job_router
+from core.intent_log_router import router as intent_log_router
 from engine.validation.registry import get_registry
 from engine.validation.generic import register_all as register_generic_validators
 from core.rate_limit import limiter
@@ -67,6 +68,7 @@ app.include_router(settings_router)      # /api/settings
 app.include_router(auth_router)          # /api/auth/*
 app.include_router(validation_router)    # /api/validation/*
 app.include_router(job_router)           # /api/jobs/*
+app.include_router(intent_log_router)   # /api/intent-logs/*
 
 def _migrate_solver_settings(db):
     """기존 core.solver_settings 테이블에 새 컬럼을 안전하게 추가"""
@@ -131,6 +133,10 @@ def _migrate_session_states(db):
         "constraints_confirmed": "BOOLEAN DEFAULT FALSE",
         "confirmed_constraints": "TEXT",
         "data_facts": "TEXT",
+        "objective_changing": "BOOLEAN DEFAULT FALSE",
+        "pending_objective": "TEXT",
+        "pending_extra_instructions": "VARCHAR",
+        "pending_category_change": "TEXT",
     }
     for col_name, col_type in new_columns.items():
         try:

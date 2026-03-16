@@ -75,6 +75,30 @@ class CrewExecutionResult(BaseModel):
     message: str
 
 
+# 9. Intent Log 응답
+class IntentLogResponse(BaseModel):
+    id: int
+    project_id: Optional[int] = None
+    skill_name: Optional[str] = None
+    message: str
+    intent: str
+    confidence: float
+    source: str
+    params_json: Optional[str] = None
+    pipeline_stage: Optional[str] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class IntentLogStats(BaseModel):
+    total: int
+    by_source: Dict[str, int]
+    by_intent: Dict[str, int]
+    low_confidence_count: int
+    avg_confidence: float
+
+
 # Pydantic v2: forward-ref/지연평가가 섞여도 안전하게
 ChatRequest.model_rebuild()
 ChatResponse.model_rebuild()

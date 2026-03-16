@@ -102,15 +102,28 @@ async def skill_pre_decision(session: CrewSession, project_id: str, message: str
             "options": [{"label": "수학 모델 생성", "action": "send", "message": "수학 모델 생성해줘"}],
         }
 
-    # ★ 변경 1: 메시지에서 priority 파싱
+    # ★ Priority 파싱: IntentClassifier fast_path → 키워드 fallback
+    from core.platform.intent_classifier import get_intent_classifier, log_intent
+    _ic = get_intent_classifier()
+    _solver_intent = _ic.fast_path("solver", message)
     priority = "auto"
-    msg_lower = message.lower()
-    if any(kw in msg_lower for kw in ["정확도 우선", "accuracy", "정확도"]):
-        priority = "accuracy"
-    elif any(kw in msg_lower for kw in ["속도 우선", "speed", "속도", "빠른"]):
-        priority = "speed"
-    elif any(kw in msg_lower for kw in ["비용 우선", "cost", "비용", "저렴"]):
-        priority = "cost"
+    if _solver_intent:
+        log_intent(project_id, message, _solver_intent, skill_name="solver")
+        _intent_to_priority = {
+            "priority_accuracy": "accuracy",
+            "priority_speed": "speed",
+            "priority_cost": "cost",
+        }
+        priority = _intent_to_priority.get(_solver_intent.intent, "auto")
+
+    if priority == "auto":
+        msg_lower = message.lower()
+        if any(kw in msg_lower for kw in ["정확도 우선", "accuracy", "정확도"]):
+            priority = "accuracy"
+        elif any(kw in msg_lower for kw in ["속도 우선", "speed", "속도", "빠른"]):
+            priority = "speed"
+        elif any(kw in msg_lower for kw in ["비용 우선", "cost", "비용", "저렴"]):
+            priority = "cost"
 
     # ★ 변경 2: priority가 auto가 아니면(사용자가 우선순위 변경 버튼 클릭) 캐시 무시
     if state.last_pre_decision_result and priority == "auto":

@@ -45,9 +45,19 @@ async def skill_analyze(model, session: CrewSession, project_id: str, message: s
         }
 
 
-    # 이미 분석 완료된 경우 캐시 반환 (변경 요청이 아니면)
+    # 이미 분석 완료된 경우 캐시 반환 (재분석 요청이 아니면)
     if state.analysis_completed and state.last_analysis_report:
-        if any(kw in message for kw in ["다시", "재분석", "재 분석", "reanalyze"]):
+        from core.platform.intent_classifier import get_intent_classifier, log_intent
+        _ic = get_intent_classifier()
+        _intent = _ic.fast_path("analyze", message)
+        if _intent:
+            log_intent(project_id, message, _intent, skill_name="analyze")
+        _is_reanalyze = (_intent and _intent.intent == "reanalyze")
+        if not _is_reanalyze:
+            # fast_path 미매칭 시 키워드 fallback
+            _reanalyze_kw = ["다시", "재분석", "재 분석", "reanalyze"]
+            _is_reanalyze = any(kw in message for kw in _reanalyze_kw)
+        if _is_reanalyze:
             state.reset_from_analysis()
             save_session_state(project_id, state)
             # 아래 분석 로직으로 계속 진행

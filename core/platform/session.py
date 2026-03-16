@@ -69,6 +69,13 @@ _DB_FIELD_SPEC: list[tuple[str, str]] = [
     ("last_optimization_result", "json"),
     ("data_facts", "json"),
     ("pending_param_inputs", "json"),
+    ("clarification_answers", "json"),
+    ("pending_clarifications", "json"),
+    # Pending actions (목적함수/카테고리 변경 중간 상태)
+    ("objective_changing", "direct"),
+    ("pending_objective", "json"),
+    ("pending_extra_instructions", "direct"),
+    ("pending_category_change", "json"),
 ]
 
 @dataclass
@@ -101,6 +108,14 @@ class SessionState:
     constraints_confirmed: bool = False
     objective_changing: bool = False  # 목적함수 변경 진행 중
     confirmed_constraints: Optional[Dict] = None
+    pending_objective: Optional[Dict] = None          # {"name": str, "data": dict}
+    pending_extra_instructions: Optional[str] = None  # 목적함수 변경 시 추가 지시사항
+    pending_category_change: Optional[Dict] = None    # {"constraint": str, "to": str}
+
+    # ── Ambiguity Clarification ──
+    clarification_answers: Optional[Dict] = None      # {question_id: answer}
+    pending_clarifications: Optional[List[Dict]] = None  # 미응답 질문 목록
+    clarification_done: bool = False
 
 
 

@@ -669,6 +669,8 @@ constraints:
     description: 야간 근무 최소 시작 시각 (hard 한계)
     expression_template: duty_start[j] >= night_duty_start_earliest * is_night[j]
     for_each: j in J
+    # 숙박조 패턴이 아닌 경우에만 적용 (숙박조는 전날 저녁 입고)
+    activation_condition: "params.get('is_overnight_crew', {}).get('value') is not True"
     parameters:
       night_duty_start_earliest:
         description: 야간 최소 출고시간 (17:00)
@@ -711,6 +713,8 @@ constraints:
     expression_template: duty_start[j] >= night_duty_start_preferred * is_night[j]
       - slack_night_start[j]
     for_each: j in J
+    # 숙박조 패턴이 아닌 경우에만 적용
+    activation_condition: "params.get('is_overnight_crew', {}).get('value') is not True"
     parameters:
       night_duty_start_preferred:
         description: 야간 권장 출고시간 (18:00)
@@ -764,6 +768,8 @@ constraints:
     expression_template: big_m * (1 - is_night[j]) + (duty_end[j] - duty_start[j])
       >= min_night_sleep_minutes * is_night[j]
     for_each: j in J
+    # 숙박조 패턴인 경우에만 적용
+    activation_condition: "params.get('is_overnight_crew', {}).get('value') == True"
     parameters:
     - min_night_sleep_minutes
     - big_m
@@ -790,6 +796,8 @@ constraints:
     expression_template: (duty_end[j] - duty_start[j]) - sum(trip_duration[i]*x[i,j]
       for i in I) >= min_night_rest_total_minutes * is_night[j]
     for_each: j in J
+    # 숙박조 패턴인 경우에만 적용
+    activation_condition: "params.get('is_overnight_crew', {}).get('value') == True"
     parameters:
       min_night_rest_total_minutes:
         description: 야간 취침+준비정리 포함 총 확보시간
@@ -840,6 +848,32 @@ constraints:
     typical_range:
     - 280
     - 400
+
+  # ── 숙박조 전용: 수면 제외 근무시간 ──
+  overnight_work_time_excluding_sleep:
+    description: 숙박조 근무시간 (수면시간 제외)
+    expression_template: (duty_end[j] - duty_start[j]) - sleep_duration[j] <= max_work_minutes * is_night[j]
+    for_each: j in J
+    # 숙박조 + 수면시간을 근무에서 제외하는 경우에만 적용
+    activation_condition: "params.get('is_overnight_crew', {}).get('value') == True and params.get('sleep_counts_as_work', {}).get('value') == False"
+    parameters:
+    - max_work_minutes
+    default_category: hard
+    fixed_category: false
+    detection_hints:
+    - 숙박조 근무시간
+    - 수면 제외
+    - 실근무시간
+    - 숙박 근무
+    - overnight work time
+    category: hard
+    context_must:
+    - 숙박
+    - 수면 제외
+    typical_range:
+    - 540
+    - 720
+
   post_arrival_rest:
     description: 도착 후 휴식시간 확보
     expression_template: post_arrival_rest >= post_arrival_rest_minutes_min
@@ -923,6 +957,8 @@ constraints:
   fixed_day_crew_count:
     description: 주간 근무 승무원 수 고정
     expression_template: "sum(y[j] * (1 - is_night[j]) for j in J) == day_crew_count"
+    # 주간 승무원 수가 실제로 제공된 경우에만 활성화
+    activation_condition: "params.get('day_crew_count', {}).get('value') is not None"
     structured:
       lhs: {sum: "y[j] * (1 - is_night[j])", for_each: "j in J"}
       operator: "=="
@@ -958,6 +994,8 @@ constraints:
   fixed_night_crew_count:
     description: 야간 근무 승무원 수 고정
     expression_template: "sum(y[j] * is_night[j] for j in J) == night_crew_count"
+    # 야간 승무원 수가 실제로 제공된 경우에만 활성화
+    activation_condition: "params.get('night_crew_count', {}).get('value') is not None"
     structured:
       lhs: {sum: "y[j] * is_night[j]", for_each: "j in J"}
       operator: "=="
@@ -993,6 +1031,8 @@ constraints:
   fixed_total_duties:
     description: 총 사업(duty) 수 고정
     expression_template: "sum(y[j] for j in J) == total_duties"
+    # 총 사업 수가 실제로 제공된 경우에만 활성화
+    activation_condition: "params.get('total_duties', {}).get('value') is not None"
     structured:
       lhs: {sum: "y[j]", for_each: "j in J"}
       operator: "=="
@@ -1025,6 +1065,7 @@ objectives:
     expression: sum(y[j] for j in J)
     description: 총 승무원(근무) 수 최소화
     description_ko: 승무원 수 최소화
+    keywords: [최소화, 최소, 줄이, 줄여, 적게, 인원, 인력, minimize, minimum, fewer, reduce]
     required_constraints:
     - trip_coverage
     - crew_activation_linking
@@ -1041,6 +1082,7 @@ objectives:
     expression: sum(y[j] for j in J) + sum(weight_k * slack_k for k in soft_constraints)
     description: 승무원 수 최소화 + soft 제약 위반 페널티
     description_ko: 승무원 수 최소화 (soft 페널티 포함)
+    keywords: [최소화, 페널티, 위반, 패널티, soft, penalty, violation]
     required_constraints:
     - trip_coverage
     - crew_activation_linking
@@ -1059,6 +1101,7 @@ objectives:
       - duty_start[j] for j in J)
     description: 운전 효율(driving efficiency) 최대화
     description_ko: 운전 효율 최대화
+    keywords: [효율, 효율성, 최대화, 운전효율, efficiency, maximize, productive]
     required_constraints:
     - trip_coverage
     - crew_activation_linking
@@ -1076,6 +1119,7 @@ objectives:
     expression: max(trips_per_crew) - min(trips_per_crew)
     description: 승무원 간 업무량 균형화
     description_ko: 업무량 균형 최적화
+    keywords: [균형, 공평, 배분, 균등, 골고루, 형평, 나눠, 나누, balance, fair, distribute, equitable, equal]
     required_constraints:
     - trip_coverage
     - crew_activation_linking
