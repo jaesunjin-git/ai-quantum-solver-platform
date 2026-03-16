@@ -15,7 +15,7 @@ export default function CreateProjectModal({ onClose, onCreated }: CreateProject
   const [selectedType, setSelectedType] = useState('crew'); 
   const [isLoading, setIsLoading] = useState(false);
   
-  const { user, token } = useAuth();
+  const { user, authFetch } = useAuth();
 
   const handleCreate = async () => {
     if (!title.trim()) {
@@ -27,12 +27,8 @@ export default function CreateProjectModal({ onClose, onCreated }: CreateProject
     setIsLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/projects`, {
+      const response = await authFetch(`${API_BASE_URL}/api/projects`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
         body: JSON.stringify({
             title,
             type: selectedType,

@@ -87,7 +87,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     scrollToBottom();
   }, [messages]);
 
-  const { user, token } = useAuth();
+  const { user, token, authFetch } = useAuth();
   const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
 
   useEffect(() => {
@@ -102,9 +102,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       try {
         if (!user || !token) return;
         const params = new URLSearchParams({ project_id: projectId });
-        const res = await fetch(`${API_BASE_URL}/api/chat/history?${params.toString()}`, {
-          headers: authHeaders,
-        });
+        const res = await authFetch(`${API_BASE_URL}/api/chat/history?${params.toString()}`);
         if (!res.ok) return;
         const history = await res.json();
         if (history.length > 0) {
@@ -215,9 +213,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     setIsLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/chat/message`, {
+      const response = await authFetch(`${API_BASE_URL}/api/chat/message`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({
           message: text,
           project_id: projectId,
@@ -226,6 +223,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       });
 
       if (!response.ok) {
+        if (response.status === 401) throw new Error('세션이 만료되었습니다.');
         const errorText = await response.text();
         throw new Error(`Server Error: ${errorText}`);
       }
@@ -271,9 +269,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         const nextMsg = autoMap[data.data.auto_next] || data.data.auto_next;
         setTimeout(async () => {
           try {
-            const autoResp = await fetch(`${API_BASE_URL}/api/chat/message`, {
+            const autoResp = await authFetch(`${API_BASE_URL}/api/chat/message`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json', ...authHeaders },
               body: JSON.stringify({
                 message: nextMsg,
                 project_id: projectId,
@@ -304,9 +301,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                     content: '🔄 수학 모델을 생성하고 있습니다... 잠시만 기다려주세요.',
                     timestamp: new Date(),
                   }]);
-                  const chainResp = await fetch(`${API_BASE_URL}/api/chat/message`, {
+                  const chainResp = await authFetch(`${API_BASE_URL}/api/chat/message`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json', ...authHeaders },
                     body: JSON.stringify({
                       message: nextNext,
                       project_id: projectId,
@@ -368,9 +364,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     setIsLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/chat/message`, {
+      const response = await authFetch(`${API_BASE_URL}/api/chat/message`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({
           message: text,
           project_id: projectId,
@@ -444,9 +439,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     formData.append('project_id', projectId);
 
     try {
-      const uploadRes = await fetch(`${API_BASE_URL}/api/upload`, {
+      const uploadRes = await authFetch(`${API_BASE_URL}/api/upload`, {
         method: 'POST',
-        headers: authHeaders,
         body: formData,
       });
 
@@ -459,9 +453,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         setStageValidation(uploadData.validation);
       }
 
-      const triggerRes = await fetch(`${API_BASE_URL}/api/chat/message`, {
+      const triggerRes = await authFetch(`${API_BASE_URL}/api/chat/message`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({
           message: '',
           project_id: projectId,

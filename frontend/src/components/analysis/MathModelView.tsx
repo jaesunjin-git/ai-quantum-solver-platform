@@ -339,13 +339,25 @@ export function MathModelView({
                   <div>
                     <p className="text-xs text-amber-400 font-semibold mb-1 uppercase tracking-wider">{'Indexed / Array'}</p>
                     <div className="space-y-0.5">
-                      {indexedParams.map(p => (
+                      {indexedParams.map(p => {
+                        // 값 요약: 배열이면 개수, scalar면 값 표시
+                        const valueSummary = p.value != null
+                          ? Array.isArray(p.value)
+                            ? `[${p.value.length}건]`
+                            : typeof p.value === 'object'
+                            ? `{${Object.keys(p.value).length}건}`
+                            : String(p.value)
+                          : null;
+                        return (
                         <div key={p.id} className="flex items-center justify-between text-xs py-1 border-b border-slate-700/30 last:border-0">
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
                             <span className="text-indigo-400 font-mono">{p.id}</span>
                             {p.description && <span className="text-slate-500 truncate max-w-[200px]">{p.description}</span>}
                           </div>
                           <div className="flex items-center gap-1.5">
+                            {valueSummary && (
+                              <span className="font-mono text-amber-300">{valueSummary}</span>
+                            )}
                             <span className="text-xs text-slate-500 bg-slate-900 px-1.5 py-0.5 rounded">{p.type}</span>
                             {p.boundSource ? (
                               <span
@@ -365,7 +377,8 @@ export function MathModelView({
                             ) : null}
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 )}

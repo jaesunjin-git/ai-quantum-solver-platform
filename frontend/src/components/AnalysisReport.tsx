@@ -9,6 +9,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import '../markdown.css';
 import { API_BASE_URL } from '../config';
+import { useAuth } from '../context/AuthContext';
 import { useAnalysis } from '../context/AnalysisContext';
 import type { StepId } from '../context/AnalysisContext';
 import { FlowStepBar } from './analysis/FlowStepBar';
@@ -37,6 +38,7 @@ export default function AnalysisReport({
 }: Omit<AnalysisReportProps, 'data'> & {
   onEvent?: (message: string, eventType: string, eventData: any) => void;
 }) {
+  const { authFetch } = useAuth();
   const {
     analysisData: data, setAnalysisData, stepCache, completedSteps, switchToStep,
     stageValidation, setStageValidation,
@@ -56,7 +58,7 @@ export default function AnalysisReport({
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`/api/projects/${projectId}/versions/timeline`);
+        const res = await authFetch(`${API_BASE_URL}/api/projects/${projectId}/versions/timeline`);
         if (res.ok && !cancelled) {
           const body = await res.json();
           const raw: VersionTimelineEntry[] = body.timeline || [];
@@ -84,7 +86,7 @@ export default function AnalysisReport({
     // Load this version's result data if it has a run_id
     if (projectId && entry.run_id) {
       try {
-        const res = await fetch(`/api/projects/${projectId}/versions/runs/${entry.run_id}`);
+        const res = await authFetch(`${API_BASE_URL}/api/projects/${projectId}/versions/runs/${entry.run_id}`);
         if (res.ok) {
           const runData = await res.json();
           // Reconstruct ResultData shape: result_json contains the solve summary
@@ -112,8 +114,8 @@ export default function AnalysisReport({
         return;
       }
       try {
-        const url = `/api/projects/${projectId}/versions/compare?run_id_a=${entryA.run_id}&run_id_b=${entryB.run_id}`;
-        const res = await fetch(url);
+        const url = `${API_BASE_URL}/api/projects/${projectId}/versions/compare?run_id_a=${entryA.run_id}&run_id_b=${entryB.run_id}`;
+        const res = await authFetch(url);
         if (res.ok) {
           setCompareData(await res.json());
         } else {
@@ -133,9 +135,8 @@ export default function AnalysisReport({
   ) => {
     if (!projectId) return;
     try {
-      const res = await fetch(`${API_BASE_URL}/api/validation/apply-fix`, {
+      const res = await authFetch(`${API_BASE_URL}/api/validation/apply-fix`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           project_id: Number(projectId),
           stage,

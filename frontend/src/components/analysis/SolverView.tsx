@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Cpu, Loader2, Activity, Play, GitCompare, ListChecks, CheckCircle, XCircle } from 'lucide-react';
 import { API_BASE_URL } from '../../config';
+import { useAuth } from '../../context/AuthContext';
 import { StepItem } from './StepItem';
 import { SolverCard } from './SolverCard';
 import { InfeasibilityPanel } from './InfeasibilityPanel';
@@ -19,6 +20,7 @@ export function SolverView({
   onResultReady?: (data: any) => void;
   projectId?: string;
 }) {
+  const { authFetch } = useAuth();
   const [step, setStep] = useState(0);
   const [jobStatus, setJobStatus] = useState<'idle' | 'running' | 'compiling' | 'executing' | 'done' | 'error'>('idle');
   const [execMode, setExecMode] = useState<'auto' | 'step' | 'compare'>('auto');
@@ -48,14 +50,9 @@ export function SolverView({
   const executeSolver = useCallback(async (solverIdx: number) => {
     const solver = solvers[solverIdx];
     if (!solver || !projectId) return null;
-    const token = localStorage.getItem('token') || '';
     try {
-      const res = await fetch(`${API_BASE_URL}/api/solve`, {
+      const res = await authFetch(`${API_BASE_URL}/api/solve`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
         body: JSON.stringify({
           project_id: projectId,
           solver_id: solver.solver_id,
@@ -68,7 +65,7 @@ export function SolverView({
     } catch (err: any) {
       return { success: false, error: err.message || String(err) };
     }
-  }, [solvers, projectId]);
+  }, [solvers, projectId, authFetch]);
 
   const handleAutoRun = useCallback(async () => {
     setJobStatus('compiling');

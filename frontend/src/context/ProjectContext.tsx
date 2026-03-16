@@ -26,7 +26,7 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  const { user, token } = useAuth();
+  const { user, token, authFetch } = useAuth();
 
   const fetchProjects = useCallback(async () => {
     if (!user || !token) return;
@@ -34,22 +34,21 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
     setIsLoading(true);
     try {
       const url = `${API_BASE_URL}/api/projects`;
-      const response = await fetch(url, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const response = await authFetch(url);
 
       if (response.ok) {
         const data = await response.json();
         setProjects(data);
-      } else {
+      } else if (response.status !== 401) {
         console.error(`[API Error] Status: ${response.status}`);
       }
+      // 401은 authFetch가 자동 로그아웃 처리
     } catch (error) {
       console.error('[Network Error]', error);
     } finally {
       setIsLoading(false);
     }
-  }, [user, token]);
+  }, [user, token, authFetch]);
 
   useEffect(() => {
     if (user) {

@@ -71,22 +71,25 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
   }, [currentProject?.id]);
 
   const setAnalysisData = useCallback((data: any) => {
-    setAnalysisDataRaw(data);
+    // ★ 항상 새 객체 참조 생성 — React useEffect dependency 갱신 보장
+    // 백엔드가 같은 state 객체를 반환해도 프론트엔드에서 변경 감지 가능
+    const freshData = data ? structuredClone(data) : data;
+    setAnalysisDataRaw(freshData);
     // Auto-extract validation from incoming data (any stage can include it)
-    if (data?.validation) {
-      setStageValidation(data.validation);
+    if (freshData?.validation) {
+      setStageValidation(freshData.validation);
     }
-    if (data && data.view_mode) {
-      const mapped = viewModeToStepId(data.view_mode);
+    if (freshData && freshData.view_mode) {
+      const mapped = viewModeToStepId(freshData.view_mode);
       if (mapped) {
         const { stepId, isFileUpload } = mapped;
         if (isFileUpload) {
           setStepCache(prev => {
-            if (!prev.analysis) return { ...prev, analysis: data };
+            if (!prev.analysis) return { ...prev, analysis: freshData };
             return prev;
           });
         } else {
-          setStepCache(prev => ({ ...prev, [stepId]: data }));
+          setStepCache(prev => ({ ...prev, [stepId]: freshData }));
           setCompletedSteps(prev => {
             const next = new Set(prev);
             next.add(stepId);

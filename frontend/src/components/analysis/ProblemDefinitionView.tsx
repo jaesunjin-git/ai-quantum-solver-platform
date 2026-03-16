@@ -100,13 +100,23 @@ export function ProblemDefinitionView({
     );
   }, [availableConstraints, addSearch]);
 
-  // proposal이 바뀔 때 edits 재초기화 (편집 모드는 유지)
+  // proposal 내용 변경 감지용 deep key (객체 참조가 아닌 내용 기반)
+  const proposalKey = useMemo(
+    () => proposal ? JSON.stringify({
+      obj: objective?.target,
+      hard: Object.keys(hardConstraints).sort(),
+      soft: Object.keys(softConstraints).sort(),
+      params: Object.keys(parameters).sort(),
+    }) : '',
+    [proposal, objective?.target, hardConstraints, softConstraints, parameters]
+  );
+
+  // proposal 내용이 바뀔 때 edits 재초기화 (편집 모드는 유지)
   useEffect(() => {
     if (!proposal) return;
     setEdits(buildEdits(hardConstraints, softConstraints));
     setSelectedIdxs(new Set());
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [proposal]);
+  }, [proposalKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 목적함수 재구성 완료 시 리셋
   useEffect(() => {
