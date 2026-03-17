@@ -46,6 +46,7 @@ async def handle_file_upload(session: CrewSession, project_id: str, event_data: 
 
     # Save dataset version
     try:
+        from core.version import create_dataset_version
         pid = int(project_id)
         domain = state.domain_override or state.detected_domain
         dv = create_dataset_version(

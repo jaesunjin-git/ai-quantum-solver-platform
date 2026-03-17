@@ -209,3 +209,17 @@ constraint_templates:
     expression: sum(u[d] for d in D) + penalties
     alternatives:
     - minimize_duties
+  balance_workload:
+    _type: objective_template
+    type: minimize
+    description: 업무균형 최적화 — crew간 트립 배분 균형 (max-min 최소화)
+    description_ko: 업무균형 최적화
+    expression: max(trips_per_crew) - min(trips_per_crew)
+  balance_workload_with_penalties:
+    _type: objective_template
+    type: minimize
+    description: 업무균형 최적화 + soft 제약 위반 패널티
+    description_ko: 업무균형 최적화
+    expression: max(trips_per_crew) - min(trips_per_crew) + penalties
+    alternatives:
+    - balance_workload
