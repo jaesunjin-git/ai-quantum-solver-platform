@@ -2524,6 +2524,8 @@ Soft 제약조건:
             "type": "problem_definition",
             "text": f"❓ **데이터 확인이 필요합니다**\n\n{text}",
             "data": {
+                "view_mode": "problem_definition",
+                "proposal": state.problem_definition,
                 "agent_status": "clarification_pending",
                 "clarification_question": qid,
                 "clarification_total": len(pending),
