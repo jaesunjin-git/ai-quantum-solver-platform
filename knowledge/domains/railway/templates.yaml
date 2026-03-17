@@ -212,14 +212,15 @@ constraint_templates:
   balance_workload:
     _type: objective_template
     type: minimize
-    description: 업무균형 최적화 — crew간 트립 배분 균형 (max-min 최소화)
-    description_ko: 업무균형 최적화
-    expression: max(trips_per_crew) - min(trips_per_crew)
+    description: 업무균형 최적화 — 승무원 수 최소화 + workload_balance hard 제약으로 균형 보장
+    description_ko: 승무원 수 최소화 (soft 패널티 포함)
+    expression: sum(y[j] for j in J) + sum(weight_k * slack_k for k in soft_constraints)
+    note: workload_balance가 hard 제약으로 승격되어 crew간 트립 수 균형 보장
   balance_workload_with_penalties:
     _type: objective_template
     type: minimize
     description: 업무균형 최적화 + soft 제약 위반 패널티
-    description_ko: 업무균형 최적화
-    expression: max(trips_per_crew) - min(trips_per_crew) + penalties
+    description_ko: 승무원 수 최소화 (soft 패널티 포함)
+    expression: sum(y[j] for j in J) + sum(weight_k * slack_k for k in soft_constraints)
     alternatives:
     - balance_workload

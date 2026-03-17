@@ -42,6 +42,16 @@ class DWaveCQMCompiler(BaseCompiler):
                 set_map = getattr(bound_data, "set_map", {})
                 param_map = getattr(bound_data, "param_map", {})
 
+            # ── 0. J 크기 교정 (변수 생성 전 — 불필요한 변수 생성 방지) ──
+            _J_vals = set_map.get("J", [])
+            if len(_J_vals) > 100:
+                _trip_count = len(set_map.get("I", []))
+                if _trip_count > 0:
+                    _new_j = max(_trip_count // 6, 20)
+                    if _new_j < len(_J_vals):
+                        set_map["J"] = list(range(1, _new_j + 1))
+                        logger.info(f"J size auto-corrected (pre-var): {len(_J_vals)} -> {_new_j} (trips={_trip_count})")
+
             # ── 1. 변수 생성 ──
             for var_def in math_model.get("variables", []):
                 vid = var_def.get("id", "")
@@ -91,16 +101,7 @@ class DWaveCQMCompiler(BaseCompiler):
                 else:
                     logger.info("overlap_pairs sort skipped: trip params not dict-indexed yet")
 
-            # ── 2c. J 크기 교정 (변수 생성 후, 제약 구성 전: trip_count // 6 기반) ──
-            # 변수는 J=160 유지 (escape valve), 제약만 J=53으로 축소
-            _J_vals = set_map.get("J", [])
-            if len(_J_vals) > 100:
-                _trip_count = len(set_map.get("I", []))
-                if _trip_count > 0:
-                    _new_j = max(_trip_count // 6, 20)
-                    if _new_j < len(_J_vals):
-                        set_map["J"] = list(range(_new_j))
-                        logger.info(f"J size auto-corrected: {len(_J_vals)} -> {_new_j} (trips={_trip_count})")
+            # J 크기 교정은 변수 생성 전(step 0)으로 이동됨
 
             # ── 3. BuildContext 구성 (struct_builder 공유) ──
             from engine.compiler.struct_builder import BuildContext
