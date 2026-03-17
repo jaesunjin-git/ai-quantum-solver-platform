@@ -131,6 +131,12 @@ export interface ResultData {
   artifacts?: Record<string, string>;
   compare_mode?: boolean;
   legacy?: OptResult;
+  validation?: {
+    error_count: number;
+    warning_count: number;
+    info_count: number;
+    items?: ValidationItem[];
+  };
 }
 
 export interface FileUploadedData {

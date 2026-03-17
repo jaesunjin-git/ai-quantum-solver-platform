@@ -97,6 +97,27 @@ export function OptimizationResultView({
           </div>
         </div>
 
+        {/* Validation summary (오류/경고/안내) */}
+        {data.validation && (
+          <div className="mb-2 flex items-center gap-2 text-[11px]">
+            {data.validation.error_count > 0 && (
+              <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-red-500/15 text-red-400">
+                <XCircle size={10} /> {data.validation.error_count} 오류
+              </span>
+            )}
+            {data.validation.warning_count > 0 && (
+              <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-yellow-500/15 text-yellow-400">
+                <AlertTriangle size={10} /> {data.validation.warning_count} 경고
+              </span>
+            )}
+            {data.validation.info_count > 0 && (
+              <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-blue-500/15 text-blue-400">
+                {data.validation.info_count} 안내
+              </span>
+            )}
+          </div>
+        )}
+
         {/* Tab selector */}
         <div className="flex gap-1 bg-slate-800/50 rounded-lg p-0.5">
           {tabs.map(tab => {
