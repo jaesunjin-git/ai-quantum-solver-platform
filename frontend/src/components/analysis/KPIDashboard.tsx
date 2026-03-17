@@ -45,6 +45,13 @@ export function KPIDashboard({
   const kpi = interpreted.kpi;
   return (
     <div className="space-y-4 animate-in fade-in duration-300">
+      {/* 최적화 목적 표시 */}
+      <div className="bg-slate-800/30 rounded-xl p-3 border border-slate-700 flex items-center gap-3">
+        <div className="text-xs text-slate-500 uppercase whitespace-nowrap">최적화 목적</div>
+        <div className="text-sm font-bold text-cyan-400">{interpreted.objective_label || interpreted.objective_type || '목적함수 최적화'}</div>
+        <div className="text-xs text-slate-500 ml-auto">목적함수 값: <span className="text-white font-mono">{formatNumber(interpreted.objective_value)}</span></div>
+      </div>
+
       {/* 핵심 KPI */}
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-gradient-to-br from-cyan-900/30 to-blue-900/30 rounded-xl p-4 border border-cyan-700/30">
@@ -95,7 +102,9 @@ export function KPIDashboard({
         <div className="space-y-2 text-[13px]">
           <div className="flex justify-between">
             <span className="text-slate-500">운행 시간대</span>
-            <span className="text-white">{kpi.earliest_start || '-'} ~ {kpi.latest_end || '-'}</span>
+            <span className="text-white">
+              {kpi.earliest_start_hhmm || kpi.earliest_start || '-'} ~ {kpi.latest_end_hhmm || kpi.latest_end || '-'}
+            </span>
           </div>
           <div className="flex justify-between">
             <span className="text-slate-500">총 운전시간</span>

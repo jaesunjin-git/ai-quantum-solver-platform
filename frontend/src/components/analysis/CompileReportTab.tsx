@@ -38,7 +38,6 @@ export function CompileReportTab({
   compileWarnings: string[];
 }) {
   const [warningsExpanded, setWarningsExpanded] = useState(false);
-  const [sourcesExpanded, setSourcesExpanded] = useState(false);
   const [gate3Expanded, setGate3Expanded] = useState(false);
 
   const constraints = compileSummary.constraints || { total_in_model: 0, applied: 0, failed: 0 };
@@ -191,27 +190,23 @@ export function CompileReportTab({
       {/* ── 파라미터 소스 추적 ── */}
       {sourceEntries.length > 0 && (
         <div className="bg-slate-800/50 rounded-xl border border-slate-700 p-4">
-          <button onClick={() => setSourcesExpanded(!sourcesExpanded)}
-            className="w-full flex items-center justify-between text-sm font-bold text-slate-300">
+          <div className="flex items-center justify-between text-sm font-bold text-slate-300 mb-3">
             <span className="flex items-center gap-2">
               <Database size={14} className="text-purple-400" />
               파라미터 소스 ({sourceEntries.length})
             </span>
-            {sourcesExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          </button>
-          {sourcesExpanded && (
-            <div className="mt-3 space-y-1 max-h-48 overflow-y-auto custom-scrollbar">
-              {sourceEntries.map(([param, source]) => {
-                const { label, color } = formatSource(source);
-                return (
-                  <div key={param} className="flex items-center justify-between text-[11px] py-1 border-b border-slate-700/50 last:border-0">
-                    <span className="text-slate-300 font-mono">{param}</span>
-                    <span className={`${color} font-medium`}>{label}</span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+          </div>
+          <div className="space-y-1">
+            {sourceEntries.map(([param, source]) => {
+              const { label, color } = formatSource(source);
+              return (
+                <div key={param} className="flex items-center justify-between text-[11px] py-1 border-b border-slate-700/50 last:border-0">
+                  <span className="text-slate-300 font-mono">{param}</span>
+                  <span className={`${color} font-medium`}>{label}</span>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
