@@ -411,6 +411,13 @@ class ProblemDefinitionSkill:
 
         # ── Phase A: 적용 가능성 필터링 ──
         for cname, cdata in dk.hard_constraints.items():
+            # post-solve 전용 제약 또는 expression 미정의 제약은 솔버 모델에서 제외
+            if cdata.get("post_solve_validation") or (
+                not cdata.get("expression") and not cdata.get("expression_template")
+            ):
+                logger.debug(f"Constraint {cname} skipped: post-solve or no expression")
+                continue
+
             applicability = self._check_applicability(
                 cdata, detected_data_types, topology, phase1_data,
                 resolved_params=resolved_params,
@@ -443,6 +450,13 @@ class ProblemDefinitionSkill:
 
         # Soft constraints
         for cname, cdata in dk.soft_constraints.items():
+            # post-solve 전용 제약 또는 expression 미정의 제약은 솔버 모델에서 제외
+            if cdata.get("post_solve_validation") or (
+                not cdata.get("expression") and not cdata.get("expression_template")
+            ):
+                logger.debug(f"Soft constraint {cname} skipped: post-solve or no expression")
+                continue
+
             applicability = self._check_applicability(
                 cdata, detected_data_types, topology, phase1_data,
                 resolved_params=resolved_params,
