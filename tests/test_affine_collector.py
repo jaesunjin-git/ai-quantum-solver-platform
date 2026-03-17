@@ -384,6 +384,37 @@ class TestASTParser:
         # y[j] * (1 - is_night[j]) 는 product of two indexed → affine_supported=True (정적으로는 판단 불가)
         # runtime에 collect_affine에서 UnsupportedStructuredPattern 발생
 
+    def test_is_night_as_param_is_affine(self):
+        """is_night가 파라미터면 y[j] * (1 - is_night[j])는 affine"""
+        from engine.compiler.affine_collector import collect_affine, parse_expression_to_ast, VarRef
+        from engine.compiler.struct_builder import BuildContext
+        ctx = BuildContext(
+            var_map={"y": {("1",): "y_1", ("2",): "y_2"}},
+            param_map={"is_night": {"1": 0, "2": 1}},
+            set_map={"J": [1, 2]},
+        )
+        ast = parse_expression_to_ast("sum(y[j] * (1 - is_night[j]) for j in J)")
+        ir = collect_affine(ast, {}, ctx)
+        # j=1: is_night=0 → coeff=1, j=2: is_night=1 → coeff=0
+        assert len(ir.linear_terms) == 1  # y[1]만 남음 (y[2] coeff=0 → pruned)
+
+    def test_is_night_as_variable_raises(self):
+        """is_night가 결정변수면 y[j] * (1 - is_night[j])는 non-affine → fallback"""
+        from engine.compiler.affine_collector import collect_affine, parse_expression_to_ast
+        from engine.compiler.struct_builder import BuildContext
+        from engine.compiler.errors import UnsupportedStructuredPattern
+        ctx = BuildContext(
+            var_map={
+                "y": {("1",): "y_1", ("2",): "y_2"},
+                "is_night": {("1",): "in_1", ("2",): "in_2"},
+            },
+            param_map={},
+            set_map={"J": [1, 2]},
+        )
+        ast = parse_expression_to_ast("sum(y[j] * (1 - is_night[j]) for j in J)")
+        with pytest.raises(UnsupportedStructuredPattern):
+            collect_affine(ast, {}, ctx)
+
 
 # ============================================================
 # 16. product: scalar×affine ✅, variable×variable → error
