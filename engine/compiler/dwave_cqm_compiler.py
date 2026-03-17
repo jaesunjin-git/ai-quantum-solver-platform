@@ -201,14 +201,11 @@ class DWaveCQMCompiler(BaseCompiler):
                     # 구조화된 제약 -> build_constraint로 dimod 표현식 생성
                     con_max = explicit_max
                     # for_each가 두 집합 이상 (예: i in I, j in J)이면 max_instances 미설정 시
-                    # hard: truncation 금지 (전체 생성), soft: 1000 기본 적용
+                    # budget 보호를 위해 1000 기본 적용 (J auto-correction 후 재검토 필요)
                     if not con_max:
                         _fe = con_def.get("for_each", "")
                         if _fe.count(" in ") >= 2:
-                            if category == "hard":
-                                con_max = 0  # hard는 truncation 없이 전체 생성
-                            else:
-                                con_max = 1000
+                            con_max = 1000
                     # per-constraint cap 적용: 단일 제약이 전체 예산의 40%를 초과할 수 없음
                     effective_max = min(remaining, per_constraint_cap, con_max) if con_max else min(remaining, per_constraint_cap)
                     try:
