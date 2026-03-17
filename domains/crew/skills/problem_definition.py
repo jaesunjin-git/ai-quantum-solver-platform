@@ -1413,6 +1413,11 @@ class ProblemDefinitionSkill:
 
         # ── 확정 시점 Ambiguity Detection ──
         state.problem_definition = pd
+
+        # 기존 clarification_answers가 있으면 이미 답변 완료 → 재질문 방지
+        if state.clarification_answers and len(state.clarification_answers) > 0:
+            state.clarification_done = True
+
         if not state.clarification_done:
             parameters = pd.get("parameters", {})
             confirmed_constraints = {
