@@ -245,10 +245,12 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         }
         const incoming = data.data;
         const isMinimalResult = incoming.view_mode === 'result' && !incoming.compile_summary && !incoming.status;
-        if (isMinimalResult) {
-          console.log('⏭️ Skipping minimal result data (detailed data already set by SolverView)');
+        // SolverView에서 이미 result를 설정한 경우, solver/analysis 뷰로 덮어쓰기 방지
+        const isResultAlreadySet = analysisData?.view_mode === 'result' && incoming.view_mode !== 'result';
+        if (isMinimalResult || isResultAlreadySet) {
+          // 결과가 이미 표시 중 — 덮어쓰지 않음
         } else if (incoming.view_mode === 'normalization_complete') {
-          console.log('⏭️ Skipping normalization_complete (auto-next handles transition)');
+          // auto-next 처리
         } else {
           setAnalysisData(incoming);
         }
