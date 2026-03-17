@@ -84,17 +84,28 @@ async def submit_job(
 ):
     """솔버 실행 Job 생성. 즉시 job_id 반환."""
 
-    # 중복 제출 방지: 같은 project + solver에 PENDING/RUNNING job이 있으면 차단
+    # 중복 제출 방지: 같은 project + solver에 최근 PENDING/RUNNING job이 있으면 차단
+    # 30분 이상 stuck된 Job은 FAILED로 정리 후 허용
+    _stale_cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=30)
     existing = db.query(JobDB).filter(
         JobDB.project_id == body.project_id,
         JobDB.solver_id == body.solver_id,
         JobDB.status.in_(["PENDING", "RUNNING"]),
     ).first()
     if existing:
-        raise HTTPException(
-            status_code=409,
-            detail=f"이미 실행 중인 Job이 있습니다 (job_id={existing.id})",
-        )
+        if existing.created_at and existing.created_at.replace(tzinfo=datetime.timezone.utc) < _stale_cutoff:
+            # 30분 이상 stuck → FAILED로 정리
+            existing.status = "FAILED"
+            existing.error = "Stale job (>30min)"
+            existing.completed_at = datetime.datetime.now(datetime.timezone.utc)
+            existing.progress = "시간 초과 정리"
+            db.commit()
+            logger.warning(f"Stale job {existing.id} cleaned up (>30min stuck)")
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail=f"이미 실행 중인 Job이 있습니다 (job_id={existing.id})",
+            )
 
     job = JobDB(
         project_id=body.project_id,

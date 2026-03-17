@@ -525,6 +525,19 @@ def lower_affine_to_dimod(
             continue
         dvar = var_lookup.get(vr)
         if dvar is None:
+            # str↔int 키 불일치 fallback
+            alt_indices = tuple(str(i) for i in vr.indices)
+            alt_vr = VarRef(name=vr.name, indices=alt_indices)
+            dvar = var_lookup.get(alt_vr)
+        if dvar is None:
+            # int 변환 시도
+            try:
+                int_indices = tuple(int(i) for i in vr.indices)
+                int_vr = VarRef(name=vr.name, indices=int_indices)
+                dvar = var_lookup.get(int_vr)
+            except (ValueError, TypeError):
+                pass
+        if dvar is None:
             raise VariableResolutionError(f"VarRef {vr} not found in var_lookup")
         terms.append(float(coeff) * dvar)
 
@@ -535,7 +548,11 @@ def lower_affine_to_dimod(
 
 
 def build_var_lookup(var_map: dict) -> Dict[VarRef, Any]:
-    """var_map (name → {key → dimod_var}) → VarRef → dimod_var 매핑."""
+    """var_map (name → {key → dimod_var}) → VarRef → dimod_var 매핑.
+
+    바인딩에서 올 수 있는 키 형태(int, str)를 모두 등록하여
+    VarRef 매칭 실패를 방지한다.
+    """
     lookup: Dict[VarRef, Any] = {}
     for name, vmap in var_map.items():
         if not isinstance(vmap, dict):
@@ -545,6 +562,14 @@ def build_var_lookup(var_map: dict) -> Dict[VarRef, Any]:
                 indices = tuple(normalize_index_key(key))
             else:
                 indices = (normalize_index_key(key),) if key is not None else ()
+
+            # 원본 키로 등록
             vr = VarRef(name=name, indices=indices)
             lookup[vr] = dvar
+
+            # 문자열 변환 키도 등록 (바인딩이 str로 올 수 있음)
+            str_indices = tuple(str(i) for i in indices)
+            if str_indices != indices:
+                vr_str = VarRef(name=name, indices=str_indices)
+                lookup[vr_str] = dvar
     return lookup
