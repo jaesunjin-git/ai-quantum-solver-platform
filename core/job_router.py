@@ -81,7 +81,7 @@ async def submit_job(
         # Redis 미실행 시 → 동기 fallback 실행
         logger.warning(f"Celery unavailable ({e}), running job synchronously")
         job.status = "RUNNING"
-        job.started_at = datetime.datetime.utcnow()
+        job.started_at = datetime.datetime.now(datetime.timezone.utc)
         job.progress = "동기 실행 중 (Celery 미연결)"
         db.commit()
 
@@ -91,12 +91,12 @@ async def submit_job(
             job.status = "COMPLETE" if result.get("success") else "FAILED"
             job.result_json = json.dumps(result, ensure_ascii=False, default=str)
             job.error = result.get("error")
-            job.completed_at = datetime.datetime.utcnow()
+            job.completed_at = datetime.datetime.now(datetime.timezone.utc)
             job.progress = "완료"
         except Exception as run_err:
             job.status = "FAILED"
             job.error = str(run_err)
-            job.completed_at = datetime.datetime.utcnow()
+            job.completed_at = datetime.datetime.now(datetime.timezone.utc)
             job.progress = "실패"
         db.commit()
 

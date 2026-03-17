@@ -87,8 +87,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     scrollToBottom();
   }, [messages]);
 
-  const { user, token, authFetch } = useAuth();
-  const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  const { user, authFetch } = useAuth();
 
   useEffect(() => {
     setMessages([{
@@ -100,7 +99,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
     const loadHistory = async () => {
       try {
-        if (!user || !token) return;
+        if (!user) return;
         const params = new URLSearchParams({ project_id: projectId });
         const res = await authFetch(`${API_BASE_URL}/api/chat/history?${params.toString()}`);
         if (!res.ok) return;
@@ -172,12 +171,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
   const handleDownload = async () => {
     try {
-      const token = localStorage.getItem('token') || '';
-      const res = await fetch(
+      const res = await authFetch(
         `${API_BASE_URL}/api/projects/${projectId}/report/download?format=md`,
-        {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        }
       );
       if (!res.ok) {
         alert('다운로드할 리포트가 없습니다.');

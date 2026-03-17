@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Save, Loader2, Shield, Cpu, ToggleLeft, ToggleRight, Key, Timer, X } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 interface SolverSetting {
   solver_id: string;
@@ -14,6 +15,7 @@ interface SolverSetting {
 }
 
 export default function SolverSettings() {
+  const { authFetch } = useAuth();
   const [solvers, setSolvers] = useState<SolverSetting[]>([]);
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [timeLimits, setTimeLimits] = useState<Record<string, string>>({});
@@ -27,10 +29,7 @@ export default function SolverSettings() {
 
   const fetchSettings = async () => {
     try {
-      const token = localStorage.getItem('token') || '';
-      const res = await fetch('/api/settings/solvers', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
+      const res = await authFetch('/api/settings/solvers');
       if (res.ok) {
         const data: SolverSetting[] = await res.json();
         setSolvers(data);
@@ -79,7 +78,6 @@ export default function SolverSettings() {
     setSaving(true);
     setMessage('');
     try {
-      const token = localStorage.getItem('token') || '';
       const body = {
         solvers: solvers.map((s) => {
           const rawLimit = timeLimits[s.solver_id];
@@ -92,12 +90,8 @@ export default function SolverSettings() {
           };
         }),
       };
-      const res = await fetch('/api/settings/solvers', {
+      const res = await authFetch('/api/settings/solvers', {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
         body: JSON.stringify(body),
       });
       if (res.ok) {

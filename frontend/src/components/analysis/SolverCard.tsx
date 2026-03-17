@@ -53,7 +53,7 @@ const getSuitabilityColor = (suit: string) => {
   return 'bg-red-500/20 text-red-400';
 };
 
-export function SolverCard({ svr, idx, isSelected, isCompareMode, strategies, recommendedStrategy, onSelect }: SolverCardProps) {
+export function SolverCard({ svr, idx: _idx, isSelected, isCompareMode: _isCompareMode, strategies, recommendedStrategy, onSelect }: SolverCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   const relatedStrategies = strategies?.filter((st: any) =>

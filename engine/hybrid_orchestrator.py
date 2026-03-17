@@ -2,7 +2,7 @@
 import time
 import json
 import random
-from datetime import datetime
+from datetime import datetime, timezone
 from core.database import SessionLocal
 import core.models as models
 from engine.auto_compiler import generate_quantum_code
@@ -60,7 +60,7 @@ def execute_solver_job(self, job_id: int, backend: str, data: dict):
         
         job.result_json = json.dumps(final_result)
         job.status = "COMPLETED"
-        job.completed_at = datetime.utcnow()
+        job.completed_at = datetime.now(timezone.utc)
         print(f"✅ [Worker] Job {job_id} Finished Successfully.")
 
     except Exception as e:

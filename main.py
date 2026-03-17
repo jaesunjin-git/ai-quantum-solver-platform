@@ -8,6 +8,8 @@
 #   - project_router 등록 추가
 # ============================================================
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Depends, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -44,8 +46,14 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _startup()
+    yield
+
+
 # 1. FastAPI 앱 선언
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 
 # 1-1. Rate Limiting
 app.state.limiter = limiter
@@ -69,6 +77,7 @@ app.include_router(auth_router)          # /api/auth/*
 app.include_router(validation_router)    # /api/validation/*
 app.include_router(job_router)           # /api/jobs/*
 app.include_router(intent_log_router)   # /api/intent-logs/*
+
 
 def _migrate_solver_settings(db):
     """기존 core.solver_settings 테이블에 새 컬럼을 안전하게 추가"""
@@ -137,6 +146,7 @@ def _migrate_session_states(db):
         "pending_objective": "TEXT",
         "pending_extra_instructions": "VARCHAR",
         "pending_category_change": "TEXT",
+        "clarification_done": "BOOLEAN DEFAULT FALSE",
     }
     for col_name, col_type in new_columns.items():
         try:
@@ -149,8 +159,7 @@ def _migrate_session_states(db):
     print("Session states migration check completed.")
 
 
-@app.on_event("startup")
-def startup():
+def _startup():
     # =========================================================
     # 1. 스키마(방) 생성
     # =========================================================

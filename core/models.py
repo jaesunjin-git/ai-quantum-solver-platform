@@ -14,7 +14,7 @@ class UserDB(Base):
     display_name = Column(String, nullable=True)
     role = Column(String, default="user")  # "admin" | "user"
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc))
 
 
 # 1. [Domain] 비즈니스 로직 관련
@@ -52,7 +52,7 @@ class ProjectDB(Base):
     type = Column(String)
     owner = Column(String, index=True)
     status = Column(String, default="In Progress")
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc))
 
     # 관계 설정
     chats = relationship("ChatHistoryDB", back_populates="project")
@@ -72,7 +72,7 @@ class ChatHistoryDB(Base):
     message_text = Column(Text)
     card_json = Column(Text, nullable=True)
     options_json = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc))
 
     project = relationship("ProjectDB", back_populates="chats")
 
@@ -91,7 +91,7 @@ class JobDB(Base):
     progress = Column(String, nullable=True)     # 진행 상태 메시지
     error = Column(Text, nullable=True)
     result_json = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc))
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
 
@@ -129,6 +129,7 @@ class SessionStateDB(Base):
     pending_param_inputs = Column(Text, nullable=True)      # JSON string: 파라미터 입력 대기 목록
     clarification_answers = Column(Text, nullable=True)    # JSON string: 모호성 질문 답변
     pending_clarifications = Column(Text, nullable=True)   # JSON string: 대기 중 질문 목록
+    clarification_done = Column(Boolean, default=False)
 
     # Problem Definition
     problem_defined = Column(Boolean, default=False)
@@ -158,7 +159,7 @@ class SessionStateDB(Base):
     detected_domain = Column(String, nullable=True)
     domain_confidence = Column(String, nullable=True)
 
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
 
     project = relationship("ProjectDB")
 
@@ -172,7 +173,7 @@ class SolverSettingDB(Base):
     api_key = Column(String, nullable=True)               # deprecated: 평문 (하위 호환)
     encrypted_api_key = Column(String, nullable=True)      # Fernet 암호화된 API Key
     time_limit_sec = Column(Integer, nullable=True)  # NULL이면 YAML max_time_seconds 사용
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
     updated_by = Column(String, nullable=True)
 
     def get_api_key(self) -> str | None:

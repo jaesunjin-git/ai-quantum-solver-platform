@@ -1,12 +1,13 @@
 // src/components/analysis/MathModelView.tsx
 import { Activity, ChevronDown, ChevronUp, Download, Edit3, FileText, Play, Save, X } from 'lucide-react';
 import { useState, useCallback } from 'react';
+import { useAuth } from '../../context/AuthContext';
+import { downloadReport } from './downloadHelper';
 import type { MathModelData } from './types';
 
 export function MathModelView({
   data,
   onAction,
-  onEvent,
   projectId,
 }: {
   data: MathModelData;
@@ -14,6 +15,7 @@ export function MathModelView({
   onEvent?: (message: string, eventType: string, eventData: any) => void;
   projectId?: string;
 }) {
+  const { authFetch } = useAuth();
   const model = data.math_model || {};
   const meta = model.metadata || {};
   const variables = model.variables || [];
@@ -96,70 +98,25 @@ export function MathModelView({
           {projectId && (
             <div className="flex gap-2">
               <button
-                onClick={async () => {
-                  try {
-                    const token = localStorage.getItem('token') || '';
-                    const res = await fetch(
-                      `/api/projects/${projectId}/report/download?format=json&type=math_model`,
-                      { headers: token ? { Authorization: `Bearer ${token}` } : {} }
-                    );
-                    if (!res.ok) { alert('다운로드 실패'); return; }
-                    const blob = await res.blob();
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url; a.download = 'math_model.json';
-                    document.body.appendChild(a); a.click();
-                    document.body.removeChild(a); URL.revokeObjectURL(url);
-                  } catch (e) { console.error(e); alert('다운로드 오류'); }
-                }}
+                onClick={() => downloadReport(projectId!, 'json', 'math_model', authFetch)}
                 className="px-3 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 transition flex items-center gap-1"
-              title="JSON으로 다운로드"
+                title="JSON으로 다운로드"
               >
                 <Download size={14} />
                 <span>.json</span>
               </button>
               <button
-                onClick={async () => {
-                  try {
-                    const token = localStorage.getItem('token') || '';
-                    const res = await fetch(
-                      `/api/projects/${projectId}/report/download?format=md&type=math_model`,
-                      { headers: token ? { Authorization: `Bearer ${token}` } : {} }
-                    );
-                    if (!res.ok) { alert('다운로드 실패'); return; }
-                    const blob = await res.blob();
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url; a.download = 'math_model.md';
-                    document.body.appendChild(a); a.click();
-                    document.body.removeChild(a); URL.revokeObjectURL(url);
-                  } catch (e) { console.error(e); alert('다운로드 오류'); }
-                }}
+                onClick={() => downloadReport(projectId!, 'md', 'math_model', authFetch)}
                 className="px-3 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 transition flex items-center gap-1"
-              title="Markdown으로 다운로드"
+                title="Markdown으로 다운로드"
               >
                 <Download size={14} />
                 <span>.md</span>
               </button>
               <button
-                onClick={async () => {
-                  try {
-                    const token = localStorage.getItem('token') || '';
-                    const res = await fetch(
-                      `/api/projects/${projectId}/report/download?format=docx&type=math_model`,
-                      { headers: token ? { Authorization: `Bearer ${token}` } : {} }
-                    );
-                    if (!res.ok) { alert('다운로드 실패'); return; }
-                    const blob = await res.blob();
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url; a.download = 'math_model.docx';
-                    document.body.appendChild(a); a.click();
-                    document.body.removeChild(a); URL.revokeObjectURL(url);
-                  } catch (e) { console.error(e); alert('다운로드 오류'); }
-                }}
+                onClick={() => downloadReport(projectId!, 'docx', 'math_model', authFetch)}
                 className="px-3 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 transition flex items-center gap-1"
-              title="Word로 다운로드"
+                title="Word로 다운로드"
               >
                 <Download size={14} />
                 <span>.docx</span>

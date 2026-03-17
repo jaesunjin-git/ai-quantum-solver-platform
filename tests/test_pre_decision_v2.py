@@ -442,7 +442,7 @@ class TestSolverSeeding:
 
     def test_seeding_code_exists(self):
         import inspect
-        from main import startup
+        from main import _startup as startup
         source = inspect.getsource(startup)
         assert "SolverSettingDB" in source
         assert "dwave_nl" in source
@@ -451,7 +451,7 @@ class TestSolverSeeding:
     def test_default_enabled_solvers(self):
         """기본 활성 솔버: classical_cpu, dwave_hybrid_cqm, dwave_nl"""
         import inspect
-        from main import startup
+        from main import _startup as startup
         source = inspect.getsource(startup)
         # 시딩 코드에서 enabled=True인 솔버 확인
         assert '"classical_cpu", "enabled": True' in source or \

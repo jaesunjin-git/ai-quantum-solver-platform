@@ -1,5 +1,5 @@
 ﻿// src/components/analysis/FlowStepBar.tsx
-import { BarChart3, ClipboardList, Database, Braces, Cpu, Target } from 'lucide-react';
+import { BarChart3, ClipboardList, Braces, Cpu, Target } from 'lucide-react';
 import type { StepId } from '../../context/AnalysisContext';
 
 interface FlowStep { id: StepId; label: string; icon: React.ReactNode; }

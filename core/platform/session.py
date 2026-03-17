@@ -71,6 +71,7 @@ _DB_FIELD_SPEC: list[tuple[str, str]] = [
     ("pending_param_inputs", "json"),
     ("clarification_answers", "json"),
     ("pending_clarifications", "json"),
+    ("clarification_done", "direct"),
     # Pending actions (목적함수/카테고리 변경 중간 상태)
     ("objective_changing", "direct"),
     ("pending_objective", "json"),

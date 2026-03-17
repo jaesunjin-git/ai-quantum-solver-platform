@@ -32,7 +32,7 @@ def _run_solver_sync(
         job = db.query(JobDB).filter(JobDB.id == job_id).first()
         if job:
             job.status = "RUNNING"
-            job.started_at = datetime.datetime.utcnow()
+            job.started_at = datetime.datetime.now(datetime.timezone.utc)
             job.progress = "솔버 실행 중"
             db.commit()
 
@@ -72,7 +72,7 @@ def _run_solver_sync(
             job.status = "COMPLETE" if result.success else "FAILED"
             job.result_json = json.dumps(output, ensure_ascii=False, default=str)
             job.error = result.error
-            job.completed_at = datetime.datetime.utcnow()
+            job.completed_at = datetime.datetime.now(datetime.timezone.utc)
             job.progress = "완료" if result.success else "실패"
             db.commit()
 
@@ -85,7 +85,7 @@ def _run_solver_sync(
                 if job:
                     job.status = "FAILED"
                     job.error = str(e)
-                    job.completed_at = datetime.datetime.utcnow()
+                    job.completed_at = datetime.datetime.now(datetime.timezone.utc)
                     job.progress = "실패"
                     db.commit()
             except Exception:

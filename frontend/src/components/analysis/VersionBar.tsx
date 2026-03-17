@@ -10,7 +10,7 @@
  */
 
 import { useState } from 'react';
-import { GitBranch, ArrowLeftRight, Clock } from 'lucide-react';
+import { GitBranch, ArrowLeftRight } from 'lucide-react';
 import type { VersionTimelineEntry } from './types';
 
 interface VersionBarProps {

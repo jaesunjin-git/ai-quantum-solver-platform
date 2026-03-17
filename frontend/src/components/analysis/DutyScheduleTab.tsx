@@ -176,7 +176,7 @@ function DutyTimelineBar({ duty }: { duty: DutyDetail }) {
           </div>
         )}
         {/* 트립 블록 */}
-        {duty.trips.map((trip, i) => {
+        {duty.trips.map((trip) => {
           const left = pct(trip.dep_time);
           const width = Math.max(pct(trip.arr_time) - left, 0.5);
           return (

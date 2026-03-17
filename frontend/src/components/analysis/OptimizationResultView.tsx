@@ -58,8 +58,6 @@ export function OptimizationResultView({
   }, [data.status, hasInterpreted]);
 
   const status = data.status || 'UNKNOWN';
-  const isFeasible = status === 'FEASIBLE' || status === 'OPTIMAL' || status === 'INFEASIBLE_BEST';
-
   const statusConfig: Record<string, { icon: any; color: string; bg: string; border: string; label: string }> = {
     OPTIMAL: { icon: CheckCircle, color: 'text-green-400', bg: 'bg-green-500/10', border: 'border-green-500/30', label: 'Optimal' },
     FEASIBLE: { icon: CheckCircle, color: 'text-blue-400', bg: 'bg-blue-500/10', border: 'border-blue-500/30', label: 'Feasible' },
