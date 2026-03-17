@@ -293,7 +293,16 @@ class DWaveCQMCompiler(BaseCompiler):
                             logger.warning(f"Constraint '{cid}' structured parse failed: {e}")
                             warnings.append(f"Constraint {cid}: structured parse error")
                 else:
-                    # expression_parser 경유 CQM 적용 시도
+                    # ── Affine Collector 경로 시도 (expression_parser보다 ~100x 빠름) ──
+                    affine_count = self._try_affine_collector(
+                        cqm, var_map, con_def, ctx, max_count=min(remaining, per_constraint_cap)
+                    )
+                    if affine_count > 0:
+                        total_constraints += affine_count
+                        logger.info(f"Constraint '{cid}': {affine_count} instances (affine_collector, budget={per_constraint_cap})")
+                        continue
+
+                    # Affine 미지원 → expression_parser 경유 CQM 적용 시도
                     expr_budget = min(remaining, per_constraint_cap)
                     count = self._parse_constraint_expr_cqm(cqm, var_map, con_def, ctx, max_count=expr_budget)
                     if count > 0:
@@ -646,6 +655,95 @@ class DWaveCQMCompiler(BaseCompiler):
                 f"Compact activation '{cid}': {count} constraints "
                 f"(was {len(inner_set) * len(outer_set)}, saved {len(inner_set) * len(outer_set) - count})"
             )
+        return count
+
+    def _try_affine_collector(self, cqm, var_map, con_def, ctx, max_count: int = 0) -> int:
+        """
+        Affine Collector 경로: expression_template → AST → AffineExprIR → dimod CQM.
+        expression_parser의 51,200회 문자열 파싱을 우회하여 ~100x 속도 향상.
+
+        Returns: 추가된 제약 수 (0이면 미지원 → expression_parser fallback)
+        """
+        from engine.compiler.affine_collector import (
+            parse_constraint_expr_cached, collect_affine, normalize_constraint,
+            check_constant_constraint, lower_affine_to_dimod, build_var_lookup,
+        )
+        from engine.compiler.errors import StructuredFallbackAllowed, StructuredDataError
+        from engine.compiler.struct_builder import normalize_index_key
+
+        expr_str = (con_def.get("expression") or con_def.get("expression_template") or "").strip()
+        if not expr_str:
+            return 0
+
+        # 1. AST 파싱 + affine 지원 여부 캐시
+        entry = parse_constraint_expr_cached(expr_str)
+        if entry is None or not entry.affine_supported:
+            return 0
+
+        cid = con_def.get("name", con_def.get("id", "?"))
+        category = con_def.get("category", "hard")
+        weight = con_def.get("penalty_weight") or con_def.get("weight")
+        for_each = con_def.get("for_each", "")
+
+        # 2. VarRef → dimod variable 매핑 (한 번만 생성)
+        if not hasattr(self, '_affine_var_lookup') or self._affine_var_lookup_id != id(var_map):
+            self._affine_var_lookup = build_var_lookup(var_map)
+            self._affine_var_lookup_id = id(var_map)
+
+        # 3. 바인딩 생성
+        from engine.compiler.expression_parser import _parse_for_each
+        bindings = _parse_for_each(for_each, ctx)
+        if max_count > 0 and len(bindings) > max_count:
+            bindings = bindings[:max_count]
+
+        # 4. 바인딩별 affine 수집 + lowering
+        count = 0
+        for idx, binding in enumerate(bindings):
+            try:
+                lhs_ir = collect_affine(entry.ast_lhs, binding, ctx)
+                rhs_ir = collect_affine(entry.ast_rhs, binding, ctx)
+                diff, op, _ = normalize_constraint(lhs_ir, entry.op, rhs_ir)
+
+                # constant-only 검사
+                cc = check_constant_constraint(diff, op)
+                if cc == "tautology":
+                    continue
+                elif cc == "infeasible":
+                    logger.warning(f"Constraint {cid}_{idx}: constant infeasible ({diff.constant} {op} 0)")
+                    continue
+
+                # dimod lowering
+                dimod_expr = lower_affine_to_dimod(diff, self._affine_var_lookup)
+                label = f"{cid}_{idx}"
+
+                is_soft = category == "soft" and weight
+                if op == "<=":
+                    constraint_expr = dimod_expr <= 0
+                elif op == ">=":
+                    constraint_expr = dimod_expr >= 0
+                elif op == "==":
+                    constraint_expr = dimod_expr == 0
+                else:
+                    constraint_expr = dimod_expr <= 0
+
+                if is_soft:
+                    cqm.add_constraint(constraint_expr, label=label, weight=float(weight))
+                else:
+                    cqm.add_constraint(constraint_expr, label=label)
+                count += 1
+
+            except StructuredFallbackAllowed as e:
+                if idx == 0:
+                    logger.info(f"Constraint '{cid}': affine collector unsupported ({e}) → fallback")
+                return 0  # 첫 실패 시 전체 fallback (일부만 affine이면 일관성 문제)
+            except StructuredDataError as e:
+                logger.warning(f"Constraint '{cid}' idx={idx}: data error in affine collector: {e}")
+                continue
+            except Exception as e:
+                if idx == 0:
+                    logger.debug(f"Constraint '{cid}': affine collector failed ({e}) → fallback")
+                return 0
+
         return count
 
     def _try_fast_no_overlap(self, cqm, var_map, con_def, set_map, remaining: int) -> int:
