@@ -203,6 +203,27 @@ def _startup():
     register_generic_validators(registry)
     print(f"Validation registry: {registry.validator_count} validators registered")
 
+    # 5. Stuck Job 정리 (서버 재시작 시 PENDING/RUNNING → FAILED)
+    db3 = SessionLocal()
+    try:
+        import datetime as _dt
+        stuck = db3.query(models.JobDB).filter(
+            models.JobDB.status.in_(["PENDING", "RUNNING"])
+        ).all()
+        if stuck:
+            for j in stuck:
+                j.status = "FAILED"
+                j.error = "Server restart cleanup"
+                j.completed_at = _dt.datetime.now(_dt.timezone.utc)
+                j.progress = "서버 재시작 정리"
+            db3.commit()
+            print(f"Cleaned up {len(stuck)} stuck jobs on startup")
+    except Exception as e:
+        print(f"Stuck job cleanup warning: {e}")
+        db3.rollback()
+    finally:
+        db3.close()
+
     # =========================================================
     # 3. 기초 데이터 시딩
     # =========================================================

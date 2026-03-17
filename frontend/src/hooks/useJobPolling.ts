@@ -67,6 +67,7 @@ export function useJobPolling(
   const elapsedRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const jobIdRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
+  const pollStartTimeRef = useRef<number>(0);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -108,15 +109,15 @@ export function useJobPolling(
         return;
       }
 
-      // 적응형 폴링: 다음 폴 스케줄
-      setState(prev => {
-        const interval = getPollingInterval(prev.elapsedSec);
-        intervalRef.current = setTimeout(poll, interval);
-        return prev;
-      });
+      // 적응형 폴링: 다음 폴 스케줄 (이전 timeout 취소 후)
+      if (intervalRef.current) clearTimeout(intervalRef.current);
+      const elapsed = Date.now() - (pollStartTimeRef.current || Date.now());
+      const interval = getPollingInterval(Math.floor(elapsed / 1000));
+      intervalRef.current = setTimeout(poll, interval);
     } catch {
       // 네트워크 오류 시 5초 후 재시도
       if (mountedRef.current) {
+        if (intervalRef.current) clearTimeout(intervalRef.current);
         intervalRef.current = setTimeout(poll, 5000);
       }
     }
@@ -124,6 +125,7 @@ export function useJobPolling(
 
   const startPolling = useCallback((jobId: number) => {
     jobIdRef.current = jobId;
+    pollStartTimeRef.current = Date.now();
 
     // 경과 시간 카운터
     elapsedRef.current = setInterval(() => {
