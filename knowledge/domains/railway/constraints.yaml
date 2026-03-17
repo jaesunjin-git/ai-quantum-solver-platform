@@ -875,17 +875,20 @@ constraints:
     - 720
 
   post_arrival_rest:
-    description: 도착 후 휴식시간 확보
-    expression_template: post_arrival_rest >= post_arrival_rest_minutes_min
-    for_each: j in J
+    description: 강차 후 휴양시간 확보 — 할당된 각 트립 도착 후 정리+휴양 시간 보장
+    expression_template: duty_end[j] >= trip_arr_time[i] + cleanup_minutes + post_arrival_rest_minutes_min
+      - big_m * (1 - x[i,j])
+    for_each: i in I, j in J
     parameters:
     - post_arrival_rest_minutes
     - post_arrival_rest_minutes_min
+    - cleanup_minutes
+    - big_m
     default_category: soft
     fixed_category: false
     penalty_var: slack_post_rest
     penalty_weight: 5
-    note: 2-3시간 확보 노력 (최소 1시간은 hard)
+    note: 2-3시간 확보 노력 (최소 1시간은 hard). big-M 기법으로 할당된 트립만 적용.
     detection_hints:
     - 강차 후 휴양
     - 퇴근 후 휴식
@@ -903,9 +906,9 @@ constraints:
     - 60
     - 240
   post_shift_training:
-    description: 퇴근 후 교육시간 확보
-    expression_template: post_shift_free_time >= post_arrival_rest_minutes_2
-    for_each: j in J
+    description: 강차 후 교육시간 확보 — 소속별 약 10개 사업에 교육 가능 시간(13~15시, 2시간) 확보 권고
+    expression_template: null
+    for_each: null
     parameters:
       post_trip_training_minutes:
         description: 강차 후 교육시간
@@ -921,8 +924,10 @@ constraints:
         - 180
     default_category: soft
     fixed_category: false
-    penalty_var: slack_training
-    penalty_weight: 3
+    penalty_var: null
+    penalty_weight: 0
+    note: 카디널리티 제약(소속별 10개 사업)으로 솔버 모델에 직접 포함 어려움. Post-Solve 검증으로 처리 예정.
+    post_solve_validation: true
     detection_hints:
     - 교육
     - training
