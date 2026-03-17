@@ -112,7 +112,8 @@ export function SolverView({
     if (execMode === 'compare') return;
     if (jobPoll.status === 'complete' && jobPoll.result) {
       const result = jobPoll.result;
-      if (result.success) {
+      const hasResult = result.success || (result.summary && Object.keys(result.summary).length > 0);
+      if (hasResult) {
         const solver = solvers[selectedSolver];
         const label = `${solver?.provider || ''} ${solver?.solver_name || ''}`.trim();
         const resultView = {
@@ -124,8 +125,10 @@ export function SolverView({
           execute_summary: result.summary?.execute_summary,
         };
         onResultReady?.(resultView);
-        onAction?.('execute_done', `${label}으로 최적화 실행이 완료되었습니다. 결과를 설명해주세요.`);
-      } else {
+        const statusText = result.success ? '완료' : '완료 (일부 제약 미충족)';
+        onAction?.('execute_done', `${label}으로 최적화 실행이 ${statusText}되었습니다. 결과를 설명해주세요.`);
+      }
+      if (!result.success) {
         setInfeasibilityInfo(result.infeasibility_info || null);
       }
     }

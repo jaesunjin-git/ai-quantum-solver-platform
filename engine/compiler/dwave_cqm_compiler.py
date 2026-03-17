@@ -200,11 +200,15 @@ class DWaveCQMCompiler(BaseCompiler):
 
                     # 구조화된 제약 -> build_constraint로 dimod 표현식 생성
                     con_max = explicit_max
-                    # for_each가 두 집합 이상 (예: i in I, j in J)이면 max_instances 미설정 시 1000 기본 적용
+                    # for_each가 두 집합 이상 (예: i in I, j in J)이면 max_instances 미설정 시
+                    # hard: truncation 금지 (전체 생성), soft: 1000 기본 적용
                     if not con_max:
                         _fe = con_def.get("for_each", "")
                         if _fe.count(" in ") >= 2:
-                            con_max = 1000
+                            if category == "hard":
+                                con_max = 0  # hard는 truncation 없이 전체 생성
+                            else:
+                                con_max = 1000
                     # per-constraint cap 적용: 단일 제약이 전체 예산의 40%를 초과할 수 없음
                     effective_max = min(remaining, per_constraint_cap, con_max) if con_max else min(remaining, per_constraint_cap)
                     try:
@@ -392,6 +396,22 @@ class DWaveCQMCompiler(BaseCompiler):
         # lhs <= rhs  ->  cqm.add_constraint(lhs - rhs <= 0)
         # lhs >= rhs  ->  cqm.add_constraint(rhs - lhs <= 0)
         # lhs == rhs  ->  cqm.add_constraint(lhs - rhs == 0)
+
+        # constant-only 검사: lhs와 rhs가 둘 다 scalar이면 변수 없는 제약
+        if isinstance(lhs, (int, float)) and isinstance(rhs, (int, float)):
+            diff_val = float(lhs - rhs)
+            is_tautology = (
+                (op in ("<=", "le") and diff_val <= 1e-12) or
+                (op in (">=", "ge") and diff_val >= -1e-12) or
+                (op in ("==", "eq", "=") and abs(diff_val) < 1e-12)
+            )
+            if is_tautology:
+                return  # 항상 참 — 스킵
+            # 항상 거짓 — hard면 에러, soft면 경고
+            if not is_soft:
+                logger.warning(f"Constant infeasible (hard): {label} → {lhs} {op} {rhs}")
+            return  # constant infeasible — 추가하지 않음
+
         try:
             diff = lhs - rhs
         except TypeError:
@@ -657,6 +677,9 @@ class DWaveCQMCompiler(BaseCompiler):
             )
         return count
 
+    # 반복 에러 로그 제한용
+    _affine_error_logged: set = set()
+
     def _try_affine_collector(self, cqm, var_map, con_def, ctx, max_count: int = 0) -> int:
         """
         Affine Collector 경로: expression_template → AST → AffineExprIR → dimod CQM.
@@ -737,7 +760,10 @@ class DWaveCQMCompiler(BaseCompiler):
                     logger.info(f"Constraint '{cid}': affine collector unsupported ({e}) → fallback")
                 return 0  # 첫 실패 시 전체 fallback (일부만 affine이면 일관성 문제)
             except StructuredDataError as e:
-                logger.warning(f"Constraint '{cid}' idx={idx}: data error in affine collector: {e}")
+                _err_key = f"{cid}:{e}"
+                if _err_key not in self._affine_error_logged:
+                    logger.warning(f"Constraint '{cid}' idx={idx}: data error in affine collector: {e}")
+                    self._affine_error_logged.add(_err_key)
                 continue
             except Exception as e:
                 if idx == 0:

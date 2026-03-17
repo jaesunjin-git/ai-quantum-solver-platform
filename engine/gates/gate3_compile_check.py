@@ -81,17 +81,23 @@ def run(compile_result: Dict,
         # 컴파일 경고에서 실패한 제약 수 추정
         failed_constraints = 0
         skipped_soft = 0
+        data_errors = 0
+        constant_infeasible_count = 0
         for w in compile_warnings:
             w_str = str(w).lower()
-            # "structured build returned 0" 은 fallback 시도 경고 → 최종 실패 아님
-            # "all parse methods failed" 만 3단계 모두 실패한 진짜 최종 실패
-            if "all parse methods failed" in w_str:
+            if "all parse methods failed" in w_str or "could not parse" in w_str:
                 failed_constraints += 1
             if "soft" in w_str and "skip" in w_str:
                 skipped_soft += 1
+            if "data error" in w_str or "data_error" in w_str:
+                data_errors += 1
+            if "constant infeasible" in w_str:
+                constant_infeasible_count += 1
 
         stats["failed_constraints"] = failed_constraints
         stats["skipped_soft"] = skipped_soft
+        stats["data_errors"] = data_errors
+        stats["constant_infeasible"] = constant_infeasible_count
 
         # soft 제약 스킵 경고 (NL 등 soft 미지원 솔버)
         if skipped_soft > 0 and soft_defined > 0:
