@@ -8,11 +8,81 @@ Structured Constraint Builder
   2단계: expression -> AST 파서 (expr_evaluator.py)
   3단계: 정규식 패턴 매칭 (legacy)
 """
+import math
 import re
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+# ── Scalar / Index Normalization Utilities ──
+
+def coerce_scalar(value, *, name: str = "value"):
+    """
+    원소 값, 계수, 바운드를 Python scalar로 정규화.
+
+    허용: int, float (finite)
+    변환: numpy scalar → Python scalar, ndarray(size=1) → scalar
+    거부: None, NaN, inf, ndarray(size>1), list(len>1)
+    """
+    try:
+        import numpy as np
+        if isinstance(value, np.generic):
+            value = value.item()
+        if isinstance(value, np.ndarray):
+            if value.ndim == 0 or value.size == 1:
+                value = value.reshape(-1)[0].item()
+            else:
+                from engine.compiler.errors import NonScalarBoundValueError
+                raise NonScalarBoundValueError(f"{name}: ndarray(size={value.size})")
+    except ImportError:
+        pass
+
+    if isinstance(value, (list, tuple)):
+        if len(value) == 1:
+            value = value[0]
+        else:
+            from engine.compiler.errors import NonScalarBoundValueError
+            raise NonScalarBoundValueError(f"{name}: {type(value).__name__}(len={len(value)})")
+
+    if value is None:
+        from engine.compiler.errors import NoneValueError
+        raise NoneValueError(f"{name}: None")
+
+    if isinstance(value, (int, float)) and not math.isfinite(float(value)):
+        from engine.compiler.errors import NonFiniteValueError
+        raise NonFiniteValueError(f"{name}: {value}")
+
+    # 최종 numpy scalar 변환 (이중 안전)
+    try:
+        import numpy as np
+        if isinstance(value, np.generic):
+            value = value.item()
+    except ImportError:
+        pass
+
+    return value
+
+
+def normalize_index_atom(v):
+    """numpy scalar → Python scalar 변환. 문자열↔숫자 변환 금지."""
+    try:
+        import numpy as np
+        if isinstance(v, np.generic):
+            return v.item()
+    except ImportError:
+        pass
+    return v
+
+
+def normalize_index_key(key):
+    """인덱스 키 정규화. numpy scalar → Python scalar, list → tuple."""
+    if isinstance(key, tuple):
+        return tuple(normalize_index_atom(x) for x in key)
+    if isinstance(key, list):
+        return tuple(normalize_index_atom(x) for x in key)
+    return normalize_index_atom(key)
 
 
 class BuildContext:
@@ -89,6 +159,7 @@ class BuildContext:
             return int(val)
         return val
     def get_param_indexed(self, name: str, key) -> Any:
+        key = normalize_index_key(key)
         val = self.param_map.get(name)
         if isinstance(val, dict):
             if key in val:
@@ -148,6 +219,7 @@ class BuildContext:
         vmap = self.var_map.get(name)
         if not isinstance(vmap, dict):
             return 0
+        key = normalize_index_key(key)
         if key in vmap:
             return vmap[key]
         str_key = tuple(str(k) for k in key) if isinstance(key, tuple) else str(key)

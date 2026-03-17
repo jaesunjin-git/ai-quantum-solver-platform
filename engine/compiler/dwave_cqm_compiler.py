@@ -221,8 +221,16 @@ class DWaveCQMCompiler(BaseCompiler):
                             )
                             tuples = tuples[:per_constraint_cap]
                         added = 0
+                        _first_failure_logged = False
                         for idx, (lhs_val, op_str, rhs_val) in enumerate(tuples):
                             label = f"{cid}_{idx}"
+                            # 진단 로그: 첫 3개 인스턴스
+                            if idx < 3:
+                                logger.debug(
+                                    "constraint=%s idx=%d lhs_type=%s rhs_type=%s lhs=%s rhs=%s",
+                                    cid, idx, type(lhs_val).__name__, type(rhs_val).__name__,
+                                    str(lhs_val)[:80], str(rhs_val)[:80]
+                                )
                             try:
                                 self._add_cqm_constraint(
                                     cqm, lhs_val, op_str, rhs_val,
@@ -230,8 +238,12 @@ class DWaveCQMCompiler(BaseCompiler):
                                 )
                                 added += 1
                             except Exception as e:
-                                if added == 0 and idx < 3:
-                                    logger.warning(f"CQM constraint {label} failed: {e}")
+                                if (added == 0 and idx < 3) or not _first_failure_logged:
+                                    logger.warning(
+                                        f"CQM constraint {label} failed: {e} "
+                                        f"(lhs_type={type(lhs_val).__name__}, rhs_type={type(rhs_val).__name__})"
+                                    )
+                                    _first_failure_logged = True
 
                         if added > 0:
                             total_constraints += added
@@ -257,8 +269,29 @@ class DWaveCQMCompiler(BaseCompiler):
                                 warnings.append(f"Constraint {cid}: 0 instances from structured parse")
 
                     except Exception as e:
-                        logger.warning(f"Constraint '{cid}' structured parse failed: {e}")
-                        warnings.append(f"Constraint {cid}: structured parse error")
+                        from engine.compiler.errors import StructuredFallbackAllowed, StructuredDataError
+                        if isinstance(e, StructuredFallbackAllowed):
+                            # 패턴 미지원 → expression_parser fallback 허용
+                            logger.info(f"Constraint '{cid}': unsupported structured pattern → expr fallback ({e})")
+                            if con_def.get("expression") or con_def.get("expression_template"):
+                                remaining2 = min(cqm_budget - total_constraints, per_constraint_cap)
+                                count = self._parse_constraint_expr_cqm(
+                                    cqm, var_map, con_def, ctx, max_count=remaining2
+                                )
+                                if count > 0:
+                                    total_constraints += count
+                                    logger.info(f"Constraint '{cid}': {count} instances (fallback→expr)")
+                                else:
+                                    warnings.append(f"Constraint {cid}: fallback expr also failed")
+                            else:
+                                warnings.append(f"Constraint {cid}: unsupported pattern, no expression fallback")
+                        elif isinstance(e, StructuredDataError):
+                            # 데이터 오류 → fallback 금지
+                            logger.error(f"Constraint '{cid}' DATA ERROR: {e}")
+                            warnings.append(f"Constraint {cid}: DATA ERROR — {e}")
+                        else:
+                            logger.warning(f"Constraint '{cid}' structured parse failed: {e}")
+                            warnings.append(f"Constraint {cid}: structured parse error")
                 else:
                     # expression_parser 경유 CQM 적용 시도
                     expr_budget = min(remaining, per_constraint_cap)
@@ -359,7 +392,10 @@ class DWaveCQMCompiler(BaseCompiler):
             elif isinstance(lhs, (int, float)):
                 diff = lhs - rhs
             else:
-                raise ValueError(f"unexpected data format")
+                from engine.compiler.errors import NonScalarBoundValueError
+                raise NonScalarBoundValueError(
+                    f"lhs_type={type(lhs).__name__}, rhs_type={type(rhs).__name__}"
+                )
 
         if op in ("<=", "le"):
             constraint_expr = diff <= 0
