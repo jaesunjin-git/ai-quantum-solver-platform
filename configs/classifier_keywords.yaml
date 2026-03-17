@@ -294,6 +294,9 @@ tab_keyword_map:
       - 문제 정의
       - 문제정의
       - problem definition
+      - 목적함수
+      - 제약조건 변경
+      - 제약조건 수정
     intent: PROBLEM_DEFINITION
   math_model:
     keywords:
@@ -311,9 +314,8 @@ tab_keyword_map:
     intent: PRE_DECISION
   result:
     keywords:
-      - 결과
-      - 실행
-      - 최적화
+      - 결과를 보여
+      - 실행 결과
     intent: START_OPTIMIZATION
 
 # Tab-context 및 keyword+verb 매칭 시 사용할 행동동사 목록

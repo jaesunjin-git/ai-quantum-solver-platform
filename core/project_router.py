@@ -111,7 +111,19 @@ def delete_project(
     if current_user.role != "admin" and project.owner != owner_name:
         raise HTTPException(status_code=403, detail="삭제 권한이 없습니다.")
 
-    # 관련 데이터 삭제 (FK 의존성 순서)
+    # 관련 데이터 삭제 (FK 의존성 순서: 자식 테이블 먼저)
+    db.query(models.RunResultDB).filter(
+        models.RunResultDB.project_id == project_id
+    ).delete()
+    db.query(models.ModelVersionDB).filter(
+        models.ModelVersionDB.project_id == project_id
+    ).delete()
+    db.query(models.DatasetVersionDB).filter(
+        models.DatasetVersionDB.project_id == project_id
+    ).delete()
+    db.query(models.IntentLogDB).filter(
+        models.IntentLogDB.project_id == project_id
+    ).delete()
     db.query(models.ChatHistoryDB).filter(
         models.ChatHistoryDB.project_id == project_id
     ).delete()

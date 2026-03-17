@@ -140,6 +140,10 @@ async def skill_math_model(model, session: CrewSession, project_id: str, message
         from domains.crew.skills.problem_definition import skill_problem_definition
         return await skill_problem_definition(model, session, project_id, message, {})
 
+    # ── 확정/확인 요청 → handle_math_model_confirm으로 라우팅 ──
+    if state.math_model and any(kw in message for kw in ["확정", "확인", "맞아", "좋아", "ok"]):
+        return await handle_math_model_confirm(model, session, project_id, message)
+
     if state.math_model and not state.math_model_confirmed:
         summary = summarize_model(state.math_model)
         return {

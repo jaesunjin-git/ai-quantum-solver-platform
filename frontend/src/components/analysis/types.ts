@@ -27,6 +27,7 @@ export interface Solver {
   typical_time_seconds?: number | number[];
   estimated_time?: number | number[];
   estimated_cost?: number | number[];
+  time_limit_sec?: number;
 }
 
 export interface ProblemProfile {

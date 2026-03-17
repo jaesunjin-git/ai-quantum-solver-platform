@@ -678,6 +678,7 @@ class StructuralNormalizationSkill:
                     "view_mode": "phase1_complete",
                     "phase1_summary": summary,
                     "agent_status": "structural_normalization_done",
+                    "auto_next": "problem_definition",
                 },
                 "options": [
                     {"label": "문제 정의 진행", "action": "send", "message": "문제 정의 시작"},
@@ -717,6 +718,7 @@ class StructuralNormalizationSkill:
                 "view_mode": "phase1_complete",
                 "phase1_summary": result,
                 "agent_status": "structural_normalization_done",
+                "auto_next": "problem_definition",
             },
             "options": [
                 {"label": "문제 정의 진행", "action": "send", "message": "문제 정의 시작"},

@@ -146,12 +146,13 @@ rules:
             param: night_duty_start_earliest
 
   # ── 총 사업 수(DIA) 누락 ──
+  # 승무원 수가 확정된 경우 total_duties = day_crew_count + night_crew_count로 자동 결정 (1crew=1DIA)
   total_duties_missing:
     description: "총 사업 수가 데이터에서 확인되지 않음"
     importance: high
     trigger:
-      condition: "params.get('total_duties', {}).get('source') is None and phase1.get('trip_count', 0) > 0"
-      description: "총 사업 수 미제공"
+      condition: "params.get('total_duties', {}).get('source') is None and phase1.get('trip_count', 0) > 0 and params.get('day_crew_count', {}).get('value') is None"
+      description: "총 사업 수 미제공 (승무원 수도 미확정)"
     questions:
       - id: total_duties
         text: "총 사업(DIA) 수가 데이터에서 확인되지 않았습니다. 총 {trip_count}개의 운행이 감지되었는데, 사업(DIA) 수를 지정해주시겠습니까? (미지정 시 최적화가 결정합니다)"

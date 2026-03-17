@@ -624,7 +624,6 @@ def _add_formatted_paragraph(doc, text: str) -> None:
 from engine.solver_pipeline import SolverPipeline
 from engine.solver_registry import get_solver_time_limit
 from domains.crew.agent import get_session, save_session_state
-from core.version import create_run_result
 
 _pipeline = SolverPipeline()
 
@@ -672,59 +671,21 @@ async def solve_optimization(
         )
 
         if result.success:
-            # Save result to session for LLM context
+            # 후처리: RunResult + SessionState + ChatHistory (공통 헬퍼 사용)
             try:
-                from domains.crew.agent import get_session
-                session = get_session(str(project_id))
-                session.state.optimization_done = True
-                session.state.solver_selected = solver_name or solver_id
-                session.state.last_optimization_result = result.summary
-                save_session_state(str(project_id), session.state)
-                logger.info(f'Solve result saved to session: {project_id}')
-
-                # Save run result version
-                try:
-                    timing = result.summary.get('timing', {}) if result.summary else {}
-                    run_row = create_run_result(
-                        project_id=int(project_id),
-                        model_version_id=getattr(session.state, 'current_model_version_id', None),
-                        domain_type=getattr(session.state, 'detected_domain', None),
-                        solver_id=solver_id,
-                        solver_name=solver_name,
-                        status=result.execute_result.status if result.execute_result else 'UNKNOWN',
-                        objective_value=result.execute_result.objective_value if result.execute_result else None,
-                        result_json=result.summary,
-                        compile_time_sec=timing.get('compile_sec'),
-                        execute_time_sec=timing.get('execute_sec'),
-                    )
-                    session.state.current_run_id = run_row.id
-                    save_session_state(str(project_id), session.state)
-                    logger.info(f'Run result saved: id={run_row.id}')
-                except Exception as rve:
-                    logger.warning(f'Failed to save run result: {rve}')
-            except Exception as se:
-                logger.warning(f'Failed to save solve result to session: {se}')
-
-            # Save result card to chat history so re-login restores the result view
-            try:
-                result_card = {
-                    'view_mode': 'result',
-                    'solver_id': result.solver_id,
-                    'solver_name': result.solver_name,
-                    **(result.summary or {}),
-                }
-                result_log = ChatHistoryDB(
-                    project_id=int(project_id) if str(project_id).isdigit() else 0,
-                    role='assistant',
-                    message_type='card',
-                    message_text=f'{result.solver_name} 최적화 완료. 결과를 확인하세요.',
-                    card_json=json.dumps(result_card, ensure_ascii=False, default=str),
+                from engine.post_processing import post_process_solve_result
+                post_process_solve_result(
+                    project_id=int(project_id),
+                    solver_id=solver_id,
+                    solver_name=solver_name,
+                    summary=result.summary,
+                    status=result.execute_result.status if result.execute_result else 'UNKNOWN',
+                    objective_value=result.execute_result.objective_value if result.execute_result else None,
+                    db=db,
+                    is_compare=False,
                 )
-                db.add(result_log)
-                db.commit()
-                logger.info(f'Result card saved to chat history: {project_id}')
-            except Exception as he:
-                logger.warning(f'Failed to save result card to chat history: {he}')
+            except Exception as pp_err:
+                logger.warning(f'Post-processing failed: {pp_err}')
 
             return {
                 'success': True,

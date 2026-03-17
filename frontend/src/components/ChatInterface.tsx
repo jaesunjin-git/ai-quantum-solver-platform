@@ -257,6 +257,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       // auto_next: 자동으로 다음 단계 진행
       if (data.data?.auto_next) {
         const autoMap: Record<string, string> = {
+          'problem_definition': '문제 정의 시작',
           'data_normalization': '데이터 정규화 시작',
           'confirm_normalization': '확인',
           'math_model': '수학 모델 생성해줘',
@@ -392,6 +393,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
       if (data.data?.auto_next) {
         const autoMap: Record<string, string> = {
+          'problem_definition': '문제 정의 시작',
           'data_normalization': '데이터 정규화 시작',
           'confirm_normalization': '확인',
           'math_model': '수학 모델 생성해줘',

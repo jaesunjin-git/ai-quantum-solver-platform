@@ -89,8 +89,11 @@ class JobDB(Base):
     solver_id = Column(String, nullable=True)
     solver_name = Column(String, nullable=True)
     progress = Column(String, nullable=True)     # 진행 상태 메시지
+    progress_pct = Column(Integer, nullable=True)  # 0~100 진행률
     error = Column(Text, nullable=True)
     result_json = Column(Text, nullable=True)
+    celery_task_id = Column(String, nullable=True)    # Celery 태스크 ID (취소용)
+    compare_group_id = Column(String, nullable=True)  # Compare 모드 그룹 ID
     created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc))
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)

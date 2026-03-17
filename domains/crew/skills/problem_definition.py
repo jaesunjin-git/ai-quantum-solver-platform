@@ -194,7 +194,7 @@ class ProblemDefinitionSkill:
 
         state.problem_definition = proposal
         state.problem_definition_proposed = True
-        state.clarification_done = True
+        # clarification_done은 False 유지 — 확정 시 ambiguity detection 실행 후 설정
         save_session_state(project_id, state)
 
         response_text = self._format_proposal(state, dk, proposal)
@@ -2587,6 +2587,24 @@ Soft 제약조건:
         # 파라미터 업데이트
         if state.problem_definition:
             state.problem_definition["parameters"] = parameters
+
+            # 승무원 수 확정 시 total_duties 자동 계산 (1 crew = 1 DIA)
+            if qid == "crew_counts" and isinstance(parsed_answer, dict):
+                day = parsed_answer.get("day_crew_count", 0) or 0
+                night = parsed_answer.get("night_crew_count", 0) or 0
+                total = int(day + night)
+                if total > 0:
+                    parameters["total_duties"] = {
+                        "value": total,
+                        "source": "auto_calculated",
+                        "description": f"주간({int(day)}) + 야간({int(night)}) = {total}",
+                    }
+                    logger.info(f"Auto-calculated total_duties={total} from crew counts")
+                    # pending에서 total_duties 질문 제거 + 답변 완료 처리
+                    pending = [q for q in pending if q.get("question_id") != "total_duties_missing.total_duties"]
+                    state.pending_clarifications = pending
+                    answers["total_duties_missing.total_duties"] = total
+                    state.clarification_answers = answers
 
         # follow_up 질문이 있으면 해당 질문을 pending에서 찾아서 다음으로
         follow_ups = result.get("follow_up", [])

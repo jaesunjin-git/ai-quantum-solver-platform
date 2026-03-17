@@ -304,10 +304,11 @@ class CrewAgent:
 
             if intent:
                 logger.info(f"[{project_id}] LLM selected: {intent}")
+                from core.platform.stage_manager import get_stage_manager as _get_sm
                 log_intent(
                     project_id, message,
                     IntentResult(intent=intent, params=parameters or {}, confidence=0.8, source="llm_skill_select"),
-                    pipeline_stage=stage_mgr.current_stage(session.state) if hasattr(self, '_run_inner') else None,
+                    pipeline_stage=_get_sm().current_stage(session.state) if hasattr(self, '_run_inner') else None,
                 )
                 return await self._execute_skill(session, project_id, intent, message, parameters)
 

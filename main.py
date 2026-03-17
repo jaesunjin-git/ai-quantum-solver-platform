@@ -117,6 +117,9 @@ def _migrate_jobs(db):
         "progress": "VARCHAR",
         "error": "TEXT",
         "started_at": "TIMESTAMP",
+        "progress_pct": "INTEGER",
+        "celery_task_id": "VARCHAR",
+        "compare_group_id": "VARCHAR",
     }
     for col_name, col_type in new_columns.items():
         try:
@@ -146,7 +149,10 @@ def _migrate_session_states(db):
         "pending_objective": "TEXT",
         "pending_extra_instructions": "VARCHAR",
         "pending_category_change": "TEXT",
+        "clarification_answers": "TEXT",
+        "pending_clarifications": "TEXT",
         "clarification_done": "BOOLEAN DEFAULT FALSE",
+        "pending_param_inputs": "TEXT",
     }
     for col_name, col_type in new_columns.items():
         try:

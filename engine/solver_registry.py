@@ -785,6 +785,7 @@ def recommend_solvers(
             "warnings": result["warnings"],
             "total_score": round(total, 1),
             "suitability": _classify_suitability(total),
+            "time_limit_sec": solver.get("time_profile", {}).get("max_time_seconds", 120),
         })
 
     # 3. 점수 순 정렬
