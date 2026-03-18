@@ -772,6 +772,8 @@ constraints:
     activation_condition: "params.get('is_overnight_crew', {}).get('value') == True"
     parameters:
     - min_night_sleep_minutes
+    - is_overnight_crew
+    - sleep_counts_as_work
     - big_m
     default_category: hard
     fixed_category: false
@@ -801,6 +803,8 @@ constraints:
     parameters:
       min_night_rest_total_minutes:
         description: 야간 취침+준비정리 포함 총 확보시간
+      is_overnight_crew:
+        description: 숙박조 운영 여부
         detection_hints:
         - 확보 필요
         - 포함 시
@@ -858,6 +862,8 @@ constraints:
     activation_condition: "params.get('is_overnight_crew', {}).get('value') == True and params.get('sleep_counts_as_work', {}).get('value') == False"
     parameters:
     - max_work_minutes
+    - is_overnight_crew
+    - sleep_counts_as_work
     default_category: hard
     fixed_category: false
     detection_hints:

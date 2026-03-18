@@ -42,7 +42,7 @@ rules:
         type: numeric
         unit: "시간"
         default: 6
-        param: min_overnight_sleep_minutes
+        param: min_night_sleep_minutes
         transform: "value * 60"
 
       - id: sleep_as_work

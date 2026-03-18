@@ -208,6 +208,15 @@ class DWaveCQMCompiler(BaseCompiler):
                         logger.info(f"Constraint '{cid}': {fast_count} instances (no_overlap fast-path)")
                         continue
 
+                    # ── Affine Collector 우선 시도 (structured 유무 무관) ──
+                    affine_count = self._try_affine_collector(
+                        cqm, var_map, con_def, ctx, max_count=min(remaining, per_constraint_cap)
+                    )
+                    if affine_count > 0:
+                        total_constraints += affine_count
+                        logger.info(f"Constraint '{cid}': {affine_count} instances (affine_collector, budget={per_constraint_cap})")
+                        continue
+
                     # 구조화된 제약 -> build_constraint로 dimod 표현식 생성
                     con_max = explicit_max
                     # for_each가 두 집합 이상이면 동적 budget 할당
@@ -602,10 +611,33 @@ class DWaveCQMCompiler(BaseCompiler):
 
         return False
 
+    @staticmethod
+    def _strip_soft_penalty_terms(expr: str) -> tuple:
+        """objective expression에서 CQM이 자동 처리하는 soft penalty 항 제거."""
+        patterns = [
+            r'\s*\+\s*sum\s*\([^)]*slack[^)]*\)',
+            r'\s*\+\s*sum\s*\([^)]*penalty[^)]*\)',
+            r'\s*\+\s*sum\s*\([^)]*weight_k[^)]*\)',
+            r'\s*\+\s*penalties\b',
+        ]
+        stripped = False
+        for pat in patterns:
+            new_expr = re.sub(pat, '', expr, flags=re.IGNORECASE)
+            if new_expr != expr:
+                stripped = True
+                expr = new_expr
+        return expr.strip(), stripped
+
     def _parse_objective_from_expr(self, cqm, var_map, obj_def, ctx) -> bool:
         """expression 문자열에서 목적함수 파싱"""
         expr_str = obj_def.get("expression", "")
         obj_type = obj_def.get("type", "minimize")
+
+        # soft penalty 항 제거 (CQM native weighted constraint가 자동 처리)
+        clean_expr, was_stripped = self._strip_soft_penalty_terms(expr_str)
+        if was_stripped:
+            logger.info(f"Objective: stripped soft penalty terms → '{clean_expr}'")
+            expr_str = clean_expr
 
         # sum(u[d] for d in D) 패턴
         m = re.match(r'sum\((\w+)\[(\w+)\]\s+for\s+(\w+)\s+in\s+(\w+)\)', expr_str)

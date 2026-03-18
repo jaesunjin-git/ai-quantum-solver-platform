@@ -324,6 +324,26 @@ def build_model_from_template(
                     p["source"] = src or "confirmed_problem"
                     logger.info(f"Parameter '{pid}' = {val} (source: {src or 'confirmed_problem'})")
 
+        # ── Step 1b: clarification 답변의 known runtime parameter 병합 ──
+        # model_parameters에 선언되지 않았지만 clarification으로 확정된 파라미터 추가
+        KNOWN_RUNTIME_PARAMS = {
+            "is_overnight_crew", "min_night_sleep_minutes", "sleep_counts_as_work",
+            "day_crew_count", "night_crew_count", "total_duties",
+        }
+        if cp_params:
+            model_param_ids = {p["id"] for p in model_parameters}
+            for pid, pval in cp_params.items():
+                if pid in KNOWN_RUNTIME_PARAMS and pid not in model_param_ids:
+                    _val = pval.get("value") if isinstance(pval, dict) else pval
+                    _src = pval.get("source", "user_clarification") if isinstance(pval, dict) else "user_clarification"
+                    model_parameters.append({
+                        "id": pid, "type": "scalar",
+                        "default_value": _val, "value": _val,
+                        "source": _src,
+                    })
+                    model_param_ids.add(pid)
+                    logger.info(f"Parameter '{pid}' = {_val} (source: {_src})")
+
         # ── Step 2: auto_defaults는 아직 값이 없는 파라미터에만 적용 ──
         for p in model_parameters:
             pid = p["id"]

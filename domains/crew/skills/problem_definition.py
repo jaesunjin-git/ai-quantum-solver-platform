@@ -2764,15 +2764,16 @@ Soft 제약조건:
                     activated.append(f"  - **{cval.get('name_ko', cname)}** (SOFT)")
                     logger.info(f"Soft constraint activated by clarification: {cname}")
 
-        # 문제 정의 확정
+        # 문제 정의 확정 — 명시적 deepcopy (참조 공유에 기대지 않음)
+        import copy
         state.problem_definition = pd
         state.problem_defined = True
-        state.confirmed_problem = pd
+        state.confirmed_problem = copy.deepcopy(pd)
         state.constraints_confirmed = True
-        state.confirmed_constraints = {
+        state.confirmed_constraints = copy.deepcopy({
             "hard": pd.get("hard_constraints", {}),
             "soft": pd.get("soft_constraints", {}),
-        }
+        })
         save_session_state(project_id, state)
 
         # 답변 요약 텍스트
