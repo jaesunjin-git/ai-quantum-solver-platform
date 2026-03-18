@@ -93,6 +93,14 @@ class ClarificationQuestion:
             d["default"] = self.default
         if self.unit:
             d["unit"] = self.unit
+        if self.param:
+            d["param"] = self.param
+        if self.transform:
+            d["transform"] = self.transform
+        if self.on_yes:
+            d["on_yes"] = self.on_yes
+        if self.on_no:
+            d["on_no"] = self.on_no
         if self.choices:
             d["choices"] = self.choices
         if self.fields:
