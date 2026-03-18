@@ -41,7 +41,7 @@ class InfeasibilityDiagnosisValidator(BaseValidator):
         result = self._make_result()
         status = context.get("status", "").upper()
 
-        if status != "INFEASIBLE":
+        if status not in ("INFEASIBLE", "INFEASIBLE_BEST"):
             return result
 
         math_model = context.get("math_model", {})
