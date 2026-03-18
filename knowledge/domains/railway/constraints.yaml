@@ -856,7 +856,8 @@ constraints:
   # ── 숙박조 전용: 수면 제외 근무시간 ──
   overnight_work_time_excluding_sleep:
     description: 숙박조 근무시간 (수면시간 제외)
-    expression_template: (duty_end[j] - duty_start[j]) - sleep_duration[j] <= max_work_minutes * is_night[j]
+    expression_template: (duty_end[j] - duty_start[j]) - min_night_sleep_minutes
+      <= max_work_minutes + big_m * (1 - is_night[j])
     for_each: j in J
     # 숙박조 + 수면시간을 근무에서 제외하는 경우에만 적용
     activation_condition: "params.get('is_overnight_crew', {}).get('value') == True and params.get('sleep_counts_as_work', {}).get('value') == False"
