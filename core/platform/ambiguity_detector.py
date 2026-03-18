@@ -221,6 +221,22 @@ class AmbiguityDetector:
                 if qid in answered:
                     continue
 
+                # ── 이미 데이터에 값이 있는 파라미터는 질문 스킵 ──
+                # param 필드 또는 on_yes/on_no.set_params의 키가 parameters에 존재하면
+                # 데이터에서 이미 추출된 값이므로 사용자에게 다시 묻지 않음
+                _skip_existing = False
+                _q_param = q_def.get("param", "")
+                if _q_param and _q_param in parameters:
+                    _existing_val = parameters[_q_param]
+                    if isinstance(_existing_val, dict):
+                        _existing_val = _existing_val.get("value")
+                    if _existing_val is not None:
+                        logger.info(f"Ambiguity skip: '{qid}' — param '{_q_param}' already has value {_existing_val} from data")
+                        answered.add(qid)
+                        _skip_existing = True
+                if _skip_existing:
+                    continue
+
                 if q_def.get("dynamic") and dynamic_items:
                     # dynamic 질문: 해당하는 항목마다 질문 생성
                     for item in dynamic_items:

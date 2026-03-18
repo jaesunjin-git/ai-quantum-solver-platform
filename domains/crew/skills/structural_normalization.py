@@ -597,12 +597,41 @@ class ConstraintSemanticMapper:
         best_id = None
         best_score = 0
 
-        for rule in self._rules:                                          # ★ CHANGED
+        # Parameter Catalog 로드 (type/valid_range 기반 필터링)
+        if not hasattr(self, '_catalog'):
+            try:
+                from engine.policy.parameter_catalog import ParameterCatalog
+                self._catalog = ParameterCatalog("railway")
+            except Exception:
+                self._catalog = None
+
+        for rule in self._rules:
             param_id, hints, op_hint, typical_range = rule[0], rule[1], rule[2], rule[3]
             context_must = rule[4] if len(rule) > 4 else []
             context_exclude = rule[5] if len(rule) > 5 else []
 
-            # ★ NEW: context_exclude 체크 – 제외 키워드가 있으면 스킵
+            # ── Catalog type 체크: boolean param에 numeric value 매칭 방지 ──
+            if self._catalog and self._catalog.has_catalog():
+                entry = self._catalog.get_entry(param_id)
+                if entry:
+                    # boolean param에 numeric value 매칭 금지
+                    if entry.type == "boolean":
+                        try:
+                            float(value)
+                            continue  # numeric value → boolean param 스킵
+                        except (ValueError, TypeError):
+                            pass
+                    # valid_range 밖이면 강한 감점 (typical_range보다 catalog 우선)
+                    if entry.valid_range and len(entry.valid_range) >= 2:
+                        try:
+                            fval = float(value)
+                            lo, hi = float(entry.valid_range[0]), float(entry.valid_range[1])
+                            if fval < lo * 0.5 or fval > hi * 2.0:
+                                continue  # catalog range에서 크게 벗어나면 후보 제외
+                        except (ValueError, TypeError):
+                            pass
+
+            # context_exclude 체크 – 제외 키워드가 있으면 스킵
             if context_exclude:
                 excluded = False
                 for ex_kw in context_exclude:
