@@ -6,16 +6,19 @@ Stage 6 — INFEASIBLE 진단 엔진 (플랫폼 공통).
 
 진단 전략:
   1. 제약 그룹화: 어떤 제약 범주가 존재하는지 식별
-  2. 파라미터 긴축도: 바운드에 근접한 파라미터 탐색
-  3. 완화 제안: 하드→소프트 전환 또는 파라미터 완화 제안
-  4. 데이터 커버리지: 모든 제약을 충족할 데이터가 충분한지 검사
+  2. Executor 진단 정보(conflict_hints) 통합
+  3. 시간 프레임 충돌 감지 (새벽 트립 vs 주야간 제약)
+  4. 파라미터 긴축도: 바운드에 근접한 파라미터 탐색
+  5. 완화 제안: 하드→소프트 전환 또는 파라미터 완화 제안
+  6. 데이터 커버리지: 모든 제약을 충족할 데이터가 충분한지 검사
 
 Context keys expected:
-    status: str                — must be "INFEASIBLE" to trigger analysis
+    status: str                — must be "INFEASIBLE" or "INFEASIBLE_BEST"
     math_model: dict           — the math model that was solved
     compile_summary: dict      — compile metadata
     domain: str                — domain identifier
     parameters: dict           — optional, for tightness analysis
+    infeasibility_info: dict   — optional, executor-generated diagnosis
 """
 
 from __future__ import annotations
@@ -47,6 +50,7 @@ class InfeasibilityDiagnosisValidator(BaseValidator):
         math_model = context.get("math_model", {})
         compile_summary = context.get("compile_summary", {})
         domain = context.get("domain", "")
+        infeasibility_info = context.get("infeasibility_info") or {}
 
         constraints = math_model.get("constraints", [])
         if not constraints:
@@ -66,10 +70,11 @@ class InfeasibilityDiagnosisValidator(BaseValidator):
             else:
                 soft_constraints.append(c)
 
+        status_label = "INFEASIBLE_BEST (실현 가능한 해 없음)" if status == "INFEASIBLE_BEST" else "INFEASIBLE"
         result.add_error(
             code="INFEASIBLE_DIAGNOSIS",
             message=(
-                f"INFEASIBLE: {len(hard_constraints)}개 하드 제약 중 일부가 "
+                f"{status_label}: {len(hard_constraints)}개 하드 제약 중 일부가 "
                 f"동시에 충족될 수 없습니다."
             ),
             detail=(
@@ -82,8 +87,51 @@ class InfeasibilityDiagnosisValidator(BaseValidator):
             },
         )
 
-        # ── 2. Identify tight constraint groups ──
-        # Group constraints by their likely conflict patterns
+        # ── 2. Executor conflict hints (CP-SAT / D-Wave 진단 통합) ──
+        conflict_hints = infeasibility_info.get("conflict_hints", [])
+        solver_stats = infeasibility_info.get("solver_stats", {})
+
+        for hint in conflict_hints:
+            hint_type = hint.get("type", "")
+            hint_msg = hint.get("message", "")
+            hint_constraints = hint.get("constraints", [])
+
+            if hint_type == "trivial_infeasibility":
+                result.add_error(
+                    code="INFEASIBLE_TRIVIAL",
+                    message=hint_msg or "솔버가 탐색 없이 즉시 INFEASIBLE을 판정했습니다.",
+                    detail="제약조건 값에 명백한 모순이 있습니다. presolve에서 바로 감지되었습니다.",
+                )
+            elif hint_type == "numeric_conflict":
+                result.add_warning(
+                    code="INFEASIBLE_NUMERIC_CONFLICT",
+                    message=hint_msg,
+                    detail=f"관련 제약: {', '.join(hint_constraints)}" if hint_constraints else None,
+                    suggestion="인원수/총량 관련 파라미터 값이 서로 모순되지 않는지 확인하세요.",
+                )
+            elif hint_type == "coverage_capacity_conflict":
+                result.add_warning(
+                    code="INFEASIBLE_COVERAGE_CAPACITY",
+                    message=hint_msg,
+                    detail=f"관련 제약: {', '.join(hint_constraints)}" if hint_constraints else None,
+                    suggestion="자원(근무조 수)이 모든 할당 의무를 충족하기에 충분한지 확인하세요.",
+                )
+            else:
+                result.add_info(
+                    code=f"INFEASIBLE_HINT_{hint_type.upper()}",
+                    message=hint_msg,
+                )
+
+        if solver_stats.get("conflicts", -1) == 0:
+            result.add_info(
+                code="INFEASIBLE_PRESOLVE_DETECTED",
+                message="솔버 conflicts=0: 탐색 전 presolve 단계에서 비실현성이 감지되었습니다.",
+            )
+
+        # ── 3. Time frame conflict detection (새벽 트립 vs 주야간 제약) ──
+        self._check_time_frame_conflict(context, result, hard_constraints)
+
+        # ── 4. Identify tight constraint groups ──
         time_constraints = []
         resource_constraints = []
         coverage_constraints = []
@@ -103,7 +151,7 @@ class InfeasibilityDiagnosisValidator(BaseValidator):
             else:
                 other_constraints.append(c)
 
-        # ── 3. Suggest relaxation strategies ──
+        # ── 5. Suggest relaxation strategies ──
         if time_constraints and coverage_constraints:
             time_names = ", ".join(
                 c.get("id", c.get("name", "?")) for c in time_constraints[:3]
@@ -118,7 +166,7 @@ class InfeasibilityDiagnosisValidator(BaseValidator):
                 ),
             )
 
-        # ── 4. Suggest specific hard→soft conversions ──
+        # ── 6. Suggest specific hard→soft conversions ──
         relaxable = [
             c for c in hard_constraints
             if not c.get("fixed_category", False)
@@ -137,7 +185,7 @@ class InfeasibilityDiagnosisValidator(BaseValidator):
                 suggestion="일부 제약을 소프트로 전환하면 실행 가능한 해를 찾을 수 있습니다.",
             )
 
-        # ── 5. Parameter tightness check ──
+        # ── 7. Parameter tightness check ──
         parameters = context.get("parameters", {})
         if parameters and domain:
             tight_params = self._check_parameter_tightness(parameters, domain)
@@ -150,7 +198,7 @@ class InfeasibilityDiagnosisValidator(BaseValidator):
                     context={"tight_params": tight_params},
                 )
 
-        # ── 6. Data sufficiency check ──
+        # ── 8. Data sufficiency check ──
         compile_constraints = compile_summary.get("constraints", {})
         failed = compile_constraints.get("failed", 0)
         if failed > 0:
@@ -160,6 +208,102 @@ class InfeasibilityDiagnosisValidator(BaseValidator):
             )
 
         return result
+
+    def _check_time_frame_conflict(
+        self, context: dict, result: ValidationResult, hard_constraints: list
+    ) -> None:
+        """새벽 트립이 있는데 야간조/주간조 시간 제약이 커버 불가능한 경우 감지."""
+        math_model = context.get("math_model", {})
+
+        # 트립 데이터에서 출발 시간 추출
+        sets = math_model.get("sets", [])
+        parameters = math_model.get("parameters", [])
+
+        # day_duty_start_earliest 파라미터 찾기
+        day_start_earliest = None
+        night_start_earliest = None
+        is_overnight = None
+
+        if isinstance(parameters, list):
+            for p in parameters:
+                pid = p.get("id", "")
+                if pid == "day_duty_start_earliest":
+                    day_start_earliest = p.get("default_value") or p.get("value")
+                elif pid == "night_duty_start_earliest":
+                    night_start_earliest = p.get("default_value") or p.get("value")
+                elif pid == "is_overnight_crew":
+                    is_overnight = p.get("default_value") or p.get("value")
+        elif isinstance(parameters, dict):
+            for pid, pval in parameters.items():
+                val = pval.get("value") if isinstance(pval, dict) else pval
+                if pid == "day_duty_start_earliest":
+                    day_start_earliest = val
+                elif pid == "night_duty_start_earliest":
+                    night_start_earliest = val
+                elif pid == "is_overnight_crew":
+                    is_overnight = val
+
+        if day_start_earliest is None:
+            return
+
+        try:
+            day_start_min = float(day_start_earliest)
+        except (ValueError, TypeError):
+            return
+
+        # 새벽 트립 탐지: bound_data나 trip 파라미터에서 dep_time 추출
+        # math_model.sets에서 trip set 크기만으로는 부족하므로,
+        # day_duty_start_earliest보다 이른 트립이 있는지 heuristic으로 판단
+        # (정확한 trip 시간은 compile_summary에서 가져올 수 있음)
+
+        # 간접 감지: day_night_classification + day_duty_start가 동시에 있으면
+        # 새벽 시간대(0 ~ day_start_earliest)에 배정 불가능한 gap 존재
+        has_day_start = any(
+            (c.get("id") or c.get("name", "")).lower() in ("day_duty_start",)
+            for c in hard_constraints
+        )
+        has_night_classification = any(
+            (c.get("id") or c.get("name", "")).lower() in ("day_night_classification",)
+            for c in hard_constraints
+        )
+
+        if has_day_start and has_night_classification and day_start_min > 300:
+            # 새벽 시간대(~06:20) 배정 불가 gap 존재
+            gap_start = 0
+            gap_end = int(day_start_min)
+            gap_hours = f"{gap_end // 60:02d}:{gap_end % 60:02d}"
+
+            if is_overnight is True:
+                # 숙박조인데 시간 wrapping 미처리
+                result.add_error(
+                    code="INFEASIBLE_OVERNIGHT_TIME_WRAP",
+                    message=(
+                        f"숙박조(is_overnight_crew=True)가 설정되었으나, "
+                        f"새벽 시간대(00:00~{gap_hours}) 트립의 시간 보정(+1440분)이 "
+                        f"적용되지 않았을 수 있습니다."
+                    ),
+                    detail=(
+                        f"주간조: duty_start >= {gap_end}분({gap_hours}) → 새벽 트립 배정 불가\n"
+                        f"야간조: duty_start >= {int(night_start_earliest or 1020)}분 → 전날 시작이지만 "
+                        f"트립 시간이 다음날 기준(0~{gap_end}분)이므로 시간 비교 모순"
+                    ),
+                    suggestion=(
+                        "숙박조 모델에서 새벽 트립(06:20 이전)의 trip_dep_time에 +1440분을 "
+                        "적용하여 야간 근무의 시간 프레임(1020~2880분)과 일치시켜야 합니다."
+                    ),
+                )
+            else:
+                result.add_warning(
+                    code="INFEASIBLE_EARLY_MORNING_GAP",
+                    message=(
+                        f"새벽 시간대(00:00~{gap_hours}) 트립 배정 불가 가능성: "
+                        f"주간조는 {gap_hours} 이후 시작, 야간조는 17:00 이후 시작"
+                    ),
+                    suggestion=(
+                        f"새벽 출발 트립이 있다면 숙박조(is_overnight_crew) 설정이 필요합니다. "
+                        f"또는 day_duty_start_earliest를 새벽 첫 트립 시각으로 낮추세요."
+                    ),
+                )
 
     def _check_parameter_tightness(
         self, parameters: dict, domain: str

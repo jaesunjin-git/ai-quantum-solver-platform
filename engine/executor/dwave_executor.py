@@ -95,6 +95,30 @@ class DWaveExecutor(BaseExecutor):
 
             logger.info(f"CQM: status={status}, energy={obj_val}, time={elapsed:.2f}s, feasible={len(feasible)}/{len(sampleset)}")
 
+            # INFEASIBLE_BEST 진단 정보 생성
+            infeasibility_info = None
+            if status == "INFEASIBLE_BEST":
+                metadata = compile_result.metadata or {}
+                constraint_info = metadata.get("constraint_info", [])
+                hard_names = [c["name"] for c in constraint_info if c.get("category") == "hard" and c.get("count", 0) > 0]
+                infeasibility_info = {
+                    "summary": {
+                        "total_samples": len(sampleset),
+                        "feasible_samples": 0,
+                        "best_energy": obj_val,
+                    },
+                    "conflict_hints": [
+                        {
+                            "type": "all_samples_infeasible",
+                            "message": (
+                                f"D-Wave CQM이 {len(sampleset)}개 샘플을 생성했으나 "
+                                f"실현 가능한 해가 없습니다. 하드 제약 간 충돌이 있을 수 있습니다."
+                            ),
+                            "constraints": hard_names[:10],
+                        }
+                    ],
+                }
+
             return ExecuteResult(
                 success=success,
                 solver_type="cqm",
@@ -110,6 +134,7 @@ class DWaveExecutor(BaseExecutor):
                     "timing": sampleset.info.get("timing", {}),
                 },
                 raw_response=sampleset,
+                infeasibility_info=infeasibility_info,
             )
 
         except ImportError:

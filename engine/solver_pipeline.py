@@ -362,6 +362,9 @@ class SolverPipeline:
             "solver_info": execute_result.solver_info,
             "solution": execute_result.solution,
 
+            # INFEASIBLE 진단 정보 (executor가 생성한 conflict_hints 등)
+            "infeasibility_info": execute_result.infeasibility_info,
+
             # 구조화된 리포트 데이터
             "compile_summary": compile_summary,
             "execute_summary": execute_summary,
@@ -408,6 +411,8 @@ class SolverPipeline:
                 "execution_time_sec": execute_result.execution_time_sec,
                 "compile_summary": summary.get("compile_summary", {}),
                 "domain": math_model.get("domain", ""),
+                "parameters": math_model.get("parameters", {}),
+                "infeasibility_info": execute_result.infeasibility_info,
             }
             stage6_result = registry.run_stage(6, stage6_ctx)
             validation = stage6_result.to_dict()
