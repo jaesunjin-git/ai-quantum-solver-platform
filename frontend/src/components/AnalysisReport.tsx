@@ -292,14 +292,14 @@ export default function AnalysisReport({
         )}
       </div>
 
-      {/* Layer 3: Validation Drawer */}
-      <ValidationDrawer
+      {/* Layer 3: Validation Drawer — 결과 뷰에서는 숨김 (헤더 배지에서 표시) */}
+      {!isResultView && <ValidationDrawer
         validation={stageValidation}
         onApplyFix={handleApplyFix}
         onDismiss={handleDismiss}
         onUserInput={handleUserInput}
         onProceed={handleValidationProceed}
-      />
+      />}
     </div>
   );
 }
