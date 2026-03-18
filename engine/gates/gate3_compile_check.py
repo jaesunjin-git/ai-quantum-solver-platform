@@ -78,26 +78,68 @@ def run(compile_result: Dict,
         stats["hard_defined"] = hard_defined
         stats["soft_defined"] = soft_defined
 
-        # 컴파일 경고에서 실패한 제약 수 추정
-        failed_constraints = 0
-        skipped_soft = 0
-        data_errors = 0
-        constant_infeasible_count = 0
-        for w in compile_warnings:
-            w_str = str(w).lower()
-            if "all parse methods failed" in w_str or "could not parse" in w_str:
-                failed_constraints += 1
-            if "soft" in w_str and "skip" in w_str:
-                skipped_soft += 1
-            if "data error" in w_str or "data_error" in w_str:
-                data_errors += 1
-            if "constant infeasible" in w_str:
-                constant_infeasible_count += 1
+        # ── Structured issues 우선 사용, fallback으로 warning 문자열 파싱 ──
+        _metadata = compile_result.get("metadata", {})
+        _compile_issues = _metadata.get("compile_issues", [])
+
+        if _compile_issues:
+            # structured CompileResult에서 직접 읽기
+            failed_constraints = sum(1 for w in compile_warnings if "could not parse" in str(w).lower() or "all parse methods failed" in str(w).lower())
+            skipped_soft = sum(1 for i in _compile_issues if i.get("code") == "TRUNCATION" and i.get("category") == "soft")
+            data_errors = sum(1 for i in _compile_issues if i.get("code") == "DATA_ERROR")
+            constant_infeasible_count = sum(1 for i in _compile_issues if i.get("code") == "CONSTANT_INFEASIBLE")
+            hard_truncation_count = sum(1 for i in _compile_issues if i.get("code") == "TRUNCATION" and i.get("category") == "hard")
+            objective_fallback = any("objective" in str(w).lower() and ("fallback" in str(w).lower() or "default" in str(w).lower()) for w in compile_warnings)
+        else:
+            # fallback: warning 문자열 파싱 (이전 방식)
+            failed_constraints = 0
+            skipped_soft = 0
+            data_errors = 0
+            constant_infeasible_count = 0
+            hard_truncation_count = 0
+            objective_fallback = False
+            for w in compile_warnings:
+                w_str = str(w).lower()
+                if "all parse methods failed" in w_str or "could not parse" in w_str:
+                    failed_constraints += 1
+                if "soft" in w_str and "skip" in w_str:
+                    skipped_soft += 1
+                if "data error" in w_str or "data_error" in w_str:
+                    data_errors += 1
+                if "constant infeasible" in w_str:
+                    constant_infeasible_count += 1
+                if "truncat" in w_str and "hard" in w_str:
+                    hard_truncation_count += 1
+                if "objective" in w_str and ("fallback" in w_str or "default" in w_str):
+                    objective_fallback = True
 
         stats["failed_constraints"] = failed_constraints
         stats["skipped_soft"] = skipped_soft
         stats["data_errors"] = data_errors
         stats["constant_infeasible"] = constant_infeasible_count
+        stats["hard_truncation_count"] = hard_truncation_count
+        stats["objective_fallback"] = objective_fallback
+        stats["feasibility_exact"] = _metadata.get("feasibility_exact", hard_truncation_count == 0 and constant_infeasible_count == 0 and data_errors == 0)
+        stats["objective_exact"] = _metadata.get("objective_exact", not objective_fallback)
+
+        # ── 정확성/안전성 경고 ──
+        if hard_truncation_count > 0:
+            warnings.append(
+                f"Hard 제약 {hard_truncation_count}개가 truncation됨 — "
+                f"모델 정확도 저하 가능 (feasibility 변경)"
+            )
+        if constant_infeasible_count > 0:
+            warnings.append(
+                f"상수 infeasible {constant_infeasible_count}건 — "
+                f"제약 수식 또는 데이터 확인 필요"
+            )
+        if data_errors > 0:
+            warnings.append(
+                f"데이터 오류 {data_errors}건 — "
+                f"파라미터/변수 식별자 확인 필요"
+            )
+        if objective_fallback:
+            warnings.append("목적함수 파싱 실패 — 기본 목적함수(minimize sum) 사용됨")
 
         # soft 제약 스킵 경고 (NL 등 soft 미지원 솔버)
         if skipped_soft > 0 and soft_defined > 0:

@@ -25,6 +25,7 @@ class DWaveCQMCompiler(BaseCompiler):
     def compile(self, math_model: Dict, bound_data: Any, **kwargs) -> CompileResult:
         try:
             import dimod
+            from engine.compiler.compile_types import CompileContext, CompileIssue
 
             cqm_budget = int(kwargs.get("cqm_max_constraints", CQM_MAX_CONSTRAINTS))
             cqm = dimod.ConstrainedQuadraticModel()
@@ -32,6 +33,14 @@ class DWaveCQMCompiler(BaseCompiler):
             total_vars = 0
             total_constraints = 0
             warnings = []
+
+            # ── CompileContext 초기화 (로컬, 인스턴스 상태 아님) ──
+            compile_ctx = CompileContext(
+                strict_data_errors=kwargs.get("strict_data_errors", True),
+                allow_partial_hard=kwargs.get("allow_partial_hard", True),  # 현재는 허용 (점진적 전환)
+                fail_on_constant_infeasible=kwargs.get("fail_on_constant_infeasible", False),  # 현재는 비활성 (점진적 전환)
+                max_error_count=kwargs.get("max_error_count", 50),
+            )
 
             # ── bound_data에서 세트/파라미터 추출 ──
             # bound_data = {"sets": {I: [...], ...}, "parameters": {name: val, ...}, "set_sizes": {...}}
@@ -201,16 +210,22 @@ class DWaveCQMCompiler(BaseCompiler):
 
                     # 구조화된 제약 -> build_constraint로 dimod 표현식 생성
                     con_max = explicit_max
-                    # for_each가 두 집합 이상 (예: i in I, j in J)이면 max_instances 미설정 시
-                    # budget 보호를 위해 1000 기본 적용 (J auto-correction 후 재검토 필요)
+                    # for_each가 두 집합 이상이면 동적 budget 할당
                     if not con_max:
                         _fe = con_def.get("for_each", "")
                         if _fe.count(" in ") >= 2:
-                            con_max = 1000
-                    # per-constraint cap 적용: 단일 제약이 전체 예산의 40%를 초과할 수 없음
+                            # hard: budget의 fair-share (남은 제약 수로 나눔), 최소 500
+                            # soft: 1000 기본
+                            _remaining_constraints = max(1, num_constraints - con_idx)
+                            if category == "hard":
+                                con_max = max(500, remaining // max(1, _remaining_constraints))
+                            else:
+                                con_max = min(1000, remaining // max(1, _remaining_constraints))
+                    # per-constraint cap 적용
                     effective_max = min(remaining, per_constraint_cap, con_max) if con_max else min(remaining, per_constraint_cap)
                     try:
                         _missing_before = set(ctx.missing_params) if hasattr(ctx, 'missing_params') else set()
+                        _estimated_bindings = effective_max  # 추정치 (실제는 build_constraint 내부에서 truncation)
                         tuples = build_constraint(con_def, ctx, max_instances=effective_max)
                         _missing_after = getattr(ctx, 'missing_params', set()) - _missing_before
                         # 안전망: per_constraint_cap 초과분 잘라내기
@@ -262,8 +277,24 @@ class DWaveCQMCompiler(BaseCompiler):
                                     _first_failure_logged = True
                         if _infeasible_count > 0:
                             logger.warning(f"Constraint '{cid}': {_infeasible_count} constant infeasible instances (category={category})")
+                            compile_ctx.add_issue(CompileIssue(
+                                code="CONSTANT_INFEASIBLE",
+                                severity="error" if category == "hard" else "warning",
+                                constraint=cid, category=category,
+                                detail=f"{_infeasible_count} instances",
+                            ))
                         if _tautology_count > 0:
                             logger.debug(f"Constraint '{cid}': {_tautology_count} tautology instances skipped")
+
+                        # truncation 기록
+                        _was_truncated = con_max and len(tuples) >= effective_max and effective_max < 16000
+                        if _was_truncated:
+                            _trunc_severity = "error" if category == "hard" and not compile_ctx.allow_partial_hard else "warning"
+                            compile_ctx.add_issue(CompileIssue(
+                                code="TRUNCATION", severity=_trunc_severity,
+                                constraint=cid, category=category,
+                                detail=f"capped to {effective_max} (requested≥{len(tuples)})",
+                            ))
 
                         if added > 0:
                             total_constraints += added
@@ -306,7 +337,12 @@ class DWaveCQMCompiler(BaseCompiler):
                             else:
                                 warnings.append(f"Constraint {cid}: unsupported pattern, no expression fallback")
                         elif isinstance(e, StructuredDataError):
-                            # 데이터 오류 → fallback 금지
+                            # 데이터 오류 → compile_ctx에 수집
+                            _severity = "error" if category == "hard" and compile_ctx.strict_data_errors else "warning"
+                            compile_ctx.add_issue(CompileIssue(
+                                code="DATA_ERROR", severity=_severity,
+                                constraint=cid, category=category, detail=str(e),
+                            ))
                             logger.error(f"Constraint '{cid}' DATA ERROR: {e}")
                             warnings.append(f"Constraint {cid}: DATA ERROR — {e}")
                         else:
@@ -346,15 +382,32 @@ class DWaveCQMCompiler(BaseCompiler):
                 warnings.append("Objective: could not parse, using default minimize sum")
                 self._set_default_objective(cqm, var_map)
 
+            # compile_ctx 에러 → warnings에 합산
+            if compile_ctx.warnings:
+                warnings.extend(compile_ctx.warnings)
+
+            # compile_ctx에 hard error가 있으면 success=False
+            _compile_success = not compile_ctx.has_errors
+
             return CompileResult(
-                success=True,
+                success=_compile_success,
                 solver_model=cqm,
                 solver_type="cqm",
                 variable_count=total_vars,
                 constraint_count=total_constraints,
                 variable_map=var_map,
                 warnings=warnings,
-                metadata={"model_type": "CQM", "engine": "D-Wave"},
+                metadata={
+                    "model_type": "CQM",
+                    "engine": "D-Wave",
+                    "compile_issues": [
+                        {"code": i.code, "severity": i.severity, "constraint": i.constraint,
+                         "category": i.category, "detail": i.detail}
+                        for i in compile_ctx.issues
+                    ],
+                    "feasibility_exact": compile_ctx.feasibility_exact,
+                    "objective_exact": compile_ctx.objective_exact,
+                },
             )
 
         except ImportError as e:
