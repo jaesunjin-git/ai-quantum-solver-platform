@@ -411,6 +411,7 @@ class SolverPipeline:
                     solver_name=solver_name,
                     status=execute_result.status,
                     objective_value=execute_result.objective_value,
+                    policy_snapshot=bound_data.get("_policy_result"),
                 )
                 saved = save_artifacts(
                     project_dir, execute_result.solution, interpreted, solver_id,

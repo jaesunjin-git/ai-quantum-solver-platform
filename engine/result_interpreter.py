@@ -228,6 +228,7 @@ class RailwayResultInterpreter(GenericResultInterpreter):
         status: str = "",
         objective_value: float = None,
         params: Dict[str, Any] = None,
+        policy_snapshot: Dict[str, Any] = None,
     ) -> Dict[str, Any]:
         # Objective
         obj_expr = math_model.get("objective", {}).get("expression", "")
@@ -236,17 +237,41 @@ class RailwayResultInterpreter(GenericResultInterpreter):
         # Load trips data
         trips_df = self.load_entity_data(project_dir)
 
-        # Midnight correction — policy-aware inverse display
+        # Midnight correction — policy-aware inverse display (snapshot 재사용)
         try:
-            from engine.policy import PolicyEngine, PolicyResolutionContext
+            from engine.policy import PolicyEngine, PolicyResolutionContext, ResolvedPolicies, TimeAxisPolicy, OvernightPolicy
             _domain = math_model.get("domain", "railway")
             _pe = PolicyEngine(_domain)
             if _pe.has_policies():
-                _ctx = PolicyResolutionContext(domain=_domain, clarification_params=params or {})
-                _resolved = _pe.resolve(_ctx)
+                # snapshot이 있으면 재사용 (single resolve 원칙)
+                if policy_snapshot and policy_snapshot.get("resolved"):
+                    _rd = policy_snapshot["resolved"]
+                    _ta = _rd.get("time_axis", {})
+                    _on = _rd.get("overnight", {})
+                    _resolved = ResolvedPolicies(
+                        time_axis=TimeAxisPolicy(
+                            period_minutes=_ta.get("period_minutes", 1440),
+                            service_day_anchor_minute=_ta.get("service_day_anchor_minute", 0),
+                            horizon_days=_ta.get("horizon_days", 1),
+                            timezone=_ta.get("timezone", "UTC"),
+                            shift_policy=_ta.get("shift_policy", "shift_if_before_anchor"),
+                        ),
+                        overnight=OvernightPolicy(
+                            active=_on.get("active", False),
+                            min_sleep_minutes=_on.get("min_sleep_minutes", 240),
+                            sleep_window_start=_on.get("sleep_window_start", 0),
+                            sleep_window_end=_on.get("sleep_window_end", 360),
+                            sleep_counts_as_work=_on.get("sleep_counts_as_work", False),
+                        ),
+                        resolved_hash=_rd.get("resolved_hash", ""),
+                    )
+                    logger.info(f"Midnight correction: using policy snapshot (hash={_resolved.resolved_hash})")
+                else:
+                    _ctx = PolicyResolutionContext(domain=_domain, clarification_params=params or {})
+                    _resolved = _pe.resolve(_ctx)
+
                 for _col in ["trip_dep_time", "trip_arr_time"]:
                     _abs_col = _col.replace("_time", "_abs_minute")
-                    # If canonical columns exist in solution data, inverse them
                     for _c in [_abs_col, _col]:
                         if _c in trips_df.columns:
                             trips_df[_col] = trips_df[_c].apply(
@@ -529,6 +554,7 @@ def interpret_result(
     status: str = "",
     objective_value: float = None,
     params: Dict[str, Any] = None,
+    policy_snapshot: Dict[str, Any] = None,
 ) -> Dict[str, Any]:
     """
     Backward-compatible entry point.
@@ -545,6 +571,7 @@ def interpret_result(
         status=status,
         objective_value=objective_value,
         params=params,
+        policy_snapshot=policy_snapshot,
     )
 
 
