@@ -655,6 +655,7 @@ class DWaveCQMCompiler(BaseCompiler):
         if m:
             var_name, idx_var, loop_var, set_name = m.groups()
             v = var_map.get(var_name)
+            logger.debug(f"Objective regex matched: var={var_name}, set={set_name}, var_map has {var_name}: {var_name in var_map}, len={len(v) if isinstance(v, dict) else 'N/A'}")
             if isinstance(v, dict) and v:
                 total = sum(v.values())
                 if obj_type == "maximize":
