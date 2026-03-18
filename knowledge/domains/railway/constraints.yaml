@@ -1127,8 +1127,8 @@ objectives:
     - max_total_stay_time
   balance_workload:
     type: minimize
-    expression: max(trips_per_crew) - min(trips_per_crew)
-    description: 승무원 간 업무량 균형화
+    expression: sum(y[j] for j in J)
+    description: 승무원 수 최소화 (workload_balance hard 제약으로 균형 보장)
     description_ko: 업무량 균형 최적화
     keywords: [균형, 공평, 배분, 균등, 골고루, 형평, 나눠, 나누, balance, fair, distribute, equitable, equal]
     required_constraints:
