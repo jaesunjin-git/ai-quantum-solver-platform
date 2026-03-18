@@ -397,7 +397,13 @@ class DWaveCQMCompiler(BaseCompiler):
             obj = math_model.get("objective", {})
             obj_parsed = self._parse_objective(cqm, var_map, obj, ctx)
             if not obj_parsed:
-                warnings.append("Objective: could not parse, using default minimize sum")
+                compile_ctx.add_issue(CompileIssue(
+                    code="FALLBACK", severity="error",
+                    constraint="objective", category="hard",
+                    detail=f"목적함수 파싱 실패: {obj.get('expression', '')[:80]}",
+                ))
+                logger.error(f"Objective parse failed: {obj.get('expression', '')[:80]}")
+                # fallback으로 기본 목적함수 설정 (결과는 참고용, success=False)
                 self._set_default_objective(cqm, var_map)
 
             # compile_ctx 에러 → warnings에 합산
