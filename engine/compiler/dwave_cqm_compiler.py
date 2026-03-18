@@ -209,8 +209,17 @@ class DWaveCQMCompiler(BaseCompiler):
                         continue
 
                     # ── Affine Collector 우선 시도 (structured 유무 무관) ──
+                    # 2-set 제약은 budget cap 적용 (과다 배정 방지)
+                    _fe = con_def.get("for_each", "")
+                    _affine_budget = min(remaining, per_constraint_cap)
+                    if _fe.count(" in ") >= 2:
+                        _remaining_constraints = max(1, num_constraints - con_idx)
+                        if category == "hard":
+                            _affine_budget = min(_affine_budget, max(500, remaining // max(1, _remaining_constraints)))
+                        else:
+                            _affine_budget = min(_affine_budget, 1000)
                     affine_count = self._try_affine_collector(
-                        cqm, var_map, con_def, ctx, max_count=min(remaining, per_constraint_cap)
+                        cqm, var_map, con_def, ctx, max_count=_affine_budget
                     )
                     if affine_count > 0:
                         total_constraints += affine_count
@@ -593,7 +602,9 @@ class DWaveCQMCompiler(BaseCompiler):
 
         obj_type, obj_val = build_objective(obj_def, ctx)
 
-        if obj_val is not None:
+        if obj_val is not None and not isinstance(obj_val, (int, float)):
+            # obj_val이 dimod expression인 경우에만 set_objective 시도
+            # int/float(상수)이면 expression fallback으로
             try:
                 if obj_type == "minimize":
                     cqm.set_objective(obj_val)
