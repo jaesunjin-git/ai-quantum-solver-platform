@@ -212,98 +212,61 @@ class InfeasibilityDiagnosisValidator(BaseValidator):
     def _check_time_frame_conflict(
         self, context: dict, result: ValidationResult, hard_constraints: list
     ) -> None:
-        """새벽 트립이 있는데 야간조/주간조 시간 제약이 커버 불가능한 경우 감지."""
-        math_model = context.get("math_model", {})
+        """Canonical axis 기반 시간 프레임 충돌 검증."""
+        policy_result = context.get("_policy_result")
+        compile_summary = context.get("compile_summary", {})
 
-        # 트립 데이터에서 출발 시간 추출
-        sets = math_model.get("sets", [])
-        parameters = math_model.get("parameters", [])
+        if policy_result:
+            # Policy 적용됨 → canonical axis 기준 검증
+            canonical = policy_result.get("canonical", {})
+            provenance = policy_result.get("provenance", [])
+            shifted_count = sum(1 for p in provenance if p.get("reason") == "shift_if_before_anchor")
 
-        # day_duty_start_earliest 파라미터 찾기
-        day_start_earliest = None
-        night_start_earliest = None
-        is_overnight = None
-
-        if isinstance(parameters, list):
-            for p in parameters:
-                pid = p.get("id", "")
-                if pid == "day_duty_start_earliest":
-                    day_start_earliest = p.get("default_value") or p.get("value")
-                elif pid == "night_duty_start_earliest":
-                    night_start_earliest = p.get("default_value") or p.get("value")
-                elif pid == "is_overnight_crew":
-                    is_overnight = p.get("default_value") or p.get("value")
-        elif isinstance(parameters, dict):
-            for pid, pval in parameters.items():
-                val = pval.get("value") if isinstance(pval, dict) else pval
-                if pid == "day_duty_start_earliest":
-                    day_start_earliest = val
-                elif pid == "night_duty_start_earliest":
-                    night_start_earliest = val
-                elif pid == "is_overnight_crew":
-                    is_overnight = val
-
-        if day_start_earliest is None:
-            return
-
-        try:
-            day_start_min = float(day_start_earliest)
-        except (ValueError, TypeError):
-            return
-
-        # 새벽 트립 탐지: bound_data나 trip 파라미터에서 dep_time 추출
-        # math_model.sets에서 trip set 크기만으로는 부족하므로,
-        # day_duty_start_earliest보다 이른 트립이 있는지 heuristic으로 판단
-        # (정확한 trip 시간은 compile_summary에서 가져올 수 있음)
-
-        # 간접 감지: day_night_classification + day_duty_start가 동시에 있으면
-        # 새벽 시간대(0 ~ day_start_earliest)에 배정 불가능한 gap 존재
-        has_day_start = any(
-            (c.get("id") or c.get("name", "")).lower() in ("day_duty_start",)
-            for c in hard_constraints
-        )
-        has_night_classification = any(
-            (c.get("id") or c.get("name", "")).lower() in ("day_night_classification",)
-            for c in hard_constraints
-        )
-
-        if has_day_start and has_night_classification and day_start_min > 300:
-            # 새벽 시간대(~06:20) 배정 불가 gap 존재
-            gap_start = 0
-            gap_end = int(day_start_min)
-            gap_hours = f"{gap_end // 60:02d}:{gap_end % 60:02d}"
-
-            if is_overnight is True:
-                # 숙박조인데 시간 wrapping 미처리
-                result.add_error(
-                    code="INFEASIBLE_OVERNIGHT_TIME_WRAP",
+            if shifted_count > 0:
+                result.add_info(
+                    code="POLICY_TIME_NORMALIZATION_APPLIED",
                     message=(
-                        f"숙박조(is_overnight_crew=True)가 설정되었으나, "
-                        f"새벽 시간대(00:00~{gap_hours}) 트립의 시간 보정(+1440분)이 "
-                        f"적용되지 않았을 수 있습니다."
-                    ),
-                    detail=(
-                        f"주간조: duty_start >= {gap_end}분({gap_hours}) → 새벽 트립 배정 불가\n"
-                        f"야간조: duty_start >= {int(night_start_earliest or 1020)}분 → 전날 시작이지만 "
-                        f"트립 시간이 다음날 기준(0~{gap_end}분)이므로 시간 비교 모순"
-                    ),
-                    suggestion=(
-                        "숙박조 모델에서 새벽 트립(06:20 이전)의 trip_dep_time에 +1440분을 "
-                        "적용하여 야간 근무의 시간 프레임(1020~2880분)과 일치시켜야 합니다."
+                        f"PolicyEngine: {shifted_count}개 새벽 트립이 서비스데이 축으로 "
+                        f"정규화되었습니다 (shift_if_before_anchor)."
                     ),
                 )
-            else:
-                result.add_warning(
-                    code="INFEASIBLE_EARLY_MORNING_GAP",
-                    message=(
-                        f"새벽 시간대(00:00~{gap_hours}) 트립 배정 불가 가능성: "
-                        f"주간조는 {gap_hours} 이후 시작, 야간조는 17:00 이후 시작"
-                    ),
-                    suggestion=(
-                        f"새벽 출발 트립이 있다면 숙박조(is_overnight_crew) 설정이 필요합니다. "
-                        f"또는 day_duty_start_earliest를 새벽 첫 트립 시각으로 낮추세요."
-                    ),
-                )
+        else:
+            # Policy 미적용 → 기존 raw 기반 경고
+            parameters = context.get("parameters", {})
+            day_start = None
+            is_overnight = None
+
+            if isinstance(parameters, dict):
+                ds = parameters.get("day_duty_start_earliest")
+                day_start = ds.get("value") if isinstance(ds, dict) else ds
+                ov = parameters.get("is_overnight_crew")
+                is_overnight = ov.get("value") if isinstance(ov, dict) else ov
+
+            if day_start is not None:
+                try:
+                    ds_min = float(day_start)
+                except (ValueError, TypeError):
+                    return
+
+                if ds_min > 300:
+                    gap_hours = f"{int(ds_min) // 60:02d}:{int(ds_min) % 60:02d}"
+                    if is_overnight is True:
+                        result.add_error(
+                            code="INFEASIBLE_OVERNIGHT_NO_POLICY",
+                            message=(
+                                f"숙박조(is_overnight_crew=True)이지만 PolicyEngine이 "
+                                f"적용되지 않았습니다. 새벽 트립 시간 정규화가 필요합니다."
+                            ),
+                            suggestion="policies.yaml에 TimeAxisPolicy가 정의되어 있는지 확인하세요.",
+                        )
+                    else:
+                        result.add_warning(
+                            code="INFEASIBLE_EARLY_MORNING_GAP",
+                            message=(
+                                f"새벽 시간대(00:00~{gap_hours}) 트립 배정 불가 가능성"
+                            ),
+                            suggestion="숙박조(is_overnight_crew) 설정이 필요할 수 있습니다.",
+                        )
 
     def _check_parameter_tightness(
         self, parameters: dict, domain: str

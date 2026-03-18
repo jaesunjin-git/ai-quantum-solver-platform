@@ -236,12 +236,39 @@ class RailwayResultInterpreter(GenericResultInterpreter):
         # Load trips data
         trips_df = self.load_entity_data(project_dir)
 
-        # Midnight correction
-        _midnight = trips_df["trip_arr_time"] < trips_df["trip_dep_time"]
-        if _midnight.any():
-            trips_df.loc[_midnight, "trip_arr_time"] += 1440
-            trips_df["trip_duration"] = trips_df["trip_arr_time"] - trips_df["trip_dep_time"]
-            logger.info(f"Midnight correction: {_midnight.sum()} trips adjusted")
+        # Midnight correction — policy-aware inverse display
+        try:
+            from engine.policy import PolicyEngine, PolicyResolutionContext
+            _domain = math_model.get("domain", "railway")
+            _pe = PolicyEngine(_domain)
+            if _pe.has_policies():
+                _ctx = PolicyResolutionContext(domain=_domain, clarification_params=params or {})
+                _resolved = _pe.resolve(_ctx)
+                for _col in ["trip_dep_time", "trip_arr_time"]:
+                    _abs_col = _col.replace("_time", "_abs_minute")
+                    # If canonical columns exist in solution data, inverse them
+                    for _c in [_abs_col, _col]:
+                        if _c in trips_df.columns:
+                            trips_df[_col] = trips_df[_c].apply(
+                                lambda v: _pe.inverse_display(_abs_col, float(v), _resolved)[0]
+                                if v is not None else v
+                            )
+                            break
+                logger.info("Midnight correction: policy-aware inverse applied")
+            else:
+                # Fallback: legacy hardcoded correction
+                _midnight = trips_df["trip_arr_time"] < trips_df["trip_dep_time"]
+                if _midnight.any():
+                    trips_df.loc[_midnight, "trip_arr_time"] += 1440
+                    trips_df["trip_duration"] = trips_df["trip_arr_time"] - trips_df["trip_dep_time"]
+                    logger.info(f"Midnight correction (legacy): {_midnight.sum()} trips adjusted")
+        except Exception as _e:
+            # Fallback: legacy hardcoded correction
+            _midnight = trips_df["trip_arr_time"] < trips_df["trip_dep_time"]
+            if _midnight.any():
+                trips_df.loc[_midnight, "trip_arr_time"] += 1440
+                trips_df["trip_duration"] = trips_df["trip_arr_time"] - trips_df["trip_dep_time"]
+                logger.info(f"Midnight correction (legacy fallback): {_midnight.sum()} trips adjusted")
 
         # Load parameters
         if params is None:

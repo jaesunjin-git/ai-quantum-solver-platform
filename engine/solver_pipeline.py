@@ -92,13 +92,35 @@ class SolverPipeline:
                 error=f"Data binding failed: {str(e)}"
             )
 
-        #  Phase 2: Compile 
+        #  Phase 2: Compile
         try:
+            # Apply policy-driven variable bounds + big_m (on deepcopy to avoid mutation)
+            import copy
+            _math_model_compiled = copy.deepcopy(math_model)
+            _policy_adj = bound_data.get("_policy_adjustments", {})
+            if _policy_adj:
+                _var_adj = _policy_adj.get("variable_bounds", {})
+                for _var in _math_model_compiled.get("variables", []):
+                    _vid = _var.get("id", "")
+                    if _vid in _var_adj:
+                        for _field, _val in _var_adj[_vid].items():
+                            _old = _var.get(_field)
+                            _var[_field] = _val
+                            logger.info(f"Policy: {_vid}.{_field} = {_old} → {_val}")
+                _new_big_m = _policy_adj.get("big_m")
+                if _new_big_m:
+                    for _p in _math_model_compiled.get("parameters", []):
+                        if _p.get("id") == "big_m":
+                            _p["default_value"] = _new_big_m
+                            _p["value"] = _new_big_m
+                    bound_data["parameters"]["big_m"] = _new_big_m
+                    logger.info(f"Policy: big_m = {_new_big_m}")
+
             compiler = get_compiler(solver_id)
             logger.info(f"Compiler: {type(compiler).__name__}")
 
             compile_start = time.time()
-            compile_result = compiler.compile(math_model, bound_data, project_id=project_id, **kwargs)
+            compile_result = compiler.compile(_math_model_compiled, bound_data, project_id=project_id, **kwargs)
             compile_time = time.time() - compile_start
 
             if not compile_result.success:
@@ -371,6 +393,9 @@ class SolverPipeline:
 
             # 하위 호환 유지
             "compile_warnings": warnings_list,
+
+            # Policy snapshot (single resolve, downstream reuse)
+            "policy_snapshot": bound_data.get("_policy_result"),
         }
 
 

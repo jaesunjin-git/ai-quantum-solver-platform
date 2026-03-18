@@ -707,6 +707,46 @@ class DataBinder:
             bound["parameter_sources"][_tp_id] = "auto_inject:trips.csv"
             logger.info(f"Trip auto-inject: '{_tp_id}' loaded {len(_result)//2} values from trips.csv")
 
+        # ── Policy-Driven Canonical Field Generation ──
+        _domain = math_model.get("domain", "")
+        if _domain:
+            try:
+                from engine.policy import PolicyEngine, PolicyResolutionContext
+                _policy_engine = PolicyEngine(_domain)
+                if _policy_engine.has_policies():
+                    _ctx = PolicyResolutionContext(
+                        domain=_domain,
+                        clarification_params=bound["parameters"],
+                    )
+                    _resolved = _policy_engine.resolve(_ctx)
+                    _canonical = _policy_engine.generate_canonical_fields(bound, _resolved)
+
+                    bound["_policy_result"] = {
+                        "resolved": _resolved.to_dict(),
+                        "canonical": _canonical.to_dict(),
+                        "provenance": _canonical.provenance,
+                    }
+                    bound["_policy_adjustments"] = {
+                        "variable_bounds": _policy_engine.get_variable_bound_adjustments(_resolved),
+                        "big_m": _canonical.param_adjustments.get("big_m"),
+                    }
+                    logger.info(
+                        f"PolicyEngine: {len(_canonical.fields_created)} canonical fields, "
+                        f"hash={_resolved.resolved_hash}"
+                    )
+            except Exception as _pe_err:
+                # fail-closed if model references canonical fields
+                _canonical_refs = any(
+                    "abs_minute" in str(c.get("expression_template", ""))
+                    for c in math_model.get("constraints", [])
+                    if isinstance(c, dict)
+                )
+                if _canonical_refs:
+                    raise RuntimeError(
+                        f"PolicyEngine failed but model references canonical fields: {_pe_err}"
+                    ) from _pe_err
+                logger.warning(f"PolicyEngine failed (non-blocking): {_pe_err}")
+
         # ── F8: Binding summary log ──
         total_params = len(bound["parameters"])
         bound_params = sum(1 for v in bound["parameters"].values() if v is not None)

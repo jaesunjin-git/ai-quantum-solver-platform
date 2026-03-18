@@ -1,0 +1,155 @@
+version: "1.0"
+domain: railway
+
+# ════════════════════════════════════════════
+# A. Temporal Type System
+# ════════════════════════════════════════════
+# raw_clock_minute   : 원본 시계 시각 (0~1439)
+# service_day_minute : 서비스데이 기준 절대 시각 (anchor 기준 unwrap)
+# duration_minute    : 구간 길이 (축 무관, 변환 불필요)
+
+temporal_types:
+  # indexed fields (trip별)
+  trip_dep_time:         raw_clock_minute
+  trip_arr_time:         raw_clock_minute
+  trip_dep_abs_minute:   service_day_minute
+  trip_arr_abs_minute:   service_day_minute
+  trip_duration:         duration_minute
+
+  # scalar params (시간형 — 이미 service_day 축)
+  day_duty_start_earliest:    service_day_minute
+  day_duty_end_latest:        service_day_minute
+  night_duty_start_earliest:  service_day_minute
+  night_duty_start_preferred: service_day_minute
+  night_threshold:            service_day_minute
+  big_m:                      service_day_minute
+
+  # scalar params (duration)
+  min_night_sleep_minutes:       duration_minute
+  min_night_rest_total_minutes:  duration_minute
+  max_driving_minutes:           duration_minute
+  max_work_minutes:              duration_minute
+  max_wait_minutes:              duration_minute
+  max_total_stay_minutes:        duration_minute
+  preparation_minutes:           duration_minute
+  cleanup_minutes:               duration_minute
+  preparation_minutes_departure: duration_minute
+  preparation_minutes_relay:     duration_minute
+  preparation_minutes_mid_duty:  duration_minute
+  preparation_minutes_night:     duration_minute
+  cleanup_minutes_arrival:       duration_minute
+  cleanup_minutes_relay:         duration_minute
+  cleanup_minutes_mid_duty:      duration_minute
+  cleanup_minutes_night:         duration_minute
+  post_arrival_rest_minutes:     duration_minute
+  post_arrival_rest_minutes_min: duration_minute
+
+  # variables
+  duty_start:  service_day_minute
+  duty_end:    service_day_minute
+
+# ════════════════════════════════════════════
+# B. Policy Definitions
+# ════════════════════════════════════════════
+
+policies:
+  time_axis:
+    _type: TimeAxisPolicy
+    clock_unit: minute
+    period_minutes: 1440
+    service_day_anchor_minute: 1020
+    horizon_days: 2
+    timezone: Asia/Seoul
+    shift_policy: shift_if_before_anchor
+
+  overnight:
+    _type: OvernightPolicy
+    activation:
+      param: is_overnight_crew
+      equals: true
+    min_sleep_minutes: 240
+    sleep_window:
+      axis: raw_clock
+      start: 0
+      end: 360
+    sleep_counts_as_work: false
+
+  interval_normalization:
+    _type: IntervalNormalizationPolicy
+    normalize_pairs:
+      - [trip_dep_time, trip_arr_time]
+    end_if_before_start: "+period"
+    negative_interval_policy: error
+
+# ════════════════════════════════════════════
+# C. Canonical Derived Fields
+# ════════════════════════════════════════════
+
+derived_fields:
+  trip_dep_abs_minute:
+    source: trip_dep_time
+    source_namespace: trips
+    indexed_by: i
+    derivation: cyclic_unwrap
+    policy_ref: time_axis
+    temporal_type: service_day_minute
+    inverse_to: trip_dep_time
+
+  trip_arr_abs_minute:
+    source: trip_arr_time
+    source_namespace: trips
+    indexed_by: i
+    derivation: cyclic_unwrap
+    policy_ref: time_axis
+    temporal_type: service_day_minute
+    inverse_to: trip_arr_time
+
+  service_day_index:
+    source: trip_dep_time
+    source_namespace: trips
+    indexed_by: i
+    derivation: day_offset
+    policy_ref: time_axis
+    temporal_type: raw_clock_minute
+
+  crosses_midnight:
+    source: [trip_dep_time, trip_arr_time]
+    source_namespace: trips
+    indexed_by: i
+    derivation: interval_crosses_period
+    policy_ref: interval_normalization
+
+  is_in_night_window:
+    source: trip_dep_abs_minute
+    source_namespace: derived
+    indexed_by: i
+    derivation: window_membership
+    window:
+      axis: service_day
+      start: 1020
+      end: 1800
+    policy_ref: time_axis
+
+# ════════════════════════════════════════════
+# D. Scalar Param Canonicalization
+# ════════════════════════════════════════════
+
+param_canonicalization:
+  big_m:
+    source: time_axis
+    formula: period_minutes * horizon_days
+    temporal_type: service_day_minute
+
+  trip_duration:
+    validation: ensure_positive
+    recompute_if: crosses_midnight
+
+# ════════════════════════════════════════════
+# E. Variable Bounds (time_axis.horizon 기반)
+# ════════════════════════════════════════════
+
+variable_bounds:
+  duty_start:
+    upper_bound_formula: period_minutes * horizon_days
+  duty_end:
+    upper_bound_formula: period_minutes * horizon_days

@@ -411,7 +411,7 @@ constraints:
     - 780
   preparation_time:
     description: 승무 전 준비시간
-    expression_template: duty_start[j] <= trip_dep_time[i] - preparation_minutes +
+    expression_template: duty_start[j] <= trip_dep_abs_minute[i] - preparation_minutes +
       big_m * (1 - x[i,j])
     for_each: i in I, j in J
     parameters:
@@ -465,7 +465,7 @@ constraints:
       operator: <=
       rhs:
         type: expression
-        expr: trip_dep_time[i] - preparation_minutes + big_m * (1 - x[i,j])
+        expr: trip_dep_abs_minute[i] - preparation_minutes + big_m * (1 - x[i,j])
     detection_hints:
     - 출근
     - 준비시간
@@ -478,7 +478,7 @@ constraints:
     - 60
   cleanup_time:
     description: 승무 후 정리시간
-    expression_template: duty_end[j] >= trip_arr_time[i] + cleanup_minutes - big_m
+    expression_template: duty_end[j] >= trip_arr_abs_minute[i] + cleanup_minutes - big_m
       * (1 - x[i,j])
     for_each: i in I, j in J
     parameters:
@@ -532,7 +532,7 @@ constraints:
       operator: '>='
       rhs:
         type: expression
-        expr: trip_arr_time[i] + cleanup_minutes - big_m * (1 - x[i,j])
+        expr: trip_arr_abs_minute[i] + cleanup_minutes - big_m * (1 - x[i,j])
     detection_hints:
     - 정리시간
     - cleanup
@@ -882,7 +882,7 @@ constraints:
 
   post_arrival_rest:
     description: 강차 후 휴양시간 확보 — 할당된 각 트립 도착 후 정리+휴양 시간 보장
-    expression_template: duty_end[j] >= trip_arr_time[i] + cleanup_minutes + post_arrival_rest_minutes_min
+    expression_template: duty_end[j] >= trip_arr_abs_minute[i] + cleanup_minutes + post_arrival_rest_minutes_min
       - big_m * (1 - x[i,j])
     for_each: i in I, j in J
     parameters:
