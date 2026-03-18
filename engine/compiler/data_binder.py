@@ -546,6 +546,27 @@ class DataBinder:
                 if isinstance(_node, dict):
                     _expr_params.update(_collect_param_names_from_node(_node))
 
+        # ── Catalog-based deterministic resolution (정확 매칭) ──
+        try:
+            from engine.policy.parameter_catalog import ParameterCatalog
+            _catalog = ParameterCatalog(math_model.get("domain", "")
+                                        or math_model.get("metadata", {}).get("domain", ""))
+        except Exception:
+            _catalog = None
+
+        for _name in _expr_params:
+            if _name in bound["parameters"] and bound["parameters"][_name] is not None:
+                continue
+            # Catalog: default_alias로 결정적 해석
+            if _catalog and _catalog.has_catalog():
+                _default_alias = _catalog.get_default_alias(_name)
+                if _default_alias and _default_alias in bound["parameters"]:
+                    _alias_val = bound["parameters"][_default_alias]
+                    if _alias_val is not None and not isinstance(_alias_val, (dict, list, tuple)):
+                        bound["parameters"][_name] = _alias_val
+                        logger.info(f"Param catalog alias: '{_name}' -> '{_default_alias}' = {_alias_val}")
+                        continue
+
         # ── Heuristic matching → suggestion only (실행 경로 격리) ──
         # prefix/token match 결과는 bound["_suggestions"]에만 저장.
         # bound["parameters"]에는 정확 매칭만 허용.
@@ -796,6 +817,16 @@ class DataBinder:
                 msg = f"Parameter '{pid}' = {fval}: 48시간 초과 (비현실적 값)"
                 bound["parameter_warnings"].append(msg)
                 logger.warning(msg)
+
+        # ── F11b: Catalog-based range validation (매직 넘버 없음) ──
+        if _catalog and _catalog.has_catalog():
+            for pid, val in bound["parameters"].items():
+                if val is None or isinstance(val, (dict, list, tuple)):
+                    continue
+                err = _catalog.validate_value(pid, val)
+                if err:
+                    bound.setdefault("parameter_errors", []).append(err)
+                    logger.error(f"Catalog validation: {err}")
 
         # ── Suggestion leak 방지 (runtime invariant) ──
         # suggestion은 절대 parameters에 자동 적용되지 않는다.

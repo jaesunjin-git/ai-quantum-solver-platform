@@ -1,0 +1,337 @@
+version: "1.0"
+domain: railway
+
+# ════════════════════════════════════════════
+# Parameter Catalog — 결정적 해석 기반
+#
+# 각 파라미터에 type/family/scope/aliases/valid_range 메타데이터.
+# DataBinder는 이 catalog으로만 alias 해석.
+# similarity/prefix/token 매칭은 실행 경로에서 제거됨.
+# ════════════════════════════════════════════
+
+parameters:
+
+  # ── Duration: 준비/정리시간 ──
+  preparation_minutes:
+    family: duration
+    semantic_role: prep
+    type: scalar
+    unit: minutes
+    valid_range: [10, 120]
+    aliases: [preparation_minutes_departure, preparation_minutes_relay, preparation_minutes_mid_duty]
+    default_alias: preparation_minutes_departure
+    not_alias_of: [preparation_minutes_night, min_night_sleep_minutes]
+    related_constraints: [preparation_time]
+    description: 출고/승계 시 준비시간
+
+  preparation_minutes_departure:
+    family: duration
+    semantic_role: prep
+    type: scalar
+    unit: minutes
+    valid_range: [30, 90]
+    aliases: []
+    description: 출고(출무시) 준비시간
+
+  preparation_minutes_relay:
+    family: duration
+    semantic_role: prep
+    type: scalar
+    unit: minutes
+    valid_range: [20, 60]
+    aliases: []
+    description: 승계/편승 출무시 준비시간
+
+  preparation_minutes_mid_duty:
+    family: duration
+    semantic_role: prep
+    type: scalar
+    unit: minutes
+    valid_range: [20, 60]
+    aliases: []
+    description: 출고(사업중) 준비시간
+
+  preparation_minutes_night:
+    family: duration
+    semantic_role: prep
+    type: scalar
+    unit: minutes
+    valid_range: [30, 90]
+    aliases: []
+    not_alias_of: [min_night_sleep_minutes, preparation_minutes]
+    description: 야간 출고 준비시간
+
+  cleanup_minutes:
+    family: duration
+    semantic_role: cleanup
+    type: scalar
+    unit: minutes
+    valid_range: [10, 120]
+    aliases: [cleanup_minutes_arrival, cleanup_minutes_relay, cleanup_minutes_mid_duty]
+    default_alias: cleanup_minutes_arrival
+    not_alias_of: [cleanup_minutes_night, min_night_sleep_minutes]
+    related_constraints: [cleanup_time]
+    description: 입고/승계 시 정리시간
+
+  cleanup_minutes_arrival:
+    family: duration
+    semantic_role: cleanup
+    type: scalar
+    unit: minutes
+    valid_range: [20, 60]
+    aliases: []
+    description: 입고(종무시) 정리시간
+
+  cleanup_minutes_relay:
+    family: duration
+    semantic_role: cleanup
+    type: scalar
+    unit: minutes
+    valid_range: [15, 45]
+    aliases: []
+    description: 승계/편승 종무시 정리시간
+
+  cleanup_minutes_mid_duty:
+    family: duration
+    semantic_role: cleanup
+    type: scalar
+    unit: minutes
+    valid_range: [15, 45]
+    aliases: []
+    description: 입고(사업중) 정리시간
+
+  cleanup_minutes_night:
+    family: duration
+    semantic_role: cleanup
+    type: scalar
+    unit: minutes
+    valid_range: [15, 60]
+    aliases: []
+    not_alias_of: [min_night_sleep_minutes, cleanup_minutes]
+    description: 야간 입고 정리시간
+
+  # ── Duration: 근무시간 상한 ──
+  max_driving_minutes:
+    family: duration
+    semantic_role: driving
+    type: scalar
+    unit: minutes
+    valid_range: [240, 480]
+    aliases: []
+    related_constraints: [max_driving_time]
+
+  max_work_minutes:
+    family: duration
+    semantic_role: work
+    type: scalar
+    unit: minutes
+    valid_range: [420, 780]
+    aliases: []
+    related_constraints: [max_work_time, overnight_work_time_excluding_sleep]
+
+  max_wait_minutes:
+    family: duration
+    semantic_role: wait
+    type: scalar
+    unit: minutes
+    valid_range: [120, 420]
+    aliases: []
+    related_constraints: [max_wait_time]
+
+  max_total_stay_minutes:
+    family: duration
+    semantic_role: stay
+    type: scalar
+    unit: minutes
+    valid_range: [480, 960]
+    aliases: []
+    related_constraints: [max_total_stay_time]
+
+  # ── Duration: 목표값 ──
+  avg_driving_target_minutes:
+    family: duration
+    semantic_role: driving
+    type: scalar
+    unit: minutes
+    valid_range: [180, 420]
+    aliases: []
+    related_constraints: [avg_driving_time_target]
+
+  avg_wait_target_minutes:
+    family: duration
+    semantic_role: wait
+    type: scalar
+    unit: minutes
+    valid_range: [60, 300]
+    aliases: []
+    related_constraints: [avg_wait_time_target]
+
+  # ── Duration: 휴식/식사 ──
+  min_break_minutes:
+    family: duration
+    semantic_role: rest
+    type: scalar
+    unit: minutes
+    valid_range: [15, 60]
+    aliases: []
+    related_constraints: [mandatory_break]
+
+  min_meal_break_minutes:
+    family: duration
+    semantic_role: rest
+    type: scalar
+    unit: minutes
+    valid_range: [15, 60]
+    aliases: []
+    related_constraints: [meal_break_guarantee]
+
+  # ── Duration: 야간/숙박 ──
+  min_night_sleep_minutes:
+    family: duration
+    semantic_role: sleep
+    type: scalar
+    unit: minutes
+    valid_range: [120, 480]
+    aliases: []
+    not_alias_of: [cleanup_minutes_night, preparation_minutes_night, min_night_rest_total_minutes]
+    related_constraints: [night_sleep_guarantee, overnight_work_time_excluding_sleep]
+    description: 야간 최소 수면시간
+
+  min_night_rest_total_minutes:
+    family: duration
+    semantic_role: rest
+    type: scalar
+    unit: minutes
+    valid_range: [180, 480]
+    aliases: []
+    not_alias_of: [min_night_sleep_minutes]
+    related_constraints: [night_rest]
+    description: 야간 총 휴식시간 (수면+입고+출고 포함)
+
+  # ── Duration: 강차 후 ──
+  post_arrival_rest_minutes:
+    family: duration
+    semantic_role: rest
+    type: scalar
+    unit: minutes
+    valid_range: [60, 300]
+    aliases: []
+
+  post_arrival_rest_minutes_min:
+    family: duration
+    semantic_role: rest
+    type: scalar
+    unit: minutes
+    valid_range: [30, 120]
+    aliases: []
+    related_constraints: [post_arrival_rest]
+
+  # ── Time of Day: 주야간 시각 ──
+  day_duty_start_earliest:
+    family: time_of_day
+    semantic_role: shift_boundary
+    type: scalar
+    unit: minutes_from_midnight
+    valid_range: [300, 480]
+    aliases: []
+    related_constraints: [day_duty_start]
+
+  day_duty_end_latest:
+    family: time_of_day
+    semantic_role: shift_boundary
+    type: scalar
+    unit: minutes_from_midnight
+    valid_range: [1260, 1440]
+    aliases: []
+    related_constraints: [day_duty_end]
+
+  night_duty_start_earliest:
+    family: time_of_day
+    semantic_role: shift_boundary
+    type: scalar
+    unit: minutes_from_midnight
+    valid_range: [900, 1100]
+    aliases: []
+    related_constraints: [night_duty_start]
+
+  night_duty_start_preferred:
+    family: time_of_day
+    semantic_role: shift_boundary
+    type: scalar
+    unit: minutes_from_midnight
+    valid_range: [1020, 1200]
+    aliases: []
+    related_constraints: [night_duty_start_preferred]
+
+  night_threshold:
+    family: time_of_day
+    semantic_role: classification
+    type: scalar
+    unit: minutes_from_midnight
+    valid_range: [900, 1100]
+    aliases: []
+    related_constraints: [day_night_classification]
+
+  # ── Count: 인원/사업 수 ──
+  day_crew_count:
+    family: count
+    semantic_role: crew
+    type: scalar
+    unit: count
+    valid_range: [1, 200]
+    aliases: []
+    related_constraints: [fixed_day_crew_count]
+
+  night_crew_count:
+    family: count
+    semantic_role: crew
+    type: scalar
+    unit: count
+    valid_range: [1, 200]
+    aliases: []
+    related_constraints: [fixed_night_crew_count]
+
+  total_duties:
+    family: count
+    semantic_role: crew
+    type: scalar
+    unit: count
+    valid_range: [1, 500]
+    aliases: []
+    related_constraints: [fixed_total_duties]
+
+  max_trips_per_crew:
+    family: count
+    semantic_role: workload
+    type: scalar
+    unit: count
+    valid_range: [3, 20]
+    aliases: []
+    related_constraints: [workload_balance]
+
+  # ── Special ──
+  big_m:
+    family: special
+    semantic_role: big_m
+    type: scalar
+    unit: minutes
+    valid_range: [1440, 10000]
+    aliases: []
+    description: Big-M constant (PolicyEngine이 horizon 기반 조정)
+
+  is_overnight_crew:
+    family: boolean
+    semantic_role: policy_flag
+    type: boolean
+    valid_range: null
+    aliases: []
+    not_alias_of: [min_night_rest_total_minutes]
+    description: 숙박조 여부 (user_clarification)
+
+  sleep_counts_as_work:
+    family: boolean
+    semantic_role: policy_flag
+    type: boolean
+    valid_range: null
+    aliases: []
+    description: 수면시간 근무 포함 여부 (user_clarification)
