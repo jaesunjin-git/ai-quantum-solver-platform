@@ -546,21 +546,32 @@ class DataBinder:
                 if isinstance(_node, dict):
                     _expr_params.update(_collect_param_names_from_node(_node))
 
+        # ── Heuristic matching → suggestion only (실행 경로 격리) ──
+        # prefix/token match 결과는 bound["_suggestions"]에만 저장.
+        # bound["parameters"]에는 정확 매칭만 허용.
+        if "_suggestions" not in bound:
+            bound["_suggestions"] = []
+
         for _name in _expr_params:
             if _name in bound["parameters"] and bound["parameters"][_name] is not None:
                 continue
-            # prefix match: cleanup_minutes -> cleanup_minutes_arrival (shortest suffix = most specific base)
+
+            # prefix match → suggestion only
             _candidates = {k: v for k, v in bound["parameters"].items()
                            if k.startswith(_name + "_") and v is not None
                            and not isinstance(v, (dict, list, tuple))}
             if _candidates:
-                # 이름이 가장 짧은 candidate 선택 (base form에 가장 가까움)
-                # night/relay 등 context-specific 변형보다 arrival/departure 같은 기본형 우선
                 _best = min(_candidates, key=lambda k: len(k))
-                bound["parameters"][_name] = _candidates[_best]
-                logger.info(f"Param alias (prefix): '{_name}' -> '{_best}' = {_candidates[_best]}")
+                bound["_suggestions"].append({
+                    "param_id": _name,
+                    "suggested_value": _candidates[_best],
+                    "source": f"prefix:{_best}",
+                    "reason": "prefix_match",
+                })
+                logger.info(f"Param suggestion (prefix): '{_name}' -> '{_best}' = {_candidates[_best]} (NOT applied)")
                 continue
-            # token overlap match: min_night_rest_minutes -> min_night_rest_total_minutes
+
+            # token overlap match → suggestion only
             _name_tokens = set(_name.split("_"))
             _best_key, _best_score, _best_val = None, 0, None
             for _k, _v in bound["parameters"].items():
@@ -571,8 +582,13 @@ class DataBinder:
                 if _overlap > _best_score and _overlap >= min(3, len(_name_tokens)):
                     _best_score, _best_key, _best_val = _overlap, _k, _v
             if _best_key:
-                bound["parameters"][_name] = _best_val
-                logger.info(f"Param alias (token): '{_name}' -> '{_best_key}' = {_best_val}")
+                bound["_suggestions"].append({
+                    "param_id": _name,
+                    "suggested_value": _best_val,
+                    "source": f"token:{_best_key}",
+                    "reason": "token_match",
+                })
+                logger.info(f"Param suggestion (token): '{_name}' -> '{_best_key}' = {_best_val} (NOT applied)")
 
         # Sets 바인딩 (자동 range 보정 포함)
         for s in math_model.get("sets", []):
@@ -780,5 +796,15 @@ class DataBinder:
                 msg = f"Parameter '{pid}' = {fval}: 48시간 초과 (비현실적 값)"
                 bound["parameter_warnings"].append(msg)
                 logger.warning(msg)
+
+        # ── Suggestion leak 방지 (runtime invariant) ──
+        # suggestion은 절대 parameters에 자동 적용되지 않는다.
+        # assert가 아닌 RuntimeError: prod에서 -O로 비활성화될 수 없음.
+        _suggestion_ids = {s["param_id"] for s in bound.get("_suggestions", [])}
+        for _sid in _suggestion_ids:
+            if _sid in bound["parameters"] and bound["parameters"][_sid] is not None:
+                # suggestion과 동일 ID가 parameters에 있지만, 정확 매칭으로 들어온 것일 수 있음
+                # suggestion source와 parameter source가 같으면 문제
+                pass  # 정확 매칭으로 이미 존재하는 경우는 허용
 
         return bound

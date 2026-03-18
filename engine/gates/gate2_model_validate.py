@@ -626,7 +626,9 @@ def run(math_model: Dict,
                         matched_via = candidate
                         break
 
-                # 유사도 매칭 (토큰 기반)
+                # 유사도 매칭 → suggestion only (실행 경로에 저장 금지)
+                _similarity_match = None
+                _similarity_via = None
                 if matched_val is None and (pid or pname):
                     best_score = 0
                     for cpk, cpv in _cp_map.items():
@@ -636,10 +638,11 @@ def run(math_model: Dict,
                             score = _token_similarity(candidate, cpk.lower())
                             if score > best_score and score >= 0.65:
                                 best_score = score
-                                matched_val = cpv
-                                matched_via = f"{cpk} (similarity={score:.2f})"
+                                _similarity_match = cpv
+                                _similarity_via = f"{cpk} (similarity={score:.2f})"
 
                 if matched_val is not None:
+                    # 정확 매칭 → math_model에 저장 (안전)
                     try:
                         p["default_value"] = float(matched_val)
                     except (ValueError, TypeError):
@@ -649,6 +652,15 @@ def run(math_model: Dict,
                     p.pop("user_input_required", None)
                     _cp_bound_phase0 += 1
                     logger.info(f"Phase0-CP-bind: {pid or pname} = {matched_val} (via {matched_via})")
+                elif _similarity_match is not None:
+                    # 유사도 매칭 → suggestion으로만 격리 (math_model에 저장 안 함)
+                    corrections.setdefault("suggestions", []).append({
+                        "param_id": pid or pname,
+                        "suggested_value": _similarity_match,
+                        "source": _similarity_via,
+                        "reason": "token_similarity",
+                    })
+                    logger.info(f"Phase0-CP-suggest: {pid or pname} = {_similarity_match} (SUGGESTION, via {_similarity_via})")
             logger.info(f"Phase0 confirmed_problem bind: {_cp_bound_phase0} params")
 
     # ★ Phase 0b: 데이터 컬럼 파라미터 자동 해결
