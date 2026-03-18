@@ -2764,6 +2764,16 @@ Soft 제약조건:
                     activated.append(f"  - **{cval.get('name_ko', cname)}** (SOFT)")
                     logger.info(f"Soft constraint activated by clarification: {cname}")
 
+        # ── clarification resolved_params를 pd.parameters에 병합 ──
+        # resolved_params에 is_overnight_crew, sleep_counts_as_work 등이 있지만
+        # pd["parameters"]에는 반영되지 않으면 template_model_builder가 받지 못함
+        if resolved_params:
+            pd_params = pd.setdefault("parameters", {})
+            for pk, pv in resolved_params.items():
+                if pk not in pd_params:
+                    pd_params[pk] = pv
+                    logger.info(f"Clarification param merged: {pk} = {pv}")
+
         # 문제 정의 확정 — 명시적 deepcopy (참조 공유에 기대지 않음)
         import copy
         state.problem_definition = pd
