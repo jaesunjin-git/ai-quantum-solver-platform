@@ -34,11 +34,15 @@ class DWaveCQMCompiler(BaseCompiler):
             total_constraints = 0
             warnings = []
 
-            # ── CompileContext 초기화 (로컬, 인스턴스 상태 아님) ──
+            # ── CompileContext 초기화 (CompilePolicy 기반) ──
+            import os as _os
+            _compile_mode = kwargs.get("compile_mode") or _os.getenv("COMPILE_MODE", "strict")
+            from engine.compiler.compile_types import CompilePolicy
+            _policy = CompilePolicy(mode=_compile_mode)
             compile_ctx = CompileContext(
-                strict_data_errors=kwargs.get("strict_data_errors", True),
-                allow_partial_hard=kwargs.get("allow_partial_hard", True),  # 현재는 허용 (점진적 전환)
-                fail_on_constant_infeasible=kwargs.get("fail_on_constant_infeasible", False),  # 현재는 비활성 (점진적 전환)
+                strict_data_errors=_policy.strict_data_errors,
+                allow_partial_hard=_policy.allow_partial_hard,
+                fail_on_constant_infeasible=_policy.fail_on_constant_infeasible,
                 max_error_count=kwargs.get("max_error_count", 50),
             )
 
@@ -410,8 +414,13 @@ class DWaveCQMCompiler(BaseCompiler):
             if compile_ctx.warnings:
                 warnings.extend(compile_ctx.warnings)
 
-            # compile_ctx에 hard error가 있으면 success=False
-            _compile_success = not compile_ctx.has_errors
+            # compile_ctx에 error가 있으면 success=False
+            # CompileIssue severity=error도 포함 (truncation, constant infeasible 등)
+            _has_critical_issues = any(i.severity == "error" for i in compile_ctx.issues)
+            _compile_success = not compile_ctx.has_errors and not _has_critical_issues
+            if not _compile_success:
+                logger.error(f"Compile FAILED: {len(compile_ctx.errors)} errors, "
+                             f"{sum(1 for i in compile_ctx.issues if i.severity == 'error')} critical issues")
 
             return CompileResult(
                 success=_compile_success,

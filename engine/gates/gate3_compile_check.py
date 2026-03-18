@@ -122,24 +122,41 @@ def run(compile_result: Dict,
         stats["feasibility_exact"] = _metadata.get("feasibility_exact", hard_truncation_count == 0 and constant_infeasible_count == 0 and data_errors == 0)
         stats["objective_exact"] = _metadata.get("objective_exact", not objective_fallback)
 
-        # ── 정확성/안전성 경고 ──
+        # ── 정확성/안전성: strict 모드에서는 error, debug에서는 warning ──
+        import os as _os
+        _compile_mode = _os.getenv("COMPILE_MODE", "strict")
+        _is_strict = _compile_mode == "strict"
+
         if hard_truncation_count > 0:
-            warnings.append(
-                f"Hard 제약 {hard_truncation_count}개가 truncation됨 — "
-                f"모델 정확도 저하 가능 (feasibility 변경)"
-            )
+            _msg = (f"Hard 제약 {hard_truncation_count}개가 truncation됨 — "
+                    f"모델 정확도 저하 가능 (feasibility 변경)")
+            if _is_strict:
+                errors.append(_msg)
+            else:
+                warnings.append(_msg)
         if constant_infeasible_count > 0:
-            warnings.append(
-                f"상수 infeasible {constant_infeasible_count}건 — "
-                f"제약 수식 또는 데이터 확인 필요"
-            )
+            _msg = (f"상수 infeasible {constant_infeasible_count}건 — "
+                    f"제약 수식 또는 데이터 확인 필요")
+            if _is_strict:
+                errors.append(_msg)
+            else:
+                warnings.append(_msg)
         if data_errors > 0:
-            warnings.append(
-                f"데이터 오류 {data_errors}건 — "
-                f"파라미터/변수 식별자 확인 필요"
-            )
+            _msg = (f"데이터 오류 {data_errors}건 — "
+                    f"파라미터/변수 식별자 확인 필요")
+            warnings.append(_msg)
         if objective_fallback:
-            warnings.append("목적함수 파싱 실패 — 기본 목적함수(minimize sum) 사용됨")
+            _msg = "목적함수 파싱 실패 — 기본 목적함수(minimize sum) 사용됨"
+            if _is_strict:
+                errors.append(_msg)
+            else:
+                warnings.append(_msg)
+
+        # parameter_errors 체크 (DataBinder에서 range validation 실패)
+        _param_errors = _metadata.get("parameter_errors", [])
+        if _param_errors:
+            for _pe in _param_errors[:5]:
+                errors.append(f"파라미터 오류: {_pe}")
 
         # soft 제약 스킵 경고 (NL 등 soft 미지원 솔버)
         if skipped_soft > 0 and soft_defined > 0:

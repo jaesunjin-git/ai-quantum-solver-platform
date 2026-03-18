@@ -40,6 +40,25 @@ class ConstraintCompileStat:
 
 
 @dataclass
+class CompilePolicy:
+    """컴파일 정책: strict(운영) / debug(개발).
+    환경변수 COMPILE_MODE=strict|debug로 전환. 기본값 strict."""
+    mode: str = "strict"
+
+    @property
+    def allow_partial_hard(self) -> bool:
+        return self.mode == "debug"
+
+    @property
+    def fail_on_constant_infeasible(self) -> bool:
+        return self.mode == "strict"
+
+    @property
+    def strict_data_errors(self) -> bool:
+        return self.mode == "strict"
+
+
+@dataclass
 class CompileContext:
     """컴파일 중 사용되는 로컬 컨텍스트. 인스턴스 상태 대신 사용."""
     issues: List[CompileIssue] = field(default_factory=list)
@@ -47,7 +66,7 @@ class CompileContext:
     errors: List[str] = field(default_factory=list)       # hard fail 조건
     warnings: List[str] = field(default_factory=list)     # soft 문제
 
-    # 정책 플래그
+    # 정책 (CompilePolicy에서 파생)
     strict_data_errors: bool = True
     allow_partial_hard: bool = False
     fail_on_constant_infeasible: bool = True
