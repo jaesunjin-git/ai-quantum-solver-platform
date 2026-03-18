@@ -634,7 +634,7 @@ def run(math_model: Dict,
                             if not candidate:
                                 continue
                             score = _token_similarity(candidate, cpk.lower())
-                            if score > best_score and score >= 0.4:
+                            if score > best_score and score >= 0.65:
                                 best_score = score
                                 matched_val = cpv
                                 matched_via = f"{cpk} (similarity={score:.2f})"

@@ -549,12 +549,14 @@ class DataBinder:
         for _name in _expr_params:
             if _name in bound["parameters"] and bound["parameters"][_name] is not None:
                 continue
-            # prefix match: cleanup_minutes -> cleanup_minutes_arrival
+            # prefix match: cleanup_minutes -> cleanup_minutes_arrival (shortest suffix = most specific base)
             _candidates = {k: v for k, v in bound["parameters"].items()
                            if k.startswith(_name + "_") and v is not None
                            and not isinstance(v, (dict, list, tuple))}
             if _candidates:
-                _best = max(_candidates, key=lambda k: float(_candidates[k]) if _candidates[k] is not None else 0)
+                # 이름이 가장 짧은 candidate 선택 (base form에 가장 가까움)
+                # night/relay 등 context-specific 변형보다 arrival/departure 같은 기본형 우선
+                _best = min(_candidates, key=lambda k: len(k))
                 bound["parameters"][_name] = _candidates[_best]
                 logger.info(f"Param alias (prefix): '{_name}' -> '{_best}' = {_candidates[_best]}")
                 continue
