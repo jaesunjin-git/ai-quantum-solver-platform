@@ -424,6 +424,15 @@ def build_model_from_template(
             else:
                 est_vars += 1
 
+        # domain을 top-level에 설정 (PolicyEngine 등이 math_model.get("domain") 사용)
+        _domain = (
+            template.get("domain", "")
+            or confirmed_problem.get("domain", "")
+            or confirmed_problem.get("detected_domain", "")
+            or ""
+        )
+        model["domain"] = _domain
+
         model["metadata"] = {
             "estimated_variable_count": est_vars,
             "estimated_constraint_count": len(model_constraints),
@@ -433,7 +442,7 @@ def build_model_from_template(
             }),
             "generation_method": "template",
             "skip_struct_fix": True,
-            "domain": template.get("domain", ""),
+            "domain": _domain,
             "template_version": template.get("version", ""),
         }
 

@@ -708,7 +708,7 @@ class DataBinder:
             logger.info(f"Trip auto-inject: '{_tp_id}' loaded {len(_result)//2} values from trips.csv")
 
         # ── Policy-Driven Canonical Field Generation ──
-        _domain = math_model.get("domain", "")
+        _domain = math_model.get("domain", "") or math_model.get("metadata", {}).get("domain", "")
         if _domain:
             try:
                 from engine.policy import PolicyEngine, PolicyResolutionContext

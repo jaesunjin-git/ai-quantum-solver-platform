@@ -187,6 +187,12 @@ class InfeasibilityDiagnosisValidator(BaseValidator):
 
         # ── 7. Parameter tightness check ──
         parameters = context.get("parameters", {})
+        # math_model.parameters는 list 형태일 수 있음 → dict 변환
+        if isinstance(parameters, list):
+            parameters = {
+                p.get("id", ""): p.get("default_value") or p.get("value")
+                for p in parameters if p.get("id")
+            }
         if parameters and domain:
             tight_params = self._check_parameter_tightness(parameters, domain)
             if tight_params:
