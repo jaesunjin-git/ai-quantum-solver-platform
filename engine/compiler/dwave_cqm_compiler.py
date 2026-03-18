@@ -224,6 +224,8 @@ class DWaveCQMCompiler(BaseCompiler):
                             tuples = tuples[:per_constraint_cap]
                         added = 0
                         _first_failure_logged = False
+                        _tautology_count = 0
+                        _infeasible_count = 0
                         for idx, (lhs_val, op_str, rhs_val) in enumerate(tuples):
                             label = f"{cid}_{idx}"
                             # 진단 로그: 첫 3개 인스턴스
@@ -234,11 +236,23 @@ class DWaveCQMCompiler(BaseCompiler):
                                     str(lhs_val)[:80], str(rhs_val)[:80]
                                 )
                             try:
-                                self._add_cqm_constraint(
+                                result = self._add_cqm_constraint(
                                     cqm, lhs_val, op_str, rhs_val,
                                     label, category, weight
                                 )
-                                added += 1
+                                if result == "ok":
+                                    added += 1
+                                elif result == "tautology":
+                                    _tautology_count += 1
+                                elif result == "infeasible":
+                                    _infeasible_count += 1
+                                    if category == "hard" and _infeasible_count <= 3:
+                                        logger.error(
+                                            f"Constant infeasible (hard): {label} | "
+                                            f"expr={con_def.get('expression_template', '')[:80]} | "
+                                            f"lhs={lhs_val} {op_str} rhs={rhs_val}"
+                                        )
+                                        warnings.append(f"Constraint {cid}_{idx}: constant infeasible ({lhs_val} {op_str} {rhs_val})")
                             except Exception as e:
                                 if (added == 0 and idx < 3) or not _first_failure_logged:
                                     logger.warning(
@@ -246,6 +260,10 @@ class DWaveCQMCompiler(BaseCompiler):
                                         f"(lhs_type={type(lhs_val).__name__}, rhs_type={type(rhs_val).__name__})"
                                     )
                                     _first_failure_logged = True
+                        if _infeasible_count > 0:
+                            logger.warning(f"Constraint '{cid}': {_infeasible_count} constant infeasible instances (category={category})")
+                        if _tautology_count > 0:
+                            logger.debug(f"Constraint '{cid}': {_tautology_count} tautology instances skipped")
 
                         if added > 0:
                             total_constraints += added
@@ -387,28 +405,26 @@ class DWaveCQMCompiler(BaseCompiler):
     # ── CQM 제약 추가 ──
 
     def _add_cqm_constraint(self, cqm, lhs, op: str, rhs, label: str, category: str, weight=None):
-        """dimod 표현식으로 CQM 제약 추가"""
-        is_soft = (category == "soft") and weight
+        """
+        dimod 표현식으로 CQM 제약 추가.
 
-        # dimod는 lhs - rhs 형태로 제약을 표현해야 타입 충돌이 없음
-        # lhs <= rhs  ->  cqm.add_constraint(lhs - rhs <= 0)
-        # lhs >= rhs  ->  cqm.add_constraint(rhs - lhs <= 0)
-        # lhs == rhs  ->  cqm.add_constraint(lhs - rhs == 0)
+        Returns: "ok" | "tautology" | "infeasible"
+        """
+        is_soft = (category == "soft") and weight
+        EPS = 1e-9
 
         # constant-only 검사: lhs와 rhs가 둘 다 scalar이면 변수 없는 제약
         if isinstance(lhs, (int, float)) and isinstance(rhs, (int, float)):
             diff_val = float(lhs - rhs)
             is_tautology = (
-                (op in ("<=", "le") and diff_val <= 1e-12) or
-                (op in (">=", "ge") and diff_val >= -1e-12) or
-                (op in ("==", "eq", "=") and abs(diff_val) < 1e-12)
+                (op in ("<=", "le") and diff_val <= EPS) or
+                (op in (">=", "ge") and diff_val >= -EPS) or
+                (op in ("==", "eq", "=") and abs(diff_val) < EPS)
             )
             if is_tautology:
-                return  # 항상 참 — 스킵
-            # 항상 거짓 — hard면 에러, soft면 경고
-            if not is_soft:
-                logger.warning(f"Constant infeasible (hard): {label} → {lhs} {op} {rhs}")
-            return  # constant infeasible — 추가하지 않음
+                return "tautology"
+            # 항상 거짓
+            return "infeasible"
 
         try:
             diff = lhs - rhs
@@ -437,6 +453,7 @@ class DWaveCQMCompiler(BaseCompiler):
             cqm.add_constraint(constraint_expr, label=label, weight=float(weight))
         else:
             cqm.add_constraint(constraint_expr, label=label)
+        return "ok"
 
     # ── 고속 경로: overlap pairs (time_compatibility) ──
 
