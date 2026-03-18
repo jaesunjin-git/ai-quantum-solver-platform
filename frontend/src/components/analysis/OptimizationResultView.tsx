@@ -4,7 +4,8 @@ import { useState, useEffect } from 'react';
 import {
   CheckCircle, XCircle, AlertTriangle,
   Download, RotateCcw,
-  Package, Users, Shield, TrendingUp
+  Package, Users, Shield, TrendingUp,
+  ChevronDown, ChevronUp, Info
 } from 'lucide-react';
 import { KPIDashboard } from './KPIDashboard';
 import { DutyScheduleTab } from './DutyScheduleTab';
@@ -50,6 +51,7 @@ export function OptimizationResultView({
 
   const hasExecuteResult = !!(data.status && data.status !== 'PENDING');
   const [activeTab, setActiveTab] = useState<SubTab>(hasInterpreted ? 'kpi' : hasExecuteResult ? 'kpi' : 'compile');
+  const [validationExpanded, setValidationExpanded] = useState(false);
 
   useEffect(() => {
     if (hasInterpreted) setActiveTab('kpi');
@@ -97,23 +99,46 @@ export function OptimizationResultView({
           </div>
         </div>
 
-        {/* Validation summary (오류/경고/안내) */}
-        {data.validation && (
-          <div className="mb-2 flex items-center gap-2 text-[11px]">
-            {data.validation.error_count > 0 && (
-              <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-red-500/15 text-red-400">
-                <XCircle size={10} /> {data.validation.error_count} 오류
+        {/* Validation summary (오류/경고/안내) — 클릭 시 상세 펼치기 */}
+        {data.validation && (data.validation.error_count > 0 || data.validation.warning_count > 0 || data.validation.info_count > 0) && (
+          <div className="mb-2">
+            <button
+              onClick={() => setValidationExpanded(!validationExpanded)}
+              className="flex items-center gap-2 text-[11px] w-full"
+            >
+              {data.validation.error_count > 0 && (
+                <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-red-500/15 text-red-400">
+                  <XCircle size={10} /> {data.validation.error_count} 오류
+                </span>
+              )}
+              {data.validation.warning_count > 0 && (
+                <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-yellow-500/15 text-yellow-400">
+                  <AlertTriangle size={10} /> {data.validation.warning_count} 경고
+                </span>
+              )}
+              {data.validation.info_count > 0 && (
+                <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-blue-500/15 text-blue-400">
+                  <Info size={10} /> {data.validation.info_count} 안내
+                </span>
+              )}
+              <span className="ml-auto text-slate-500">
+                {validationExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
               </span>
-            )}
-            {data.validation.warning_count > 0 && (
-              <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-yellow-500/15 text-yellow-400">
-                <AlertTriangle size={10} /> {data.validation.warning_count} 경고
-              </span>
-            )}
-            {data.validation.info_count > 0 && (
-              <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-blue-500/15 text-blue-400">
-                {data.validation.info_count} 안내
-              </span>
+            </button>
+            {validationExpanded && data.validation.items && (
+              <div className="mt-2 space-y-1 bg-slate-800/30 rounded-lg p-2 max-h-40 overflow-y-auto custom-scrollbar">
+                {data.validation.items.map((item, i) => (
+                  <div key={i} className={`flex items-start gap-2 text-[11px] py-0.5 ${
+                    item.severity === 'error' ? 'text-red-300' :
+                    item.severity === 'warning' ? 'text-yellow-300' : 'text-blue-300'
+                  }`}>
+                    {item.severity === 'error' ? <XCircle size={10} className="mt-0.5 shrink-0 text-red-400" /> :
+                     item.severity === 'warning' ? <AlertTriangle size={10} className="mt-0.5 shrink-0 text-yellow-400" /> :
+                     <Info size={10} className="mt-0.5 shrink-0 text-blue-400" />}
+                    <span>{item.message}</span>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         )}
