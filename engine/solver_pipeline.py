@@ -383,10 +383,22 @@ class SolverPipeline:
             "interpreted_result": interpretation,
             "compile_summary": {
                 "solver_id": solver_id,
+                "solver_name": solver_name,
                 "solver_type": "ortools_cp",
                 "model_type": "SetPartitioning",
                 "duty_count": compile_result.metadata.get("duty_count", 0),
                 "trip_count": compile_result.metadata.get("trip_count", 0),
+                # 프론트엔드 호환 키
+                "variables_created": compile_result.variable_count,
+                "constraints": {
+                    "total_in_model": compile_result.constraint_count,
+                    "applied": compile_result.constraint_count,
+                    "failed": 0,
+                },
+                "objective_parsed": True,
+                "compile_time_sec": round(compile_time, 3),
+                "warnings": [],
+                "warning_count": 0,
             },
             "execute_summary": {
                 "status": execute_result.status,

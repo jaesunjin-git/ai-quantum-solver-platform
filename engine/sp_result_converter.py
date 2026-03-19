@@ -153,6 +153,11 @@ def convert_sp_result(
             "sleep_minutes": duty.sleep_minutes,
             "source": duty.source,
             "cost": round(duty.cost, 2),
+            # 프론트엔드 호환 필드
+            "trip_count": len(duty.trips),
+            "start_time_min": duty.start_time,
+            "total_driving_min": duty.driving_minutes,
+            "violations": [],  # SP duty는 Generator에서 검증 완료
         })
 
     # ── 5. interpretation dict ──
