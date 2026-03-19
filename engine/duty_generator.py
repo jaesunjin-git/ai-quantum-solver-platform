@@ -199,8 +199,27 @@ class DutyGenerator:
         all_duties: List[FeasibleDuty] = []
         duty_id = 0
 
-        # 각 trip을 시작점으로 탐색
-        for start_trip in self.trips:
+        # ── 시간대별 beam search (전체 시간대 커버 보장) ──
+        # 전체 trip을 시간대 그룹으로 분할하여 각 그룹별 독립 beam 실행.
+        # 이렇게 하면 오후/저녁 trip도 beam에서 탈락하지 않음.
+        time_groups = self._split_by_time_group(self.trips)
+        logger.info(f"DutyGenerator: {len(time_groups)} time groups for beam search")
+
+        for group_trips in time_groups:
+            group_beam_duties = self._run_beam_for_group(group_trips, duty_id, cfg)
+            all_duties.extend(group_beam_duties)
+            duty_id += len(group_beam_duties)
+
+            if len(all_duties) >= cfg.max_duties_target:
+                break
+
+        # ── (레거시 fallback: 위 그룹 beam에서 놓친 trip용) ──
+        covered_by_beam = set()
+        for d in all_duties:
+            covered_by_beam.update(d.trips)
+        uncovered_trips = [t for t in self.trips if t.id not in covered_by_beam]
+
+        for start_trip in uncovered_trips:
             initial = _BeamState(
                 trips=[start_trip.id],
                 last_arr_time=start_trip.arr_time,
@@ -338,6 +357,76 @@ class DutyGenerator:
 
         return all_duties
 
+    # ── 시간대별 그룹 분할 ─────────────────────────────────
+
+    def _split_by_time_group(self, trips: List[TripInfo], group_minutes: int = 120) -> List[List[TripInfo]]:
+        """trip을 시간대 그룹으로 분할 (각 그룹 독립 beam search)"""
+        if not trips:
+            return []
+
+        sorted_trips = sorted(trips, key=lambda t: t.dep_time)
+        groups: List[List[TripInfo]] = []
+        current_group: List[TripInfo] = [sorted_trips[0]]
+
+        for t in sorted_trips[1:]:
+            if t.dep_time - current_group[0].dep_time > group_minutes:
+                groups.append(current_group)
+                current_group = [t]
+            else:
+                current_group.append(t)
+
+        if current_group:
+            groups.append(current_group)
+
+        return groups
+
+    def _run_beam_for_group(
+        self, group_trips: List[TripInfo], start_duty_id: int, cfg: "GeneratorConfig"
+    ) -> List[FeasibleDuty]:
+        """한 시간대 그룹에서 beam search 실행"""
+        duties: List[FeasibleDuty] = []
+        duty_id = start_duty_id
+
+        for start_trip in group_trips:
+            initial = _BeamState(
+                trips=[start_trip.id],
+                last_arr_time=start_trip.arr_time,
+                last_arr_station=start_trip.arr_station,
+                total_driving=start_trip.duration,
+                first_dep_time=start_trip.dep_time,
+                score=start_trip.duration,
+            )
+
+            duty = self._try_build_duty(initial, duty_id)
+            if duty:
+                duties.append(duty)
+                duty_id += 1
+
+            beam = [initial]
+            for depth in range(cfg.max_trips_per_duty - 1):
+                if not beam:
+                    break
+
+                next_beam: List[_BeamState] = []
+                for state in beam:
+                    candidates = self._find_next_trips(state)
+                    for next_trip in candidates:
+                        new_state = self._extend_state(state, next_trip)
+                        if new_state is None:
+                            continue
+
+                        duty = self._try_build_duty(new_state, duty_id)
+                        if duty:
+                            duties.append(duty)
+                            duty_id += 1
+
+                        next_beam.append(new_state)
+
+                next_beam.sort(key=lambda s: s.score, reverse=True)
+                beam = next_beam[:cfg.beam_width]
+
+        return duties
+
     # ── 다음 trip 탐색 ────────────────────────────────────
 
     def _find_next_trips(self, state: _BeamState) -> List[TripInfo]:
@@ -446,11 +535,12 @@ class DutyGenerator:
         last_arr = state.last_arr_time
         driving = state.total_driving
 
-        # 야간 판정: 저녁 시작 OR 자정 넘김 (#2)
+        # ── duty 타입 판정: reject하지 않고 tagging ──
+        # 주간 시작 제한보다 이른 trip → night candidate로 태깅 (reject 아님)
         cross_midnight = last_arr < first_dep
         is_night = first_dep >= cfg.night_threshold or cross_midnight
 
-        # prep/cleanup
+        # prep/cleanup (임시 - 아래에서 최종 결정)
         if is_night:
             prep = cfg.prep_minutes_night
             cleanup = cfg.cleanup_minutes_night
@@ -463,8 +553,17 @@ class DutyGenerator:
         start_time = first_dep - prep
         end_time = last_arr + cleanup
 
-        # effective span (야간: 새벽 trip은 다음날 → +1440)
-        # 야간 duty에서 last_arr < first_dep이면 자정 넘김
+        # 주간 시작 제한 체크 → 실패하면 night로 재분류 (reject 아님)
+        if not is_night and start_time < cfg.day_duty_start_earliest - prep:
+            # night candidate로 전환
+            is_night = True
+            prep = cfg.prep_minutes_night
+            cleanup = cfg.cleanup_minutes_night
+            sleep = cfg.min_night_sleep_minutes
+            start_time = first_dep - prep
+            end_time = last_arr + cleanup
+
+        # effective span (야간: 자정 넘김)
         if is_night and last_arr < first_dep:
             effective_end = end_time + 1440
         elif is_night and end_time < start_time:
@@ -473,10 +572,6 @@ class DutyGenerator:
             effective_end = end_time
 
         span = effective_end - start_time
-
-        # 주간 duty 시작 제한
-        if not is_night and start_time < cfg.day_duty_start_earliest - prep:
-            return None  # 주간인데 너무 이른 시작
 
         # 근무시간 검증
         work = span - sleep
@@ -636,41 +731,78 @@ class DutyGenerator:
     # ── 야간(숙박조) duty 별도 생성 ─────────────────────
 
     def _generate_overnight_duties(self, all_duties: List[FeasibleDuty], start_id: int) -> int:
-        """저녁 trip + 수면 + 새벽 trip 조합을 명시적으로 생성"""
+        """저녁 multi-trip + 수면 + 새벽 multi-trip 조합을 생성"""
         cfg = self.config
         count = 0
 
-        # 저녁 trip (arr >= night_threshold - 60)
-        evening_trips = [t for t in self.trips if t.arr_time >= cfg.night_threshold - 60]
-        # 새벽 trip (dep < 480)
-        morning_trips = [t for t in self.trips if t.dep_time < 480]
+        # 저녁 beam duty (마지막 trip arr >= night_threshold - 60)
+        evening_beam = [d for d in all_duties if d.source == "beam" and
+                        d.last_trip_arr >= cfg.night_threshold - 60]
+        # 새벽 beam duty (첫 trip dep < 480)
+        morning_beam = [d for d in all_duties if d.source == "beam" and
+                        d.first_trip_dep < 480]
 
-        if not evening_trips or not morning_trips:
+        # fallback: beam duty 없으면 single trip
+        if not evening_beam:
+            evening_beam_trips = [t for t in self.trips if t.arr_time >= cfg.night_threshold - 60]
+            for t in evening_beam_trips:
+                evening_beam.append(FeasibleDuty(
+                    id=-1, trips=[t.id], is_night=False,
+                    first_trip_dep=t.dep_time, last_trip_arr=t.arr_time,
+                    start_time=t.dep_time, end_time=t.arr_time,
+                    driving_minutes=t.duration, span_minutes=t.duration,
+                    work_minutes=t.duration, wait_minutes=0,
+                    break_minutes=0, sleep_minutes=0,
+                ))
+        if not morning_beam:
+            morning_beam_trips = [t for t in self.trips if t.dep_time < 480]
+            for t in morning_beam_trips:
+                morning_beam.append(FeasibleDuty(
+                    id=-1, trips=[t.id], is_night=False,
+                    first_trip_dep=t.dep_time, last_trip_arr=t.arr_time,
+                    start_time=t.dep_time, end_time=t.arr_time,
+                    driving_minutes=t.duration, span_minutes=t.duration,
+                    work_minutes=t.duration, wait_minutes=0,
+                    break_minutes=0, sleep_minutes=0,
+                ))
+
+        if not evening_beam or not morning_beam:
             return 0
 
-        for ev in evening_trips:
-            for mo in morning_trips:
-                # 역 매칭 (같은 역 또는 인접역)
-                ev_base = ev.arr_station.replace('기지', '').strip()
-                mo_base = mo.dep_station.replace('기지', '').strip()
-                if ev_base != mo_base and ev.arr_station != mo.dep_station:
+        # 저녁 duty + 새벽 duty 결합
+        for ev_duty in evening_beam[:30]:  # 상위 30개만 (조합 폭발 방지)
+            for mo_duty in morning_beam[:30]:
+                # 역 매칭
+                ev_last = self._trip_map[ev_duty.trips[-1]]
+                mo_first = self._trip_map[mo_duty.trips[0]]
+                ev_base = ev_last.arr_station.replace('기지', '').strip()
+                mo_base = mo_first.dep_station.replace('기지', '').strip()
+                if ev_base != mo_base and ev_last.arr_station != mo_first.dep_station:
                     continue
 
-                # gap = 다음날 새벽 - 저녁 도착
-                effective_mo_dep = mo.dep_time + 1440
-                night_gap = effective_mo_dep - ev.arr_time
+                # gap 체크 (수면시간)
+                effective_mo_dep = mo_first.dep_time + 1440
+                night_gap = effective_mo_dep - ev_last.arr_time
                 if night_gap < cfg.min_night_sleep_minutes:
                     continue
                 if night_gap > cfg.min_night_sleep_minutes + 180:
                     continue
 
-                # duty 생성: [ev, mo]
+                # trip 수 제한
+                combined_trips = ev_duty.trips + mo_duty.trips
+                if len(combined_trips) > cfg.max_trips_per_duty:
+                    continue
+
+                total_driving = ev_duty.driving_minutes + mo_duty.driving_minutes
+                if total_driving > cfg.max_driving_minutes:
+                    continue
+
                 state = _BeamState(
-                    trips=[ev.id, mo.id],
-                    last_arr_time=mo.arr_time,
-                    last_arr_station=mo.arr_station,
-                    total_driving=ev.duration + mo.duration,
-                    first_dep_time=ev.dep_time,
+                    trips=combined_trips,
+                    last_arr_time=mo_duty.last_trip_arr,
+                    last_arr_station=mo_first.arr_station if mo_duty.trips else "",
+                    total_driving=total_driving,
+                    first_dep_time=ev_duty.first_trip_dep,
                 )
                 duty = self._try_build_duty(state, start_id + count)
                 if duty:
@@ -678,7 +810,7 @@ class DutyGenerator:
                     all_duties.append(duty)
                     count += 1
 
-        logger.info(f"Overnight duties: {count} generated from {len(evening_trips)} evening × {len(morning_trips)} morning trips")
+        logger.info(f"Overnight duties: {count} generated from {len(evening_beam)} evening × {len(morning_beam)} morning beam duties")
         return count
 
     # ── Gap 기반 break 계산 ─────────────────────────────
