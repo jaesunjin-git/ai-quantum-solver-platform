@@ -106,6 +106,9 @@ class GeneratorConfig:
     # 주간 시작 제한
     day_duty_start_earliest: int = 380   # 06:20
 
+    # 숙박조 새벽 종료 제한
+    overnight_morning_end: int = 480     # 08:00 — 숙박조 새벽 운행 최대 시각
+
     # 연결 규칙
     max_gap_minutes: int = 60            # trip 간 최대 gap
     max_trips_per_duty: int = 10         # 320 trips / 45 duties ≈ 7.1 → 10으로 여유
@@ -676,17 +679,29 @@ class DutyGenerator:
 
         # duty type 정합성 검증: trip이 duty type에 허용되는지
         if not is_night:
-            # 주간 duty → 새벽/야간 trip 포함 불가
+            # 주간 duty → 새벽 trip 포함 불가
             for tid in state.trips:
                 if not self._is_trip_allowed_for_day(tid, cfg):
-                    return None  # day duty에 새벽 trip → reject
+                    return None
         else:
             # 야간 duty → 수면 구간 없이 새벽만 있으면 → reject (overnight만 허용)
             has_evening = any(self._trip_map[tid].dep_time >= cfg.night_threshold for tid in state.trips)
             has_morning = any(self._trip_map[tid].dep_time < cfg.day_duty_start_earliest for tid in state.trips)
             if has_morning and not has_evening:
-                # 새벽 trip만 있고 저녁 trip 없음 → 수면 구간 없는 야간 duty → reject
                 return None
+
+            # overnight duty → 새벽 chain 종료 제한
+            # 숙박조는 overnight_morning_end(08:00) 이후까지 운행 불가
+            if is_overnight:
+                # 저녁 trip 이후의 모든 trip(= 새벽 chain) 중 가장 늦은 도착
+                morning_chain_arrs = [
+                    self._trip_map[tid].arr_time for tid in state.trips
+                    if self._trip_map[tid].dep_time < cfg.night_threshold
+                ]
+                if morning_chain_arrs:
+                    latest_arr = max(morning_chain_arrs)
+                    if latest_arr > cfg.overnight_morning_end:
+                        return None  # 새벽 chain이 너무 길어 주간까지 운행
 
         # effective span (야간: 자정 넘김)
         if is_night and last_arr < first_dep:
