@@ -157,6 +157,7 @@ class AmbiguityDetector:
         phase1_summary: Optional[dict] = None,
         constraints: Optional[dict] = None,
         answered_ids: Optional[set] = None,
+        objective_id: str = "",
     ) -> list[ClarificationQuestion]:
         """
         모든 규칙을 평가하여 질문 목록 반환.
@@ -177,6 +178,7 @@ class AmbiguityDetector:
 
         answered = answered_ids or set()
         context = self._build_context(parameters, phase1_data, data_facts, phase1_summary)
+        context["objective_id"] = objective_id or ""
         questions: list[ClarificationQuestion] = []
         suppressed_rules: set[str] = set()
 

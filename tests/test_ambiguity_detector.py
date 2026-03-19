@@ -112,15 +112,27 @@ class TestDetectCrewCountMissing:
     def setup_method(self):
         self.detector = AmbiguityDetector("railway")
 
-    def test_missing_crew_count_triggers(self):
+    def test_missing_crew_count_triggers_for_balance(self):
+        """balance_workload 목적함수에서만 crew count 질문 발생"""
         params = {
             "day_crew_count": {"source": None},
             "night_crew_count": {"source": None},
         }
         phase1 = {"min_time": 420.0}
-        questions = self.detector.detect(params, phase1)
+        questions = self.detector.detect(params, phase1, objective_id="balance_workload")
         crew_qs = [q for q in questions if q.rule_id == "crew_count_missing"]
         assert len(crew_qs) > 0
+
+    def test_missing_crew_count_skipped_for_minimize(self):
+        """minimize_duties 목적함수에서는 crew count 질문 안 함"""
+        params = {
+            "day_crew_count": {"source": None},
+            "night_crew_count": {"source": None},
+        }
+        phase1 = {"min_time": 420.0}
+        questions = self.detector.detect(params, phase1, objective_id="minimize_duties")
+        crew_qs = [q for q in questions if q.rule_id == "crew_count_missing"]
+        assert len(crew_qs) == 0
 
     def test_crew_count_present_no_trigger(self):
         params = {

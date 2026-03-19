@@ -2445,6 +2445,12 @@ Soft 제약조건:
         phase1_data = self._load_phase1_data(project_id)
         answered = set((state.clarification_answers or {}).keys())
 
+        # 목적함수 정보 전달 (목적함수별 질문 정책 적용)
+        objective_id = ""
+        if state.problem_definition:
+            obj = state.problem_definition.get("objective", {})
+            objective_id = obj.get("id", obj.get("name", ""))
+
         questions = detector.detect(
             parameters=parameters,
             phase1_data=phase1_data,
@@ -2452,6 +2458,7 @@ Soft 제약조건:
             phase1_summary=state.phase1_summary,
             constraints=constraints,
             answered_ids=answered,
+            objective_id=objective_id,
         )
 
         if not questions:

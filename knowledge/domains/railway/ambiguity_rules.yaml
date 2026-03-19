@@ -56,12 +56,14 @@ rules:
             sleep_counts_as_work: {value: true, source: "user_clarification"}
 
   # ── 필수 파라미터 누락: 승무원 수 ──
+  # minimize_duties / maximize_efficiency → solver가 결정하므로 질문 불필요
+  # balance_workload → 고정 인원 필요하므로 질문 필수
   crew_count_missing:
     description: "주간/야간 승무원 수가 데이터에 없어 사용자 확인 필요"
     importance: critical
     trigger:
-      condition: "params.get('day_crew_count', {}).get('source') is None and params.get('night_crew_count', {}).get('source') is None"
-      description: "주간/야간 승무원 수 미제공"
+      condition: "params.get('day_crew_count', {}).get('source') is None and params.get('night_crew_count', {}).get('source') is None and objective_id in ('balance_workload',)"
+      description: "주간/야간 승무원 수 미제공 (고정 인원 목적함수)"
     questions:
       - id: crew_counts
         text: "주간/야간 승무원 수가 데이터에서 확인되지 않았습니다. 지정해주세요."
@@ -146,13 +148,14 @@ rules:
             param: night_duty_start_earliest
 
   # ── 총 사업 수(DIA) 누락 ──
-  # 승무원 수가 확정된 경우 total_duties = day_crew_count + night_crew_count로 자동 결정 (1crew=1DIA)
+  # minimize_duties → solver가 결정 (질문 불필요)
+  # balance_workload → 고정 필요 (질문 필수)
   total_duties_missing:
     description: "총 사업 수가 데이터에서 확인되지 않음"
     importance: high
     trigger:
-      condition: "params.get('total_duties', {}).get('source') is None and phase1.get('trip_count', 0) > 0 and params.get('day_crew_count', {}).get('value') is None"
-      description: "총 사업 수 미제공 (승무원 수도 미확정)"
+      condition: "params.get('total_duties', {}).get('source') is None and phase1.get('trip_count', 0) > 0 and params.get('day_crew_count', {}).get('value') is None and objective_id in ('balance_workload',)"
+      description: "총 사업 수 미제공 (고정 인원 목적함수)"
     questions:
       - id: total_duties
         text: "총 사업(DIA) 수가 데이터에서 확인되지 않았습니다. 총 {trip_count}개의 운행이 감지되었는데, 사업(DIA) 수를 지정해주시겠습니까? (미지정 시 최적화가 결정합니다)"
