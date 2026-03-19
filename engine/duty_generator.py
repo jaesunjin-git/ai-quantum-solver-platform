@@ -112,7 +112,7 @@ class GeneratorConfig:
 
     # Beam Search
     beam_width: int = 50
-    max_duties_target: int = 20000
+    max_duties_target: int = 100000  # 충분히 크게 (dominance가 중복 제거)
 
     @classmethod
     def from_params(cls, params: Dict) -> GeneratorConfig:
@@ -209,9 +209,6 @@ class DutyGenerator:
             group_beam_duties = self._run_beam_for_group(group_trips, duty_id, cfg)
             all_duties.extend(group_beam_duties)
             duty_id += len(group_beam_duties)
-
-            if len(all_duties) >= cfg.max_duties_target:
-                break
 
         # ── (레거시 fallback: 위 그룹 beam에서 놓친 trip용) ──
         covered_by_beam = set()
