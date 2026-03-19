@@ -85,14 +85,10 @@ class PresolveProber(BaseValidator):
         bound_data = context.get("bound_data", {})
         gate3_result = context.get("gate3_result", {})
 
-        # SP 모델에서는 presolve 불필요 (시간 제약 없음)
+        # SP 모델 전용 검증
         compile_summary = context.get("compile_summary", {})
         if compile_summary.get("model_type") == "SetPartitioning":
-            result.add_info(
-                code="PRESOLVE_SKIPPED_SP",
-                message="Set Partitioning 모델 — presolve 불필요 (시간 제약은 Generator에서 검증됨)",
-            )
-            return result
+            return self._validate_sp(result, context)
 
         # bound_data가 없으면 presolve 실행 불가
         if not bound_data or not bound_data.get("sets"):
@@ -658,6 +654,109 @@ class PresolveProber(BaseValidator):
                 message=msg,
                 context=ctx,
             )
+
+    # ── SP 전용 검증 ──────────────────────────────────────
+
+    def _validate_sp(self, result: ValidationResult, context: dict) -> ValidationResult:
+        """
+        Set Partitioning 모델 전용 presolve 검증.
+
+        SP에서 의미 있는 검증:
+          1. Coverage 완전성: 모든 trip이 최소 1개 duty에 포함
+          2. Coverage 밀도: 1개 duty에만 포함된 trip → 취약
+          3. Crew count 달성 가능성: 총 duty 수 vs 목표
+          4. Generator 품질: avg trips/duty, source 분포
+        """
+        compile_result = context.get("_compile_result")
+        if compile_result is None:
+            result.add_info(
+                code="SP_PRESOLVE_INFO",
+                message="Set Partitioning 모델 — Generator에서 시간 제약 검증 완료",
+            )
+            return result
+
+        metadata = compile_result.metadata if hasattr(compile_result, "metadata") else {}
+        duty_map = metadata.get("duty_map", {})
+        trip_count = metadata.get("trip_count", 0)
+
+        if not duty_map:
+            result.add_info(
+                code="SP_PRESOLVE_INFO",
+                message="Set Partitioning 모델 — duty_map 미제공, 상세 검증 생략",
+            )
+            return result
+
+        duties = list(duty_map.values())
+
+        # ── 1. Coverage 완전성 ──
+        trip_to_duties: dict = {}
+        for d in duties:
+            for tid in d.trips:
+                trip_to_duties.setdefault(tid, []).append(d.id)
+
+        uncovered = trip_count - len(trip_to_duties) if trip_count > 0 else 0
+        if uncovered > 0:
+            result.add_error(
+                code="SP_COVERAGE_INCOMPLETE",
+                message=f"{uncovered}개 trip이 어떤 duty에도 포함되지 않아 INFEASIBLE 예상",
+                context={"uncovered_count": uncovered, "total_trips": trip_count},
+            )
+
+        # ── 2. Coverage 밀도 ──
+        single_coverage = [tid for tid, dids in trip_to_duties.items() if len(dids) == 1]
+        if single_coverage:
+            pct = len(single_coverage) / max(len(trip_to_duties), 1) * 100
+            if pct > 50:
+                result.add_warning(
+                    code="SP_LOW_COVERAGE_DENSITY",
+                    message=(
+                        f"{len(single_coverage)}개 trip({pct:.0f}%)이 1개 duty에만 포함 — "
+                        f"solver 선택지가 부족하여 품질 저하 가능"
+                    ),
+                    context={"single_coverage_count": len(single_coverage), "pct": round(pct, 1)},
+                )
+            else:
+                result.add_info(
+                    code="SP_COVERAGE_DENSITY_OK",
+                    message=f"Coverage 밀도: {len(single_coverage)}개 trip이 1개 duty에만 포함 ({pct:.0f}%)",
+                    context={"single_coverage_count": len(single_coverage)},
+                )
+
+        # ── 3. Crew count 달성 가능성 ──
+        params = context.get("bound_data", {}).get("parameters", {}) if context.get("bound_data") else {}
+        target_total = params.get("total_duties")
+        if target_total is not None:
+            total_int = int(target_total)
+            if len(duties) < total_int:
+                result.add_error(
+                    code="SP_INSUFFICIENT_DUTIES",
+                    message=f"생성된 duty({len(duties)})가 목표({total_int})보다 적음 — INFEASIBLE 예상",
+                )
+
+        # ── 4. Generator 품질 지표 ──
+        avg_trips = sum(len(d.trips) for d in duties) / max(len(duties), 1)
+        from collections import Counter
+        source_dist = Counter(getattr(d, "source", "unknown") for d in duties)
+
+        quality_msg = (
+            f"SP Generator: {len(duties)} duties, avg {avg_trips:.1f} trips/duty, "
+            f"source: {dict(source_dist)}"
+        )
+
+        if avg_trips < 3:
+            result.add_warning(
+                code="SP_LOW_DUTY_QUALITY",
+                message=f"Duty 평균 trip 수 {avg_trips:.1f} — 너무 짧은 duty가 많아 crew 수 증가 예상",
+                context={"avg_trips": round(avg_trips, 1), "source": dict(source_dist)},
+            )
+        else:
+            result.add_info(
+                code="SP_GENERATOR_QUALITY",
+                message=quality_msg,
+                context={"avg_trips": round(avg_trips, 1), "source": dict(source_dist)},
+            )
+
+        return result
 
     def _log_result(self, presolve: PresolveResult) -> None:
         """Observability 구조화 로깅 (replay 지원)"""

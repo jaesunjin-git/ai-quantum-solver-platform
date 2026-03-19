@@ -231,6 +231,7 @@ class SolverPipeline:
                 # PresolveProber 전용 context
                 "bound_data": bound_data,
                 "gate3_result": getattr(self, "_gate3_result", {}),
+                "_compile_result": compile_result,
             }
             stage5_result = registry.run_stage(5, stage5_ctx)
             if stage5_result.items:
