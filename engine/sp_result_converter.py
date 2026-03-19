@@ -140,12 +140,42 @@ def convert_sp_result(
     # ── 4. duties 상세 (interpretation용) ──
     duties_detail = []
     for crew_idx, duty in enumerate(selected_duties, 1):
+        # duty별 trip 상세 정보 구축
+        duty_trips_detail = []
+        for tid in duty.trips:
+            trip = trip_map.get(tid)
+            if trip:
+                duty_trips_detail.append({
+                    "trip_id": tid,
+                    "dep_hhmm": f"{trip.dep_time // 60:02d}:{trip.dep_time % 60:02d}",
+                    "arr_hhmm": f"{trip.arr_time // 60:02d}:{trip.arr_time % 60:02d}",
+                    "dep_station": trip.dep_station,
+                    "arr_station": trip.arr_station,
+                    "duration": trip.duration,
+                    "direction": trip.direction,
+                })
+
+        ds_hh = f"{duty.start_time // 60:02d}:{duty.start_time % 60:02d}"
+        de_hh = f"{duty.end_time // 60:02d}:{duty.end_time % 60:02d}"
+
         duties_detail.append({
             "duty_id": crew_idx,
+            "crew_id": crew_idx,
             "is_night": duty.is_night,
             "start_time": duty.start_time,
             "end_time": duty.end_time,
-            "trips": duty.trips,
+            # 프론트엔드 필수 필드
+            "start_hhmm": ds_hh,
+            "end_hhmm": de_hh,
+            "trip_count": len(duty.trips),
+            "total_driving_min": duty.driving_minutes,
+            "idle_min": duty.wait_minutes,
+            "total_stay_min": duty.span_minutes,
+            "total_work_min": duty.work_minutes,
+            "start_time_min": duty.start_time,
+            # trip 상세 (프론트엔드 확장 패널)
+            "trips": duty_trips_detail,
+            # 기타
             "driving_minutes": duty.driving_minutes,
             "wait_minutes": duty.wait_minutes,
             "span_minutes": duty.span_minutes,
@@ -153,11 +183,7 @@ def convert_sp_result(
             "sleep_minutes": duty.sleep_minutes,
             "source": duty.source,
             "cost": round(duty.cost, 2),
-            # 프론트엔드 호환 필드
-            "trip_count": len(duty.trips),
-            "start_time_min": duty.start_time,
-            "total_driving_min": duty.driving_minutes,
-            "violations": [],  # SP duty는 Generator에서 검증 완료
+            "violations": [],
         })
 
     # ── 5. constraint status (Generator 검증 결과 기반) ──
