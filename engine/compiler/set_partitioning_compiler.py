@@ -78,7 +78,7 @@ class SetPartitioningCompiler(BaseCompiler):
             if not duty_ids:
                 logger.error(f"SP: trip {tid} has no covering duty!")
                 continue
-            model.add(sum(z[did] for did in duty_ids) >= 1)
+            model.add(sum(z[did] for did in duty_ids) == 1)
             coverage_count += 1
 
         # ── 4. 선택적 제약: crew 수 고정 ──
