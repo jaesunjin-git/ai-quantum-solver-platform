@@ -36,6 +36,9 @@ from engine.validation.generic.presolve import (
 from engine.validation.generic.infeasible import (
     InfeasibilityDiagnosisValidator,
 )
+from engine.validation.generic.presolve_prober import (
+    PresolveProber,
+)
 from engine.validation.generic.normalization import (
     MappingConfidenceValidator,
     TransformIntegrityValidator,
@@ -65,6 +68,8 @@ __all__ = [
     "ConstraintSatisfactionValidator",
     "CompileQualityValidator",
     "InfeasibilityDiagnosisValidator",
+    # Stage 5: Presolve Feasibility Probing
+    "PresolveProber",
 ]
 
 
@@ -87,6 +92,7 @@ def register_all(registry) -> None:
         ModelDimensionValidator(),
         ConstraintApplyRatioValidator(),
         CompileWarningAnalyzer(),
+        PresolveProber(),
         # Stage 6: Post-Solve
         SolutionStatusValidator(),
         OptimalityGapValidator(),

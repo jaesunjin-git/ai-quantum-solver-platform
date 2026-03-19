@@ -72,10 +72,26 @@ def parse_and_apply_expression(model_or_solver, expr_str, for_each_str, ctx, var
         logger.warning(f'No comparison operator in: {expr_str}')
         return 0
 
+    # ── big-M → OnlyEnforceIf 변환 감지 ──
+    # 패턴: A <= B + big_m * (1 - x[i,j])  → Add(A <= B).OnlyEnforceIf(x[i,j])
+    # 패턴: A >= B - big_m * (1 - x[i,j])  → Add(A >= B).OnlyEnforceIf(x[i,j])
+    bigm_indicator = _detect_bigm_pattern(lhs_str, rhs_str, op)
+    if bigm_indicator:
+        logger.debug(f"big-M pattern detected: indicator={bigm_indicator['indicator_var_str']}")
+
     bindings = _parse_for_each(for_each_str, ctx)
     count = 0
     for binding in bindings:
         try:
+            if bigm_indicator:
+                # big-M 패턴 → OnlyEnforceIf 방식으로 적용
+                _applied = _apply_bigm_as_indicator(
+                    model_or_solver, bigm_indicator, op, binding, ctx, var_map
+                )
+                if _applied:
+                    count += 1
+                    continue
+
             lhs_val = _eval_expr(lhs_str, binding, ctx, var_map, model_or_solver)
             rhs_val = _eval_expr(rhs_str, binding, ctx, var_map, model_or_solver)
             if op == '<=':
@@ -88,6 +104,80 @@ def parse_and_apply_expression(model_or_solver, expr_str, for_each_str, ctx, var
         except Exception as e:
             logger.debug(f'Expression apply failed for binding {binding}: {e}')
     return count
+
+
+# ── big-M 패턴 감지 ────────────────────────────────────────
+
+# big_m * (1 - x[...]) 또는 big_m * (1 - x_var) 패턴
+_BIGM_PATTERN_PLUS = re.compile(
+    r'(.+?)\s*\+\s*big_m\s*\*\s*\(1\s*-\s*(\w+\[[^\]]+\])\)\s*$'
+)
+_BIGM_PATTERN_MINUS = re.compile(
+    r'(.+?)\s*-\s*big_m\s*\*\s*\(1\s*-\s*(\w+\[[^\]]+\])\)\s*$'
+)
+
+
+def _detect_bigm_pattern(lhs_str, rhs_str, op):
+    """
+    big-M 패턴을 감지하여 indicator 정보를 반환.
+
+    지원 패턴:
+      A <= B + big_m * (1 - x[i,j])  → indicator = x[i,j], core: A <= B
+      A >= B - big_m * (1 - x[i,j])  → indicator = x[i,j], core: A >= B
+
+    Returns:
+      dict with {lhs_core, rhs_core, indicator_var_str, indicator_positive}
+      or None if not a big-M pattern.
+    """
+    if op == '<=':
+        m = _BIGM_PATTERN_PLUS.match(rhs_str)
+        if m:
+            return {
+                'lhs_core': lhs_str,
+                'rhs_core': m.group(1).strip(),
+                'indicator_var_str': m.group(2).strip(),
+                'indicator_positive': True,
+            }
+    elif op == '>=':
+        m = _BIGM_PATTERN_MINUS.match(rhs_str)
+        if m:
+            return {
+                'lhs_core': lhs_str,
+                'rhs_core': m.group(1).strip(),
+                'indicator_var_str': m.group(2).strip(),
+                'indicator_positive': True,
+            }
+    return None
+
+
+def _apply_bigm_as_indicator(model, bigm_info, op, binding, ctx, var_map):
+    """
+    big-M 패턴을 OnlyEnforceIf로 변환하여 적용.
+
+    CP-SAT에서 big-M 대신 indicator constraint를 사용하면:
+      - presolve가 global bound를 생성하지 않음
+      - 수치 안정성 향상
+      - propagation 강화
+    """
+    try:
+        lhs_val = _eval_expr(bigm_info['lhs_core'], binding, ctx, var_map, model)
+        rhs_val = _eval_expr(bigm_info['rhs_core'], binding, ctx, var_map, model)
+
+        # indicator 변수 resolve
+        indicator_str = bigm_info['indicator_var_str']
+        indicator_var = _eval_expr(indicator_str, binding, ctx, var_map, model)
+
+        # CP-SAT OnlyEnforceIf 적용
+        if op == '<=':
+            model.Add(lhs_val <= rhs_val).OnlyEnforceIf(indicator_var)
+        elif op == '>=':
+            model.Add(lhs_val >= rhs_val).OnlyEnforceIf(indicator_var)
+
+        return True
+
+    except Exception as e:
+        logger.warning(f'big-M indicator apply FAILED (fallback to big-M): {e}')
+        return False
 
 
 def _parse_for_each(for_each_str, ctx):

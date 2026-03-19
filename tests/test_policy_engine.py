@@ -234,7 +234,8 @@ class TestCanonicalFields:
         assert "trip_arr_abs_minute" in bound["derived_fields"]
         assert len(result.fields_created) > 0
 
-    def test_cyclic_unwrap_values(self):
+    def test_identity_derivation_values(self):
+        """identity derivation: 값 변환 없이 그대로 복사 (주/야간 혼합 모델)"""
         engine = PolicyEngine("railway")
         ctx = PolicyResolutionContext(
             domain="railway",
@@ -246,11 +247,9 @@ class TestCanonicalFields:
         engine.generate_canonical_fields(bound, resolved)
 
         abs_dep = bound["derived_fields"]["trip_dep_abs_minute"]
-        # 316 < 1020 → 316 + 1440 = 1756
-        assert abs_dep[3001] == 1756
-        # 500 < 1020 → 500 + 1440 = 1940
-        assert abs_dep[3100] == 1940
-        # 1100 >= 1020 → unchanged
+        # identity: 변환 없음 — 자정 넘김은 정규화(_fix_midnight_wrap)에서 처리됨
+        assert abs_dep[3001] == 316
+        assert abs_dep[3100] == 500
         assert abs_dep[3200] == 1100
 
     def test_raw_preserved(self):
@@ -310,6 +309,7 @@ class TestCanonicalFields:
         assert adj["duty_end"]["upper_bound"] == 2880
 
     def test_provenance_audit(self):
+        """identity derivation에서는 shift provenance가 없음"""
         engine = PolicyEngine("railway")
         ctx = PolicyResolutionContext(
             domain="railway",
@@ -320,13 +320,11 @@ class TestCanonicalFields:
 
         result = engine.generate_canonical_fields(bound, resolved)
 
-        shifted_provenance = [p for p in result.provenance if p["reason"] == "shift_if_before_anchor"]
-        assert len(shifted_provenance) > 0
-        p = shifted_provenance[0]
-        assert p["field"] == "trip_dep_abs_minute"
-        assert p["raw"] == 316
-        assert p["canonical"] == 1756
-        assert p["policy"] == "time_axis"
+        # identity derivation: shift 없으므로 provenance에 shift_if_before_anchor 없음
+        shifted_provenance = [p for p in result.provenance if p.get("reason") == "shift_if_before_anchor"]
+        assert len(shifted_provenance) == 0
+        # fields_created에 identity가 있어야 함
+        assert any(f.field_id == "trip_dep_abs_minute" for f in result.fields_created)
 
 
 # ═══════════════════════════════════════════
@@ -334,7 +332,8 @@ class TestCanonicalFields:
 # ═══════════════════════════════════════════
 
 class TestInverseDisplay:
-    def test_inverse_shifted_value(self):
+    def test_inverse_identity_value(self):
+        """identity derivation: inverse는 값 그대로 반환"""
         engine = PolicyEngine("railway")
         ctx = PolicyResolutionContext(
             domain="railway",
@@ -342,11 +341,9 @@ class TestInverseDisplay:
         )
         resolved = engine.resolve(ctx)
 
-        val, annotation = engine.inverse_display("trip_dep_abs_minute", 1756, resolved)
+        # identity: 316은 그대로 316 (cyclic_unwrap이 아니므로 역변환 없음)
+        val, annotation = engine.inverse_display("trip_dep_abs_minute", 316, resolved)
         assert val == 316
-        assert annotation is not None
-        assert "익일" in annotation
-        assert "05:16" in annotation
 
     def test_inverse_non_shifted_value(self):
         engine = PolicyEngine("railway")
@@ -438,11 +435,11 @@ class TestIntervalNormalization:
         crosses = bound["derived_fields"].get("crosses_midnight", {})
         assert crosses.get(1) is True
 
-        # trip_arr_abs_minute: 30 < 1020 → 30 + 1440 = 1470
+        # identity: trip_arr_abs_minute = trip_arr_time 그대로
         arr_abs = bound["derived_fields"]["trip_arr_abs_minute"]
-        assert arr_abs[1] == 1470
+        assert arr_abs[1] == 30  # identity: 변환 없음
 
-        # trip_dep_abs_minute: 1430 >= 1020 → unchanged
+        # identity: trip_dep_abs_minute = trip_dep_time 그대로
         dep_abs = bound["derived_fields"]["trip_dep_abs_minute"]
         assert dep_abs[1] == 1430
 

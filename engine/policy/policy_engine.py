@@ -248,7 +248,13 @@ class PolicyEngine:
             temporal_type = spec.get("temporal_type", "service_day_minute")
             indexed = spec.get("indexed_by") is not None
 
-            if derivation == "cyclic_unwrap" and indexed and isinstance(source, str):
+            if derivation == "identity" and indexed and isinstance(source, str):
+                # identity: source 데이터를 변환 없이 그대로 복사
+                self._derive_identity(
+                    field_id, source, params, bound_data, result, spec
+                )
+
+            elif derivation == "cyclic_unwrap" and indexed and isinstance(source, str):
                 self._derive_cyclic_unwrap(
                     field_id, source, ta, params, bound_data, result, spec
                 )
@@ -307,6 +313,43 @@ class PolicyEngine:
             params[fid] = fvals
 
         return result
+
+    def _derive_identity(
+        self, field_id: str, source: str,
+        params: dict, bound_data: dict, result: CanonicalFieldResult, spec: dict,
+    ):
+        """Identity derivation: source 데이터를 변환 없이 그대로 복사.
+
+        주/야간 혼합 모델에서 cyclic_unwrap 대신 사용.
+        자정 넘김은 정규화 단계(_fix_midnight_wrap)에서 이미 처리됨.
+        """
+        source_data = params.get(source, {})
+        if not isinstance(source_data, dict):
+            return
+
+        # raw 보존
+        if source not in bound_data["_raw_fields"]:
+            bound_data["_raw_fields"][source] = copy.copy(source_data)
+
+        # 그대로 복사
+        canonical = {}
+        for key, raw_val in source_data.items():
+            try:
+                v = float(raw_val)
+                canonical[key] = int(v) if v == int(v) else v
+            except (ValueError, TypeError):
+                canonical[key] = raw_val
+
+        bound_data["derived_fields"][field_id] = canonical
+        # parameters에도 동기화 (컴파일러가 참조)
+        params[field_id] = canonical
+
+        total = len(canonical) // 2
+        result.fields_created.append(DerivedFieldEntry(
+            field_id=field_id, count=total, shifted_count=0,
+            policy_ref=spec.get("policy_ref", ""), temporal_type=spec.get("temporal_type", ""),
+        ))
+        logger.info(f"Policy: {field_id} created via identity ({total} values, no transformation)")
 
     def _derive_cyclic_unwrap(
         self, field_id: str, source: str, ta: TimeAxisPolicy,

@@ -126,6 +126,15 @@ class ORToolsCompiler(BaseCompiler):
             logger.info(f"DEBUG set '{s.get('id')}': source_type={s.get('source_type','N/A')}, size={s.get('size','N/A')}, source_file={s.get('source_file','N/A')}, source_column={s.get('source_column','N/A')}")
         logger.info(f"CP-SAT: created {total_vars} variables")
 
+        # ── 1b. Duty Event 변수 (비활성화) ──
+        # Set Partitioning 전환으로 event 변수는 SP 경로에서 불필요.
+        # 기존 I×J 경로에서는 CP-SAT presolve와 충돌하여 비활성화.
+        # 향후 D-Wave 등 다른 solver에서 필요 시 재활성화.
+        # event_constraint_count = self._build_duty_event_variables(
+        #     model, var_map, math_model, bound_data, warnings
+        # )
+        # total_vars += event_constraint_count.get("vars_added", 0)
+
         # 2. 제약조건 - struct_builder 사용 (3단계 fallback)
         param_map = bound_data.get("parameters", {})
         set_map = bound_data.get("sets", {})
@@ -296,6 +305,86 @@ class ORToolsCompiler(BaseCompiler):
                 "constraint_info": constraint_info,
             },
         )
+
+    # ── Window Containment: trip이 duty window 안에 포함 ──
+    def _build_duty_event_variables(
+        self, model, var_map, math_model, bound_data, warnings
+    ) -> Dict:
+        """
+        Window Containment 모델: min/max를 모델링하지 않는다.
+
+        구조:
+          trip_dep[i] >= duty_start[j]  OnlyEnforceIf(x[i,j])
+          trip_arr[i] <= duty_end[j]    OnlyEnforceIf(x[i,j])
+
+        minimize(span) → duty_start 최대화, duty_end 최소화 → 자연 수렴
+
+        왜 이 구조가 올바른가:
+          - min/max 없음 → aggregation 변수 불필요
+          - I×J 제약이지만 "window 포함"이므로 presolve-safe
+          - prep/cleanup은 reporting layer에서 처리 (solver 밖)
+        """
+        set_map = bound_data.get("sets", {})
+        param_map = bound_data.get("parameters", {})
+
+        j_set = set_map.get("J", [])
+        i_set = set_map.get("I", [])
+        if not j_set or not i_set:
+            return {"vars_added": 0, "constraints_added": 0}
+
+        trip_dep = param_map.get("trip_dep_abs_minute", param_map.get("trip_dep_time", {}))
+        trip_arr = param_map.get("trip_arr_abs_minute", param_map.get("trip_arr_time", {}))
+        if not isinstance(trip_dep, dict) or not trip_dep:
+            logger.info("Window containment: trip timing data not available, skipping")
+            return {"vars_added": 0, "constraints_added": 0}
+
+        x_map = var_map.get("x", {})
+        if not x_map:
+            return {"vars_added": 0, "constraints_added": 0}
+
+        duty_start_map = var_map.get("duty_start", {})
+        duty_end_map = var_map.get("duty_end", {})
+
+        constraints_added = 0
+
+        # ── Window Containment: 할당된 trip은 duty window 안에 ──
+        for j in j_set:
+            j_key = (str(j),)
+            ds = duty_start_map.get(j_key)
+            de = duty_end_map.get(j_key)
+            if ds is None or de is None:
+                continue
+
+            for i in i_set:
+                x_key = (str(i), str(j))
+                x_var = x_map.get(x_key)
+                if x_var is None:
+                    continue
+
+                dep_val = trip_dep.get(str(i), trip_dep.get(i))
+                arr_val = trip_arr.get(str(i), trip_arr.get(i))
+                if dep_val is None or arr_val is None:
+                    continue
+
+                dep_int = int(dep_val)
+                arr_int = int(arr_val)
+
+                # trip 출발 >= duty 시작 (trip이 duty window 안에)
+                model.add(dep_int >= ds).only_enforce_if(x_var)
+                # trip 도착 <= duty 종료 (trip이 duty window 안에)
+                model.add(arr_int <= de).only_enforce_if(x_var)
+                constraints_added += 2
+
+        # prep/cleanup은 solver가 아닌 reporting layer에서 처리
+        # actual_start = duty_start - prep, actual_end = duty_end + cleanup
+        self._event_prep_cleanup_handled = True
+
+        logger.info(
+            f"Window containment: {constraints_added} constraints "
+            f"(trip ∈ duty window for {len(j_set)} duties × {len(i_set)} trips)"
+        )
+
+        return {"vars_added": 0, "constraints_added": constraints_added}
 
     # ★ NEW: soft constraint 처리 메서드
     def _apply_soft_constraint_cpsat(self, model, con_def, ctx, var_map, soft_weights):

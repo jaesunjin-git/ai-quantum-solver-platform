@@ -94,34 +94,45 @@ class SolverPipeline:
 
         #  Phase 2: Compile
         try:
-            # Apply policy-driven variable bounds + big_m (on deepcopy to avoid mutation)
-            import copy
-            _math_model_compiled = copy.deepcopy(math_model)
-            _policy_adj = bound_data.get("_policy_adjustments", {})
-            if _policy_adj:
-                _var_adj = _policy_adj.get("variable_bounds", {})
-                for _var in _math_model_compiled.get("variables", []):
-                    _vid = _var.get("id", "")
-                    if _vid in _var_adj:
-                        for _field, _val in _var_adj[_vid].items():
-                            _old = _var.get(_field)
-                            _var[_field] = _val
-                            logger.info(f"Policy: {_vid}.{_field} = {_old} → {_val}")
-                _new_big_m = _policy_adj.get("big_m")
-                if _new_big_m:
-                    for _p in _math_model_compiled.get("parameters", []):
-                        if _p.get("id") == "big_m":
-                            _p["default_value"] = _new_big_m
-                            _p["value"] = _new_big_m
-                    bound_data["parameters"]["big_m"] = _new_big_m
-                    logger.info(f"Policy: big_m = {_new_big_m}")
+            # ── Set Partitioning 경로 (classical solver) ──
+            # crew scheduling 등 assignment 문제는 SP가 구조적으로 올바름.
+            # DutyGenerator가 시간 검증 전부 수행 → solver는 coverage만 결정.
+            _use_sp = solver_id in ("classical_cpu", "nvidia_cuopt")
 
-            compiler = get_compiler(solver_id)
-            logger.info(f"Compiler: {type(compiler).__name__}")
+            if _use_sp:
+                compile_start = time.time()
+                compile_result, compile_time = self._compile_set_partitioning(
+                    math_model, bound_data, project_id, solver_id, **kwargs
+                )
+            else:
+                # ── 기존 경로 (D-Wave 등) ──
+                import copy
+                _math_model_compiled = copy.deepcopy(math_model)
+                _policy_adj = bound_data.get("_policy_adjustments", {})
+                if _policy_adj:
+                    _var_adj = _policy_adj.get("variable_bounds", {})
+                    for _var in _math_model_compiled.get("variables", []):
+                        _vid = _var.get("id", "")
+                        if _vid in _var_adj:
+                            for _field, _val in _var_adj[_vid].items():
+                                _old = _var.get(_field)
+                                _var[_field] = _val
+                                logger.info(f"Policy: {_vid}.{_field} = {_old} → {_val}")
+                    _new_big_m = _policy_adj.get("big_m")
+                    if _new_big_m:
+                        for _p in _math_model_compiled.get("parameters", []):
+                            if _p.get("id") == "big_m":
+                                _p["default_value"] = _new_big_m
+                                _p["value"] = _new_big_m
+                        bound_data["parameters"]["big_m"] = _new_big_m
+                        logger.info(f"Policy: big_m = {_new_big_m}")
 
-            compile_start = time.time()
-            compile_result = compiler.compile(_math_model_compiled, bound_data, project_id=project_id, **kwargs)
-            compile_time = time.time() - compile_start
+                compiler = get_compiler(solver_id)
+                logger.info(f"Compiler: {type(compiler).__name__}")
+
+                compile_start = time.time()
+                compile_result = compiler.compile(_math_model_compiled, bound_data, project_id=project_id, **kwargs)
+                compile_time = time.time() - compile_start
 
             if not compile_result.success:
                 return PipelineResult(
@@ -216,6 +227,9 @@ class SolverPipeline:
                 },
                 "math_model": math_model,
                 "warnings": compile_result.warnings or [],
+                # PresolveProber 전용 context
+                "bound_data": bound_data,
+                "gate3_result": getattr(self, "_gate3_result", {}),
             }
             stage5_result = registry.run_stage(5, stage5_ctx)
             if stage5_result.items:
@@ -225,6 +239,35 @@ class SolverPipeline:
                     f"Stage5 validation: errors={stage5_result.error_count}, "
                     f"warnings={stage5_result.warning_count}"
                 )
+
+            # ── Presolve Fidelity Enforcement ──
+            # PresolveProber가 context에 저장한 결과를 확인하여 실행 차단
+            presolve_result = stage5_ctx.get("presolve_result")
+            if presolve_result:
+                from engine.validation.generic.presolve_models import FidelityDecision
+                decision = presolve_result.decision
+
+                if decision == FidelityDecision.HARD_BLOCK:
+                    logger.error(
+                        f"Presolve HARD_BLOCK: {presolve_result.decision_message}"
+                    )
+                    return PipelineResult(
+                        success=False, phase="presolve", solver_id=solver_id,
+                        compile_result=compile_result,
+                        compile_time_sec=round(compile_time, 3),
+                        error=presolve_result.decision_message,
+                        summary={"presolve": presolve_result.to_dict()},
+                    )
+
+                # CONDITIONAL_BLOCK / USER_CONFIRMATION → 경고 로그 (차단은 프론트엔드에서)
+                if decision in (
+                    FidelityDecision.CONDITIONAL_BLOCK,
+                    FidelityDecision.USER_CONFIRMATION,
+                ):
+                    logger.warning(
+                        f"Presolve {decision.value}: {presolve_result.decision_message}"
+                    )
+
         except Exception as e:
             logger.warning(f"Stage 5 validation failed: {e}")
 
@@ -290,6 +333,117 @@ class SolverPipeline:
             summary=summary,
         )
 
+    def _build_sp_summary(
+        self, math_model, solver_id, solver_name,
+        compile_result, compile_time, execute_result, bound_data,
+    ) -> Dict[str, Any]:
+        """Set Partitioning 결과 → 기존 프론트엔드 포맷 summary"""
+        from engine.sp_result_converter import convert_sp_result
+        from engine.duty_generator import load_trips_from_csv
+        import os
+
+        duty_map = getattr(self, "_sp_duty_map", {})
+        project_id = getattr(self, "_current_project_id", "")
+        trips_path = os.path.join("uploads", str(project_id), "normalized", "trips.csv")
+
+        trips = []
+        if os.path.exists(trips_path):
+            trips = load_trips_from_csv(trips_path)
+
+        project_dir = f"uploads/{project_id}" if project_id else None
+
+        interpretation = convert_sp_result(
+            solution=execute_result.solution,
+            duty_map=duty_map,
+            trips=trips,
+            solver_id=solver_id,
+            solver_name=solver_name or "CP-SAT (Set Partitioning)",
+            project_dir=project_dir,
+            objective_value=execute_result.objective_value,
+        )
+
+        # 기존 summary 포맷과 호환
+        summary = {
+            "solver_id": solver_id,
+            "solver_name": solver_name,
+            "solver_type": "ortools_cp",
+            "status": execute_result.status,
+            "objective_value": execute_result.objective_value,
+            "model_stats": {
+                "total_variables": compile_result.variable_count,
+                "total_constraints": compile_result.constraint_count,
+                "model_type": "SetPartitioning",
+            },
+            "timing": {
+                "compile_sec": round(compile_time, 3),
+                "execute_sec": execute_result.execution_time_sec,
+                "total_sec": round(compile_time + execute_result.execution_time_sec, 3),
+            },
+            "solution": execute_result.solution,
+            "interpreted_result": interpretation,
+            "compile_summary": {
+                "solver_id": solver_id,
+                "solver_type": "ortools_cp",
+                "model_type": "SetPartitioning",
+                "duty_count": compile_result.metadata.get("duty_count", 0),
+                "trip_count": compile_result.metadata.get("trip_count", 0),
+            },
+            "execute_summary": {
+                "status": execute_result.status,
+                "objective_value": execute_result.objective_value,
+                "execute_time_sec": execute_result.execution_time_sec,
+            },
+            "infeasibility_info": None,
+        }
+
+        return summary
+
+    def _compile_set_partitioning(
+        self, math_model, bound_data, project_id, solver_id, **kwargs
+    ):
+        """
+        Set Partitioning 컴파일: DutyGenerator → SPCompiler.
+
+        Returns:
+            (CompileResult, compile_time_sec)
+        """
+        import os
+        compile_start = time.time()
+
+        # Trip 로딩
+        trips_path = os.path.join("uploads", str(project_id), "normalized", "trips.csv")
+        if not os.path.exists(trips_path):
+            from engine.compiler.base import CompileResult
+            return CompileResult(
+                success=False, error=f"trips.csv not found: {trips_path}"
+            ), 0.0
+
+        from engine.duty_generator import DutyGenerator, GeneratorConfig, load_trips_from_csv
+        from engine.compiler.set_partitioning_compiler import SetPartitioningCompiler
+
+        trips = load_trips_from_csv(trips_path)
+        logger.info(f"SP: loaded {len(trips)} trips from {trips_path}")
+
+        # Generator 설정 (bound_data 파라미터 기반)
+        config = GeneratorConfig.from_params(bound_data.get("parameters", {}))
+
+        # Duty 생성
+        gen = DutyGenerator(trips, config)
+        duties = gen.generate()
+        logger.info(f"SP: {len(duties)} feasible duties generated")
+
+        # SP 컴파일
+        compiler = SetPartitioningCompiler()
+        compile_result = compiler.compile(math_model, bound_data, duties=duties)
+        compile_time = time.time() - compile_start
+
+        # duty_map을 pipeline에서 참조할 수 있도록 저장
+        if compile_result.success:
+            self._sp_duties = duties
+            self._sp_duty_map = {d.id: d for d in duties}
+
+        return compile_result, round(compile_time, 3)
+
     def _build_summary(
         self,
         math_model: Dict,
@@ -301,6 +455,13 @@ class SolverPipeline:
         bound_data: Optional[Dict] = None,
     ) -> Dict[str, Any]:
         """프론트엔드에 보낼 결과 요약 생성 (compile_summary 포함)"""
+
+        # ── SP 결과 변환 (Set Partitioning 경로) ──
+        if compile_result.metadata.get("model_type") == "SetPartitioning":
+            return self._build_sp_summary(
+                math_model, solver_id, solver_name,
+                compile_result, compile_time, execute_result, bound_data,
+            )
 
         # 비영 솔루션 변수 개수
         nonzero = 0

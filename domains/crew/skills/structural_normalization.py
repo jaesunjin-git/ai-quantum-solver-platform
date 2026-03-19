@@ -77,6 +77,32 @@ def _to_minutes(val) -> Optional[float]:
     return None
 
 
+def _fix_midnight_wrap(times: list) -> list:
+    """
+    역 시퀀스의 자정 넘김 보정.
+
+    열차가 23:50 → 00:05 식으로 자정을 넘기면
+    _to_minutes()가 [1430, 5]로 변환하여 시간이 감소함.
+    이전 역보다 시각이 줄어들면 +1440(24시간)을 더해 연속성 보장.
+
+    Args:
+        times: [(station_name, minutes), ...] 순서대로
+
+    Returns:
+        보정된 times 리스트
+    """
+    if len(times) <= 1:
+        return times
+    result = [times[0]]
+    for i in range(1, len(times)):
+        st, m = times[i]
+        prev_m = result[-1][1]
+        if m < prev_m:
+            m += 1440
+        result.append((st, m))
+    return result
+
+
 def _read_file(file_path: Path, sheet=None) -> Optional[pd.DataFrame]:
     """파일을 DataFrame으로 읽기. 인코딩 자동 감지."""
     ext = file_path.suffix.lower()
@@ -248,6 +274,8 @@ class PivotUnpivoter:
                             m = _to_minutes(val)
                             if m is not None:
                                 times.append((str(st), m))
+                    # 자정 넘김 보정: 역 시퀀스에서 시각이 감소하면 +1440
+                    times = _fix_midnight_wrap(times)
                     if len(times) >= 2:
                         trips.append({
                             "trip_id": int(tid) if not isinstance(tid, str) else tid,
@@ -274,6 +302,8 @@ class PivotUnpivoter:
                             m = _to_minutes(val)
                             if m is not None:
                                 times.append((str(st).replace(".1", "").strip(), m))
+                    # 자정 넘김 보정: 역 시퀀스에서 시각이 감소하면 +1440
+                    times = _fix_midnight_wrap(times)
                     if len(times) >= 2:
                         trips.append({
                             "trip_id": int(tid_r) if not isinstance(tid_r, str) else tid_r,

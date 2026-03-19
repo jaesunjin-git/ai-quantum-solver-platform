@@ -94,6 +94,24 @@ variables:
     aliases:
     - is_night[j]
     - n[d]
+
+  # ── Duty Event 변수 (2026-03-19) ──
+  # 도메인 의미: 각 duty의 첫 번째/마지막 trip 시각을 명시적으로 표현.
+  # 컴파일러가 solver별 최적 방식으로 링킹 (CP-SAT: AddMinEquality/AddMaxEquality).
+  first_trip_dep:
+    type: integer
+    indices:
+    - J
+    description: crew j에 할당된 첫 번째 trip의 출발 시각 (분)
+    role: derived_event
+    upper_bound: 1800
+  last_trip_arr:
+    type: integer
+    indices:
+    - J
+    description: crew j에 할당된 마지막 trip의 도착 시각 (분)
+    role: derived_event
+    upper_bound: 1800
 sets:
   I:
     description: 트립 집합
@@ -259,8 +277,8 @@ constraints:
     - 250
     - 330
   max_work_time:
-    description: 1사업 최대 근무시간 (구속시간)
-    expression_template: duty_end[j] - duty_start[j] <= max_work_minutes * y[j]
+    description: 1사업 최대 근무시간 (구속시간) — 주간 전용, 야간은 overnight_work_time_excluding_sleep 적용
+    expression_template: (duty_end[j] + 1440 * is_night[j]) - duty_start[j] <= max_work_minutes * y[j] + big_m * is_night[j]
     for_each: j in J
     parameters:
     - max_work_minutes
@@ -302,13 +320,26 @@ constraints:
     typical_range:
     - 540
     - 720
-  max_wait_time:
-    description: 1사업 최대 대기시간
-    expression_template: (duty_end[j] - duty_start[j] - sum(trip_duration[i] * x[i,j]
-      for i in I)) <= max_wait_minutes * y[j]
+  # ── max_wait_time: 순수 대기시간 = duty_span - 운전 - 준비 - 정리 - 휴식 - 수면(야간) ──
+  # 대기시간 ≠ Non-Driving Time. 준비/정리는 근무, 식사/휴식은 공식 휴게, 수면은 숙박조 보장.
+  # 주간/야간은 준비·정리 파라미터가 다르므로 분리하되, 수식 구조는 동일.
+
+  max_wait_time_day:
+    description: 주간사업 최대 대기시간 (순수 유휴시간만)
+    expression_template: >
+      ((duty_end[j] + 1440 * is_night[j]) - duty_start[j]
+      - sum(trip_duration[i] * x[i,j] for i in I)
+      - preparation_minutes_departure * y[j]
+      - cleanup_minutes_arrival * y[j]
+      - min_break_minutes * y[j])
+      <= max_wait_minutes * y[j] + big_m * is_night[j]
     for_each: j in J
     parameters:
     - max_wait_minutes
+    - preparation_minutes_departure
+    - cleanup_minutes_arrival
+    - min_break_minutes
+    - big_m
     default_category: hard
     fixed_category: false
     context_param: max_wait_minutes
@@ -328,10 +359,52 @@ constraints:
     typical_range:
     - 180
     - 360
+    note: "주간(is_night=0) 적용. 순수 대기 = span - 운전 - 출고준비(60) - 입고정리(40) - 휴식(30)"
+
+  max_wait_time_night:
+    description: 야간(숙박조) 최대 대기시간 (순수 유휴시간만)
+    expression_template: >
+      ((duty_end[j] + 1440 * is_night[j]) - duty_start[j]
+      - sum(trip_duration[i] * x[i,j] for i in I)
+      - preparation_minutes_night * y[j]
+      - cleanup_minutes_night * y[j]
+      - min_break_minutes * y[j]
+      - min_night_sleep_minutes * is_night[j])
+      <= max_wait_minutes * y[j] + big_m * (1 - is_night[j])
+    for_each: j in J
+    activation_condition: params.get('is_overnight_crew', {}).get('value') == True
+    parameters:
+    - max_wait_minutes
+    - preparation_minutes_night
+    - cleanup_minutes_night
+    - min_break_minutes
+    - min_night_sleep_minutes
+    - big_m
+    default_category: hard
+    fixed_category: false
+    context_param: max_wait_minutes
+    detection_hints:
+    - 야간 대기시간
+    - night wait
+    - 숙박조 대기
+    category: hard
+    context_must:
+    - 대기
+    - wait
+    typical_range:
+    - 180
+    - 360
+    note: "야간(is_night=1) 적용. 순수 대기 = span - 운전 - 익일출고준비(50) - 당일입고정리(30) - 휴식(30) - 수면(240)"
   avg_wait_time_target:
-    description: 사업평균 대기시간 목표
-    expression_template: (duty_end[j] - duty_start[j] - sum(trip_duration[i] * x[i,j]
-      for i in I)) <= avg_wait_target_minutes * y[j]
+    description: 사업평균 대기시간 목표 (순수 유휴시간 기준)
+    expression_template: >
+      ((duty_end[j] + 1440 * is_night[j]) - duty_start[j]
+      - sum(trip_duration[i] * x[i,j] for i in I)
+      - preparation_minutes_departure * y[j]
+      - cleanup_minutes_arrival * y[j]
+      - min_break_minutes * y[j]
+      - min_night_sleep_minutes * is_night[j])
+      <= avg_wait_target_minutes * y[j]
     for_each: j in J
     parameters:
       avg_wait_target_minutes:
@@ -375,9 +448,10 @@ constraints:
     - 평균
     - avg
     - 인정
+    note: "순수 대기 = span - 운전 - 준비(주간값) - 정리(주간값) - 휴식 - 수면(야간 자동차감). soft이므로 주간 prep/cleanup 기준(보수적)."
   max_total_stay_time:
     description: 1사업 최대 체재시간
-    expression_template: duty_end[j] - duty_start[j] + preparation_minutes + cleanup_minutes
+    expression_template: (duty_end[j] + 1440 * is_night[j]) - duty_start[j] + preparation_minutes + cleanup_minutes
       <= max_total_stay_minutes * y[j]
     for_each: j in J
     parameters:
@@ -409,141 +483,74 @@ constraints:
     typical_range:
     - 600
     - 780
+  # ── Duty Event 기반 prep/cleanup (2026-03-19 리팩토링) ──
+  # 준비/정리는 duty 시작/종료 시 1회만 발생하는 이벤트.
+  # first_trip_dep[j], last_trip_arr[j] event 변수를 사용하여
+  # duty_start/end를 등식으로 고정 (solver slack 방지).
+  # 컴파일러가 first/last 링킹을 solver별 최적 방식으로 자동 생성.
+
   preparation_time:
-    description: 승무 전 준비시간
-    expression_template: duty_start[j] <= trip_dep_abs_minute[i] - preparation_minutes +
-      big_m * (1 - x[i,j])
-    for_each: i in I, j in J
+    description: 출고 준비 — duty 시작 시 1회 (첫 trip 출발 전 준비)
+    expression_template: duty_start[j] == first_trip_dep[j] - preparation_minutes
+    for_each: j in J
+    event_based: true
     parameters:
       preparation_minutes_relay:
         description: 승계/편승 출무시 준비시간
-        detection_hints:
-        - 승계
-        - 편승
-        - 출무
-        context_must:
-        - 출무
-        context_exclude:
-        - 종무
-        typical_range:
-        - 30
-        - 50
+        detection_hints: [승계, 편승, 출무]
+        context_must: [출무]
+        context_exclude: [종무]
+        typical_range: [30, 50]
       preparation_minutes_departure:
         description: 출고(출무시) 준비시간
-        detection_hints:
-        - 출고
-        - 출무시
-        context_must:
-        - 출고
-        - 출무
-        context_exclude:
-        - 사업중
-        - 야간
-        - '18:00'
-        - '17:00'
-        typical_range:
-        - 50
-        - 70
+        detection_hints: [출고, 출무시]
+        context_must: [출고, 출무]
+        context_exclude: [사업중, 야간]
+        typical_range: [50, 70]
       preparation_minutes_mid_duty:
         description: 출고(사업중) 준비시간
-        detection_hints:
-        - 출고
-        - 사업중
-        context_must:
-        - 사업중
-        typical_range:
-        - 40
-        - 60
+        detection_hints: [출고, 사업중]
+        context_must: [사업중]
+        typical_range: [40, 60]
     default_category: hard
     fixed_category: true
-    structured:
-      lhs:
-        type: variable
-        id: duty_start
-        indices:
-        - j
-      operator: <=
-      rhs:
-        type: expression
-        expr: trip_dep_abs_minute[i] - preparation_minutes + big_m * (1 - x[i,j])
-    detection_hints:
-    - 출근
-    - 준비시간
-    - preparation
-    - 사전점검
-    - 출근점호
+    detection_hints: [출근, 준비시간, preparation, 사전점검, 출근점호]
     category: hard
-    typical_range:
-    - 20
-    - 60
+    typical_range: [20, 60]
+    note: "duty_start = first_trip_dep - prep (등식). 컴파일러가 first_trip_dep 링킹 자동 생성."
+
   cleanup_time:
-    description: 승무 후 정리시간
-    expression_template: duty_end[j] >= trip_arr_abs_minute[i] + cleanup_minutes - big_m
-      * (1 - x[i,j])
-    for_each: i in I, j in J
+    description: 입고 정리 — duty 종료 시 1회 (마지막 trip 도착 후 정리)
+    expression_template: duty_end[j] == last_trip_arr[j] + cleanup_minutes
+    for_each: j in J
+    event_based: true
     parameters:
       cleanup_minutes_relay:
         description: 승계/편승 종무시 정리시간
-        detection_hints:
-        - 승계
-        - 편승
-        - 종무
-        context_must:
-        - 종무
-        context_exclude:
-        - 출무
-        - 입고
-        typical_range:
-        - 20
-        - 40
+        detection_hints: [승계, 편승, 종무]
+        context_must: [종무]
+        context_exclude: [출무, 입고]
+        typical_range: [20, 40]
       cleanup_minutes_arrival:
         description: 입고(종무시) 정리시간
-        detection_hints:
-        - 입고
-        - 종무시
-        - 종무
-        context_must:
-        - 입고
-        context_exclude:
-        - 사업중
-        - 승계
-        - 편승
-        typical_range:
-        - 30
-        - 50
+        detection_hints: [입고, 종무시, 종무]
+        context_must: [입고]
+        context_exclude: [사업중, 승계, 편승]
+        typical_range: [30, 50]
       cleanup_minutes_mid_duty:
         description: 입고(사업중) 정리시간
-        detection_hints:
-        - 입고
-        - 사업중
-        context_must:
-        - 사업중
-        typical_range:
-        - 20
-        - 40
+        detection_hints: [입고, 사업중]
+        context_must: [사업중]
+        typical_range: [20, 40]
     default_category: hard
     fixed_category: true
-    structured:
-      lhs:
-        type: variable
-        id: duty_end
-        indices:
-        - j
-      operator: '>='
-      rhs:
-        type: expression
-        expr: trip_arr_abs_minute[i] + cleanup_minutes - big_m * (1 - x[i,j])
-    detection_hints:
-    - 정리시간
-    - cleanup
-    - 퇴근점호
+    detection_hints: [정리시간, cleanup, 퇴근점호]
     category: hard
-    typical_range:
-    - 20
-    - 60
+    typical_range: [20, 60]
+    note: "duty_end = last_trip_arr + cleanup (등식). 컴파일러가 last_trip_arr 링킹 자동 생성."
   mandatory_break:
     description: 필수 휴식시간
-    expression_template: (duty_end[j] - duty_start[j]) - sum(trip_duration[i] * x[i,j]
+    expression_template: ((duty_end[j] + 1440 * is_night[j]) - duty_start[j]) - sum(trip_duration[i] * x[i,j]
       for i in I) >= min_break_minutes * y[j]
     for_each: j in J
     parameters:
@@ -596,7 +603,7 @@ constraints:
     - 취침
   meal_break_guarantee:
     description: 식사시간 보장
-    expression_template: (duty_end[j] - duty_start[j]) - sum(trip_duration[i] * x[i,j]
+    expression_template: ((duty_end[j] + 1440 * is_night[j]) - duty_start[j]) - sum(trip_duration[i] * x[i,j]
       for i in I) >= min_meal_break_minutes * y[j]
     for_each: j in J
     parameters:
@@ -765,7 +772,7 @@ constraints:
     category: hard
   night_sleep_guarantee:
     description: 야간 수면시간 보장
-    expression_template: big_m * (1 - is_night[j]) + (duty_end[j] - duty_start[j])
+    expression_template: big_m * (1 - is_night[j]) + ((duty_end[j] + 1440 * is_night[j]) - duty_start[j])
       >= min_night_sleep_minutes * is_night[j]
     for_each: j in J
     # 숙박조 패턴인 경우에만 적용
@@ -795,7 +802,7 @@ constraints:
     - 300
   night_rest:
     description: 야간 휴식시간 확보
-    expression_template: (duty_end[j] - duty_start[j]) - sum(trip_duration[i]*x[i,j]
+    expression_template: ((duty_end[j] + 1440 * is_night[j]) - duty_start[j]) - sum(trip_duration[i]*x[i,j]
       for i in I) >= min_night_rest_total_minutes * is_night[j]
     for_each: j in J
     # 숙박조 패턴인 경우에만 적용
@@ -856,7 +863,7 @@ constraints:
   # ── 숙박조 전용: 수면 제외 근무시간 ──
   overnight_work_time_excluding_sleep:
     description: 숙박조 근무시간 (수면시간 제외)
-    expression_template: (duty_end[j] - duty_start[j]) - min_night_sleep_minutes
+    expression_template: ((duty_end[j] + 1440 * is_night[j]) - duty_start[j]) - min_night_sleep_minutes
       <= max_work_minutes + big_m * (1 - is_night[j])
     for_each: j in J
     # 숙박조 + 수면시간을 근무에서 제외하는 경우에만 적용

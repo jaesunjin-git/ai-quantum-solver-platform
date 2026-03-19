@@ -86,11 +86,15 @@ policies:
 # ════════════════════════════════════════════
 
 derived_fields:
+  # ── trip 시각: 주/야간 혼합 모델에서는 cyclic_unwrap 미적용 (2026-03-19) ──
+  # 자정 넘김은 정규화(structural_normalization._fix_midnight_wrap)에서 처리됨.
+  # trip_dep/arr_abs_minute = trip_dep/arr_time 그대로 사용 (raw → abs 동일).
+  # 숙박조 전용 service_day 변환이 필요하면 별도 필드로 분리해야 함.
   trip_dep_abs_minute:
     source: trip_dep_time
     source_namespace: trips
     indexed_by: i
-    derivation: cyclic_unwrap
+    derivation: identity
     policy_ref: time_axis
     temporal_type: service_day_minute
     inverse_to: trip_dep_time
@@ -99,7 +103,7 @@ derived_fields:
     source: trip_arr_time
     source_namespace: trips
     indexed_by: i
-    derivation: cyclic_unwrap
+    derivation: identity
     policy_ref: time_axis
     temporal_type: service_day_minute
     inverse_to: trip_arr_time
