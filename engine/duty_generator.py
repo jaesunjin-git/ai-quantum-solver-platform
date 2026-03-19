@@ -199,22 +199,41 @@ class DutyGenerator:
         all_duties: List[FeasibleDuty] = []
         duty_id = 0
 
-        # ── 시간대별 beam search (전체 시간대 커버 보장) ──
-        # 전체 trip을 시간대 그룹으로 분할하여 각 그룹별 독립 beam 실행.
-        # 이렇게 하면 오후/저녁 trip도 beam에서 탈락하지 않음.
-        time_groups = self._split_by_time_group(self.trips)
-        logger.info(f"DutyGenerator: {len(time_groups)} time groups for beam search")
+        # ═══════════════════════════════════════════════════
+        # Phase-based Generator: 각 단계가 독립적으로 완료
+        # Phase 1: Day beam (시간대별 그룹)
+        # Phase 2: Overnight (trip 기반 직접 구성)
+        # Phase 3: Greedy fallback (미커버 trip)
+        # ═══════════════════════════════════════════════════
 
+        # ── Phase 1: 시간대별 beam search ──
+        time_groups = self._split_by_time_group(self.trips)
+        logger.info(f"Phase 1: {len(time_groups)} time groups for beam search")
+
+        max_per_group = cfg.max_duties_target // max(len(time_groups), 1)
         for group_trips in time_groups:
             group_beam_duties = self._run_beam_for_group(group_trips, duty_id, cfg)
+            # 그룹별 상한 적용 (dominance 후)
+            if len(group_beam_duties) > max_per_group:
+                group_beam_duties = self._remove_dominated(group_beam_duties)
+                group_beam_duties = sorted(group_beam_duties, key=lambda d: d.cost)[:max_per_group]
             all_duties.extend(group_beam_duties)
             duty_id += len(group_beam_duties)
 
-        # ── (레거시 fallback: 위 그룹 beam에서 놓친 trip용) ──
-        covered_by_beam = set()
+        phase1_count = len(all_duties)
+        logger.info(f"Phase 1 complete: {phase1_count} beam duties")
+
+        # ── Phase 2: Overnight (trip 기반 직접 구성, beam 비의존) ──
+        overnight_count = self._generate_overnight_duties(all_duties, duty_id)
+        duty_id += overnight_count
+        logger.info(f"Phase 2 complete: {overnight_count} overnight duties")
+
+        # ── Phase 3: 2차 패스 + fallback ──
+        # beam에서 놓친 trip용 fallback
+        covered_by_phases = set()
         for d in all_duties:
-            covered_by_beam.update(d.trips)
-        uncovered_trips = [t for t in self.trips if t.id not in covered_by_beam]
+            covered_by_phases.update(d.trips)
+        uncovered_trips = [t for t in self.trips if t.id not in covered_by_phases]
 
         for start_trip in uncovered_trips:
             initial = _BeamState(
@@ -265,10 +284,6 @@ class DutyGenerator:
 
             if len(all_duties) >= cfg.max_duties_target:
                 break
-
-        # ── 야간(숙박조) duty 별도 생성 패스 ──
-        overnight_count = self._generate_overnight_duties(all_duties, duty_id)
-        duty_id += overnight_count
 
         elapsed = time.time() - t0
 
@@ -762,56 +777,50 @@ class DutyGenerator:
     # ── 야간(숙박조) duty 별도 생성 ─────────────────────
 
     def _generate_overnight_duties(self, all_duties: List[FeasibleDuty], start_id: int) -> int:
-        """저녁 multi-trip + 수면 + 새벽 multi-trip 조합을 생성"""
+        """
+        Overnight duty: 저녁 trip chain + 수면 + 새벽 trip chain.
+
+        beam 비의존 — trip 기반 직접 구성.
+        저녁 trip에서 greedy chain → 수면 gap → 새벽 trip에서 greedy chain.
+        """
         cfg = self.config
         count = 0
 
-        # 저녁 beam duty (마지막 trip arr >= night_threshold - 60)
-        evening_beam = [d for d in all_duties if d.source == "beam" and
-                        d.last_trip_arr >= cfg.night_threshold - 60]
-        # 새벽 beam duty (첫 trip dep < 480)
-        morning_beam = [d for d in all_duties if d.source == "beam" and
-                        d.first_trip_dep < 480]
+        # 저녁 trip (dep >= night_threshold - 120, 즉 15:00 이후)
+        evening_trips = sorted(
+            [t for t in self.trips if t.dep_time >= cfg.night_threshold - 120],
+            key=lambda t: t.dep_time
+        )
+        # 새벽 trip (dep < day_duty_start_earliest, 즉 06:20 이전)
+        morning_trips = sorted(
+            [t for t in self.trips if t.dep_time < cfg.day_duty_start_earliest],
+            key=lambda t: t.dep_time
+        )
 
-        # fallback: beam duty 없으면 single trip
-        if not evening_beam:
-            evening_beam_trips = [t for t in self.trips if t.arr_time >= cfg.night_threshold - 60]
-            for t in evening_beam_trips:
-                evening_beam.append(FeasibleDuty(
-                    id=-1, trips=[t.id], is_night=False,
-                    first_trip_dep=t.dep_time, last_trip_arr=t.arr_time,
-                    start_time=t.dep_time, end_time=t.arr_time,
-                    driving_minutes=t.duration, span_minutes=t.duration,
-                    work_minutes=t.duration, wait_minutes=0,
-                    break_minutes=0, sleep_minutes=0,
-                ))
-        if not morning_beam:
-            morning_beam_trips = [t for t in self.trips if t.dep_time < 480]
-            for t in morning_beam_trips:
-                morning_beam.append(FeasibleDuty(
-                    id=-1, trips=[t.id], is_night=False,
-                    first_trip_dep=t.dep_time, last_trip_arr=t.arr_time,
-                    start_time=t.dep_time, end_time=t.arr_time,
-                    driving_minutes=t.duration, span_minutes=t.duration,
-                    work_minutes=t.duration, wait_minutes=0,
-                    break_minutes=0, sleep_minutes=0,
-                ))
-
-        if not evening_beam or not morning_beam:
+        if not evening_trips or not morning_trips:
+            logger.info(f"Overnight: skipped (evening={len(evening_trips)}, morning={len(morning_trips)})")
             return 0
 
-        # 저녁 duty + 새벽 duty 결합
-        for ev_duty in evening_beam[:30]:  # 상위 30개만 (조합 폭발 방지)
-            for mo_duty in morning_beam[:30]:
+        # 저녁 chain 구축 (greedy forward)
+        evening_chains = self._build_chains(evening_trips, max_len=cfg.max_trips_per_duty // 2)
+        # 새벽 chain 구축 (greedy forward)
+        morning_chains = self._build_chains(morning_trips, max_len=cfg.max_trips_per_duty // 2)
+
+        logger.info(f"Overnight: {len(evening_chains)} evening chains × {len(morning_chains)} morning chains")
+
+        # 조합
+        for ev_chain in evening_chains:
+            ev_last = ev_chain[-1]
+            for mo_chain in morning_chains:
+                mo_first = mo_chain[0]
+
                 # 역 매칭
-                ev_last = self._trip_map[ev_duty.trips[-1]]
-                mo_first = self._trip_map[mo_duty.trips[0]]
                 ev_base = ev_last.arr_station.replace('기지', '').strip()
                 mo_base = mo_first.dep_station.replace('기지', '').strip()
                 if ev_base != mo_base and ev_last.arr_station != mo_first.dep_station:
                     continue
 
-                # gap 체크 (수면시간)
+                # 수면 gap 체크
                 effective_mo_dep = mo_first.dep_time + 1440
                 night_gap = effective_mo_dep - ev_last.arr_time
                 if night_gap < cfg.min_night_sleep_minutes:
@@ -819,21 +828,21 @@ class DutyGenerator:
                 if night_gap > cfg.min_night_sleep_minutes + 180:
                     continue
 
-                # trip 수 제한
-                combined_trips = ev_duty.trips + mo_duty.trips
-                if len(combined_trips) > cfg.max_trips_per_duty:
+                # 결합
+                combined_ids = [t.id for t in ev_chain] + [t.id for t in mo_chain]
+                if len(combined_ids) > cfg.max_trips_per_duty:
                     continue
 
-                total_driving = ev_duty.driving_minutes + mo_duty.driving_minutes
+                total_driving = sum(t.duration for t in ev_chain) + sum(t.duration for t in mo_chain)
                 if total_driving > cfg.max_driving_minutes:
                     continue
 
                 state = _BeamState(
-                    trips=combined_trips,
-                    last_arr_time=mo_duty.last_trip_arr,
-                    last_arr_station=mo_first.arr_station if mo_duty.trips else "",
+                    trips=combined_ids,
+                    last_arr_time=mo_chain[-1].arr_time,
+                    last_arr_station=mo_chain[-1].arr_station,
                     total_driving=total_driving,
-                    first_dep_time=ev_duty.first_trip_dep,
+                    first_dep_time=ev_chain[0].dep_time,
                 )
                 duty = self._try_build_duty(state, start_id + count)
                 if duty:
@@ -841,8 +850,47 @@ class DutyGenerator:
                     all_duties.append(duty)
                     count += 1
 
-        logger.info(f"Overnight duties: {count} generated from {len(evening_beam)} evening × {len(morning_beam)} morning beam duties")
+        logger.info(f"Overnight: {count} duties generated")
         return count
+
+    def _build_chains(self, trips_subset: List[TripInfo], max_len: int = 5) -> List[List[TripInfo]]:
+        """trip subset에서 greedy forward chain 목록 구축"""
+        cfg = self.config
+        chains: List[List[TripInfo]] = []
+
+        for start in trips_subset:
+            chain = [start]
+            current = start
+
+            for _ in range(max_len - 1):
+                # 다음 trip 찾기 (같은 역 또는 인접역)
+                search_stations = {current.arr_station}
+                base = current.arr_station.replace('기지', '').strip()
+                for st in self._station_departures:
+                    if st.replace('기지', '').strip() == base:
+                        search_stations.add(st)
+
+                best = None
+                for st in search_stations:
+                    for nt in self._station_departures.get(st, []):
+                        if nt.id in {t.id for t in chain}:
+                            continue
+                        if nt.dep_time < current.arr_time:
+                            continue
+                        gap = nt.dep_time - current.arr_time
+                        if gap <= cfg.max_gap_minutes:
+                            best = nt
+                            break
+
+                if best:
+                    chain.append(best)
+                    current = best
+                else:
+                    break
+
+            chains.append(chain)
+
+        return chains
 
     # ── Gap 기반 break 계산 ─────────────────────────────
 
