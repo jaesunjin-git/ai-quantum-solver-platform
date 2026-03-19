@@ -108,7 +108,7 @@ class GeneratorConfig:
 
     # 연결 규칙
     max_gap_minutes: int = 60            # trip 간 최대 gap
-    max_trips_per_duty: int = 8          # 현실적 제한 (6~8)
+    max_trips_per_duty: int = 10         # 320 trips / 45 duties ≈ 7.1 → 10으로 여유
 
     # Beam Search
     beam_width: int = 50
@@ -258,9 +258,8 @@ class DutyGenerator:
 
                         next_beam.append(new_state)
 
-                # Beam 제한: 상위 beam_width만 유지
-                next_beam.sort(key=lambda s: s.score, reverse=True)
-                beam = next_beam[:cfg.beam_width]
+                # Beam 제한: length diversity 유지 + score 기반
+                beam = self._select_diverse_beam(next_beam, cfg.beam_width)
 
                 # 전체 duty 수 제한
                 if len(all_duties) >= cfg.max_duties_target:
@@ -356,6 +355,40 @@ class DutyGenerator:
         )
 
         return all_duties
+
+    # ── Beam diversity 유지 ─────────────────────────────────
+
+    @staticmethod
+    def _select_diverse_beam(candidates: List["_BeamState"], beam_width: int) -> List["_BeamState"]:
+        """length bucket별 top-k로 beam diversity 유지"""
+        if len(candidates) <= beam_width:
+            return candidates
+
+        # length별 그룹화
+        by_length: Dict[int, List["_BeamState"]] = {}
+        for s in candidates:
+            length = len(s.trips)
+            by_length.setdefault(length, []).append(s)
+
+        # 각 그룹 score 정렬
+        for k in by_length:
+            by_length[k].sort(key=lambda s: s.score, reverse=True)
+
+        # round-robin으로 각 length에서 균등 추출
+        result: List["_BeamState"] = []
+        per_bucket = max(beam_width // max(len(by_length), 1), 5)
+
+        for length in sorted(by_length.keys()):
+            result.extend(by_length[length][:per_bucket])
+
+        # 남은 슬롯은 전체 score 기준 fill
+        if len(result) < beam_width:
+            used = set(id(s) for s in result)
+            remaining = [s for s in candidates if id(s) not in used]
+            remaining.sort(key=lambda s: s.score, reverse=True)
+            result.extend(remaining[:beam_width - len(result)])
+
+        return result[:beam_width]
 
     # ── 시간대별 그룹 분할 ─────────────────────────────────
 
@@ -521,8 +554,9 @@ class DutyGenerator:
             last_arr_station=next_trip.arr_station,
             total_driving=new_driving,
             first_dep_time=state.first_dep_time,
-            # multi-objective score: 높은 driving + 짧은 span + trip 수 (#4)
-            score=new_driving - 0.5 * span_estimate + len(new_trips) * 10,
+            # multi-objective score: trip 수 우선 + driving 효율
+            # 긴 duty를 살려두는 bias (greedy 의존도 감소)
+            score=len(new_trips) * 50 + new_driving - 0.3 * span_estimate,
         )
 
     # ── Duty 생성 + 전수 검증 ────────────────────────────

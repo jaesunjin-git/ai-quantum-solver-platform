@@ -82,11 +82,9 @@ class SetPartitioningCompiler(BaseCompiler):
             coverage_count += 1
 
         # ── 4. 선택적 제약: crew 수 고정 ──
-        # 주의: Generator가 충분한 multi-trip duty를 생성하지 못하면
-        # duty 수 제약이 INFEASIBLE을 유발. 향후 Generator 개선 후 활성화.
-        total_duties_param = None  # params.get("total_duties")
-        day_count_param = None     # params.get("day_crew_count")
-        night_count_param = None   # params.get("night_crew_count")
+        total_duties_param = params.get("total_duties")
+        day_count_param = params.get("day_crew_count")
+        night_count_param = params.get("night_crew_count")
 
         duty_map = {d.id: d for d in duties}
         extra_constraints = 0

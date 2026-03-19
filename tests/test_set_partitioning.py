@@ -260,7 +260,7 @@ class TestGeneratorConfig:
         from engine.duty_generator import GeneratorConfig
         cfg = GeneratorConfig()
         assert cfg.max_driving_minutes == 360
-        assert cfg.max_trips_per_duty == 8
+        assert cfg.max_trips_per_duty == 10
         assert cfg.beam_width == 50
 
     def test_from_params(self):
