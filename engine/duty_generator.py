@@ -206,9 +206,11 @@ class DutyGenerator:
         # Phase 3: Greedy fallback (미커버 trip)
         # ═══════════════════════════════════════════════════
 
-        # ── Phase 1: 시간대별 beam search ──
-        time_groups = self._split_by_time_group(self.trips)
-        logger.info(f"Phase 1: {len(time_groups)} time groups for beam search")
+        # ── Phase 1: 주간 beam search (새벽 trip 제외) ──
+        # 새벽 trip(dep < day_duty_start_earliest)은 overnight에서만 사용
+        day_eligible_trips = [t for t in self.trips if t.dep_time >= cfg.day_duty_start_earliest]
+        time_groups = self._split_by_time_group(day_eligible_trips)
+        logger.info(f"Phase 1: {len(time_groups)} time groups ({len(day_eligible_trips)}/{len(self.trips)} day-eligible trips)")
 
         for group_trips in time_groups:
             group_beam_duties = self._run_beam_for_group(group_trips, duty_id, cfg)
@@ -237,17 +239,13 @@ class DutyGenerator:
                 last_arr_station=start_trip.arr_station,
                 total_driving=start_trip.duration,
                 first_dep_time=start_trip.dep_time,
-                score=start_trip.duration,  # driving efficiency
+                score=start_trip.duration,
             )
 
-            # 시작 trip 자체가 1-trip duty
-            trip_key = tuple(sorted(initial.trips))
-            if trip_key not in _seen_trip_sets:
-                duty = self._try_build_duty(initial, duty_id)
-                if duty:
-                    _seen_trip_sets.add(trip_key)
-                    duties.append(duty)
-                    duty_id += 1
+            duty = self._try_build_duty(initial, duty_id)
+            if duty:
+                all_duties.append(duty)
+                duty_id += 1
 
             # Beam Search: 확장
             beam = [initial]
@@ -386,6 +384,21 @@ class DutyGenerator:
         )
 
         return all_duties
+
+    # ── Duty Type 정책 (trip 허용 판정) ─────────────────────
+
+    def _is_trip_allowed_for_day(self, trip_id: int, cfg: "GeneratorConfig") -> bool:
+        """주간 duty에서 이 trip을 포함할 수 있는지 판정 (config 기반)"""
+        trip = self._trip_map.get(trip_id)
+        if trip is None:
+            return False
+        # 새벽 trip (day_duty_start_earliest 이전) → day duty 불가 (숙박조만)
+        if trip.dep_time < cfg.day_duty_start_earliest:
+            return False
+        # 주간 duty는 day_duty_end_latest(23:00)까지 가능
+        # 따라서 17:00~23:00 trip도 주간 duty에 포함 가능
+        # (day_duty_end_latest는 config에 있지만 여기서는 trip arr로 판정)
+        return True
 
     # ── Beam diversity 유지 ─────────────────────────────────
 
@@ -638,10 +651,15 @@ class DutyGenerator:
         last_arr = state.last_arr_time
         driving = state.total_driving
 
-        # ── duty 타입 판정: reject하지 않고 tagging ──
-        # 주간 시작 제한보다 이른 trip → night candidate로 태깅 (reject 아님)
+        # ── duty 타입 판정 ──
+        # 야간 판정: 자정 넘김 OR (저녁 시작 + 새벽 trip 포함 = overnight 패턴)
         cross_midnight = last_arr < first_dep
-        is_night = first_dep >= cfg.night_threshold or cross_midnight
+        has_early_trip = any(self._trip_map[tid].dep_time < cfg.day_duty_start_earliest for tid in state.trips)
+        has_evening_trip = any(self._trip_map[tid].dep_time >= cfg.night_threshold for tid in state.trips)
+        # overnight: 저녁 + 새벽 모두 포함 (수면 구간 있음)
+        is_overnight = has_early_trip and has_evening_trip
+        # 야간: 자정 넘김 또는 overnight 패턴
+        is_night = cross_midnight or is_overnight
 
         # prep/cleanup (임시 - 아래에서 최종 결정)
         if is_night:
@@ -656,15 +674,19 @@ class DutyGenerator:
         start_time = first_dep - prep
         end_time = last_arr + cleanup
 
-        # 주간 시작 제한 체크 → 실패하면 night로 재분류 (reject 아님)
-        if not is_night and start_time < cfg.day_duty_start_earliest - prep:
-            # night candidate로 전환
-            is_night = True
-            prep = cfg.prep_minutes_night
-            cleanup = cfg.cleanup_minutes_night
-            sleep = cfg.min_night_sleep_minutes
-            start_time = first_dep - prep
-            end_time = last_arr + cleanup
+        # duty type 정합성 검증: trip이 duty type에 허용되는지
+        if not is_night:
+            # 주간 duty → 새벽/야간 trip 포함 불가
+            for tid in state.trips:
+                if not self._is_trip_allowed_for_day(tid, cfg):
+                    return None  # day duty에 새벽 trip → reject
+        else:
+            # 야간 duty → 수면 구간 없이 새벽만 있으면 → reject (overnight만 허용)
+            has_evening = any(self._trip_map[tid].dep_time >= cfg.night_threshold for tid in state.trips)
+            has_morning = any(self._trip_map[tid].dep_time < cfg.day_duty_start_earliest for tid in state.trips)
+            if has_morning and not has_evening:
+                # 새벽 trip만 있고 저녁 trip 없음 → 수면 구간 없는 야간 duty → reject
+                return None
 
         # effective span (야간: 자정 넘김)
         if is_night and last_arr < first_dep:
