@@ -210,13 +210,8 @@ class DutyGenerator:
         time_groups = self._split_by_time_group(self.trips)
         logger.info(f"Phase 1: {len(time_groups)} time groups for beam search")
 
-        max_per_group = cfg.max_duties_target // max(len(time_groups), 1)
         for group_trips in time_groups:
             group_beam_duties = self._run_beam_for_group(group_trips, duty_id, cfg)
-            # 그룹별 상한 적용 (dominance 후)
-            if len(group_beam_duties) > max_per_group:
-                group_beam_duties = self._remove_dominated(group_beam_duties)
-                group_beam_duties = sorted(group_beam_duties, key=lambda d: d.cost)[:max_per_group]
             all_duties.extend(group_beam_duties)
             duty_id += len(group_beam_duties)
 
@@ -246,10 +241,13 @@ class DutyGenerator:
             )
 
             # 시작 trip 자체가 1-trip duty
-            duty = self._try_build_duty(initial, duty_id)
-            if duty:
-                all_duties.append(duty)
-                duty_id += 1
+            trip_key = tuple(sorted(initial.trips))
+            if trip_key not in _seen_trip_sets:
+                duty = self._try_build_duty(initial, duty_id)
+                if duty:
+                    _seen_trip_sets.add(trip_key)
+                    duties.append(duty)
+                    duty_id += 1
 
             # Beam Search: 확장
             beam = [initial]
@@ -266,16 +264,32 @@ class DutyGenerator:
                         if new_state is None:
                             continue  # 조기 pruning
 
-                        # 확장된 상태도 duty로 생성
-                        duty = self._try_build_duty(new_state, duty_id)
-                        if duty:
-                            all_duties.append(duty)
-                            duty_id += 1
+                        # 확장된 상태도 duty로 생성 (trip set 중복 방지)
+                        trip_key = tuple(sorted(new_state.trips))
+                        if trip_key not in _seen_trip_sets:
+                            duty = self._try_build_duty(new_state, duty_id)
+                            if duty:
+                                _seen_trip_sets.add(trip_key)
+                                duties.append(duty)
+                                duty_id += 1
 
                         next_beam.append(new_state)
 
-                # Beam 제한: length diversity 유지 + score 기반
-                beam = self._select_diverse_beam(next_beam, cfg.beam_width)
+                # ── Beam-level dominance: per-key top-K ──
+                # key = (last_station, trip_count) → 같은 상태에서 score 상위만 유지
+                _key_groups: Dict[tuple, List[_BeamState]] = {}
+                for s in next_beam:
+                    key = (s.last_arr_station, len(s.trips))
+                    _key_groups.setdefault(key, []).append(s)
+
+                pruned_beam: List[_BeamState] = []
+                per_key_limit = max(cfg.beam_width // max(len(_key_groups), 1), 3)
+                for key, states in _key_groups.items():
+                    states.sort(key=lambda s: s.score, reverse=True)
+                    pruned_beam.extend(states[:per_key_limit])
+
+                # diversity + 전체 beam width 최종 컷
+                beam = self._select_diverse_beam(pruned_beam, cfg.beam_width)
 
                 # 전체 duty 수 제한
                 if len(all_duties) >= cfg.max_duties_target:
@@ -347,6 +361,11 @@ class DutyGenerator:
         before_dom = len(all_duties)
         all_duties = self._remove_dominated(all_duties)
 
+        # ── Final diversity-aware cap ──
+        # 시간대 bucket × trip 수 bucket별 top-K 유지
+        if len(all_duties) > cfg.max_duties_target:
+            all_duties = self._diversity_cap(all_duties, cfg.max_duties_target)
+
         # Coverage density 진단
         from collections import Counter as _Counter
         _trip_duty_cnt = _Counter()
@@ -402,6 +421,43 @@ class DutyGenerator:
 
         return result[:beam_width]
 
+    # ── Final diversity-aware cap ───────────────────────────
+
+    @staticmethod
+    def _diversity_cap(duties: List[FeasibleDuty], target: int) -> List[FeasibleDuty]:
+        """시간대 × trip 수 × day/night bucket별 균등 추출로 diversity 유지"""
+        if len(duties) <= target:
+            return duties
+
+        # bucket: (start_hour, trip_count, is_night)
+        buckets: Dict[tuple, List[FeasibleDuty]] = {}
+        for d in duties:
+            hour = d.first_trip_dep // 120  # 2시간 단위
+            tcount = min(len(d.trips), 10)
+            key = (hour, tcount, d.is_night)
+            buckets.setdefault(key, []).append(d)
+
+        # 각 bucket 내 cost 정렬
+        for k in buckets:
+            buckets[k].sort(key=lambda d: d.cost)
+
+        # round-robin 추출
+        result: List[FeasibleDuty] = []
+        per_bucket = max(target // max(len(buckets), 1), 1)
+
+        for key in sorted(buckets.keys()):
+            result.extend(buckets[key][:per_bucket])
+
+        # 남은 슬롯은 전체 cost 기준 fill
+        if len(result) < target:
+            used_ids = {d.id for d in result}
+            remaining = [d for d in duties if d.id not in used_ids]
+            remaining.sort(key=lambda d: d.cost)
+            result.extend(remaining[:target - len(result)])
+
+        logger.info(f"Diversity cap: {len(duties)} → {len(result)} ({len(buckets)} buckets)")
+        return result[:target]
+
     # ── 시간대별 그룹 분할 ─────────────────────────────────
 
     def _split_by_time_group(self, trips: List[TripInfo], group_minutes: int = 120) -> List[List[TripInfo]]:
@@ -431,6 +487,7 @@ class DutyGenerator:
         """한 시간대 그룹에서 beam search 실행"""
         duties: List[FeasibleDuty] = []
         duty_id = start_duty_id
+        _seen_trip_sets: set = set()  # trip set 중복 방지
 
         for start_trip in group_trips:
             initial = _BeamState(
