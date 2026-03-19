@@ -85,6 +85,15 @@ class PresolveProber(BaseValidator):
         bound_data = context.get("bound_data", {})
         gate3_result = context.get("gate3_result", {})
 
+        # SP 모델에서는 presolve 불필요 (시간 제약 없음)
+        compile_summary = context.get("compile_summary", {})
+        if compile_summary.get("model_type") == "SetPartitioning":
+            result.add_info(
+                code="PRESOLVE_SKIPPED_SP",
+                message="Set Partitioning 모델 — presolve 불필요 (시간 제약은 Generator에서 검증됨)",
+            )
+            return result
+
         # bound_data가 없으면 presolve 실행 불가
         if not bound_data or not bound_data.get("sets"):
             result.add_info(

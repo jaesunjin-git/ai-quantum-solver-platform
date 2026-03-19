@@ -324,7 +324,11 @@ def build_cache_key(
         "parameters": sorted(bound_data.get("parameters", {}).items()),
         "set_sizes": sorted(bound_data.get("set_sizes", {}).items()),
     }
-    ir_bytes = json.dumps(key_parts, sort_keys=True, default=str).encode("utf-8")
+    try:
+        ir_bytes = json.dumps(key_parts, sort_keys=True, default=str).encode("utf-8")
+    except TypeError:
+        # mixed type keys (str/int tuple) → sort 없이 직렬화
+        ir_bytes = json.dumps(key_parts, default=str).encode("utf-8")
     ir_hash = hashlib.sha256(ir_bytes).hexdigest()[:16]
     return f"{ir_hash}:{policy_version}:{catalog_version}"
 

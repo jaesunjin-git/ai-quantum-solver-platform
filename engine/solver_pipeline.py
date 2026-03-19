@@ -220,6 +220,7 @@ class SolverPipeline:
                     "warnings": compile_result.warnings or [],
                     "parameter_sources": bound_data.get("parameter_sources", {}),
                     "parameter_warnings": bound_data.get("parameter_warnings", []),
+                    "model_type": compile_result.metadata.get("model_type", ""),
                 },
                 "model_stats": {
                     "total_variables": compile_result.variable_count,
