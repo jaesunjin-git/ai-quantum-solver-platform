@@ -355,7 +355,10 @@ class CrewDutyGenerator(BaseColumnGenerator):
 
                 total_active = sum(t.duration for t in ev_chain) + \
                                sum(t.duration for t in mo_chain)
-                if total_active > cfg.max_active_time:
+                # overnight은 저녁+새벽 두 구간이므로 driving 제한 완화
+                # max_active_time은 단일 구간 기준 → overnight은 1.5배 허용
+                overnight_active_limit = int(cfg.max_active_time * 1.5)
+                if total_active > overnight_active_limit:
                     reject_reasons["max_active_exceeded"] += 1
                     continue
 
