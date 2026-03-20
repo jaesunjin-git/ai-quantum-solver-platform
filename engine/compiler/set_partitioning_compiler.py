@@ -69,15 +69,31 @@ class SetPartitioningCompiler(BaseCompiler):
             for tid in d.trips:
                 trip_to_duties.setdefault(tid, []).append(d.id)
 
-        # ── 3. Coverage 제약: 각 trip을 정확히 1개 duty에 배정 ──
+        # ── 3. Coverage 사전 검증 + 제약 생성 ──
         all_trip_ids = sorted(trip_to_duties.keys())
         coverage_count = 0
 
+        # 사전 검증: uncovered trip, low-coverage trip 진단
+        uncovered = [tid for tid, dids in trip_to_duties.items() if not dids]
+        if uncovered:
+            logger.error(f"SP: {len(uncovered)} trips have NO covering column: {uncovered[:10]}")
+            return CompileResult(
+                success=False,
+                error=f"{len(uncovered)} trips have no covering column. "
+                      f"Generator coverage 부족. trip_ids: {uncovered[:10]}",
+            )
+
+        # coverage density 진단 (degree 1 = 선택의 여지 없는 trip)
+        degree_1 = [tid for tid, dids in trip_to_duties.items() if len(dids) == 1]
+        if degree_1:
+            logger.warning(
+                f"SP: {len(degree_1)} trips have only 1 covering column "
+                f"(forced selection, no flexibility)"
+            )
+
+        # coverage 제약 생성: 각 trip을 정확히 1개 column에 배정 (Set Partitioning)
         for tid in all_trip_ids:
             duty_ids = trip_to_duties[tid]
-            if not duty_ids:
-                logger.error(f"SP: trip {tid} has no covering duty!")
-                continue
             model.add(sum(z[did] for did in duty_ids) == 1)
             coverage_count += 1
 
