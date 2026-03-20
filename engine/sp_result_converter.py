@@ -209,6 +209,8 @@ def _build_columns_detail(
                     "trip_id": tid,
                     "dep_hhmm": f"{task.dep_time // 60:02d}:{task.dep_time % 60:02d}",
                     "arr_hhmm": f"{task.arr_time // 60:02d}:{task.arr_time % 60:02d}",
+                    "dep_time": task.dep_time,      # 분 단위 숫자 (타임라인용)
+                    "arr_time": task.arr_time,       # 분 단위 숫자
                     "dep_station": task.dep_station,
                     "arr_station": task.arr_station,
                     "duration": task.duration,
