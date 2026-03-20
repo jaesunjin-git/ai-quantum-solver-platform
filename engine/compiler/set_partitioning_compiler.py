@@ -55,12 +55,13 @@ class SetPartitioningCompiler(BaseCompiler):
             )
 
         try:
-            return self._compile_cpsat(sp_problem)
+            return self._compile_cpsat(sp_problem, math_model=math_model,
+                                        params=bound_data.get("parameters", {}))
         except Exception as e:
             logger.error(f"SP compilation failed: {e}", exc_info=True)
             return CompileResult(success=False, error=str(e))
 
-    def _compile_cpsat(self, problem: SetPartitioningProblem) -> CompileResult:
+    def _compile_cpsat(self, problem: SetPartitioningProblem, **kwargs) -> CompileResult:
         """SetPartitioningProblem → CP-SAT 모델 변환"""
         from ortools.sat.python import cp_model
 
@@ -95,21 +96,21 @@ class SetPartitioningCompiler(BaseCompiler):
             extra_count += 1
             logger.info(f"SP: {constraint.label}")
 
-        # ── 4. 목적함수: lexicographic (column 수 우선 + secondary cost) ──
-        # Big-M: 1 column 줄이는 것이 어떤 secondary 차이보다 항상 우선
-        def _secondary_cost(col):
-            tc = len(col.trips)
-            short_penalty = 30 * max(0, 8 - tc) ** 2  # 짧은 column 억제
-            idle_penalty = col.idle_minutes
-            return short_penalty + idle_penalty
+        # ── 4. 목적함수: ObjectiveBuilder (solver-independent) ──
+        from engine.compiler.objective_builder import ObjectiveBuilder, ObjectiveConfig, extract_objective_type
 
-        max_secondary = max((_secondary_cost(c) for c in problem.columns), default=1)
-        big_m = max_secondary + 1  # column 1개 > 최대 secondary
+        # math_model에서 objective type 추출 (kwargs로 전달)
+        math_model = kwargs.get("math_model", {})
+        objective_type = extract_objective_type(math_model)
+        obj_config = ObjectiveConfig.from_params(kwargs.get("params", {}))
+
+        builder = ObjectiveBuilder(problem.columns, obj_config)
+        scores = builder.build(objective_type, kwargs.get("params", {}))
 
         cost_terms = []
         for col in problem.columns:
-            total_cost = big_m + _secondary_cost(col)
-            cost_terms.append(total_cost * z[col.id])
+            score = scores.get(col.id, 1000)
+            cost_terms.append(score * z[col.id])
         model.minimize(sum(cost_terms))
 
         total_constraints = coverage_count + extra_count
