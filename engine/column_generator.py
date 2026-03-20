@@ -545,7 +545,7 @@ class BaseColumnGenerator:
             last_end_location=next_task.end_location,
             total_driving=new_driving,
             first_dep_time=state.first_dep_time,
-            score=len(new_tasks) * 80 + new_driving - 0.15 * span_estimate,
+            score=len(new_tasks) * 90 + new_driving - 0.1 * span_estimate,
         )
 
     # ── Column 생성 + feasibility 검증 (override 가능) ────────
@@ -588,8 +588,10 @@ class BaseColumnGenerator:
         regular_gap, inactive_gap = self._classify_gaps(state.trips)
         break_minutes = min(regular_gap, cfg.min_pause_time)
 
-        # 대기시간 = span - driving - prep - cleanup - break - inactive
-        wait = span - driving - prep - cleanup - break_minutes - inactive_gap
+        # 대기시간 = span - driving - full_prep - cleanup - break - inactive
+        # wait는 full prep(depot) 기준으로 계산 (relay로 생성해도 wait는 보수적)
+        full_prep = self._get_full_prep()
+        wait = span - driving - full_prep - cleanup - break_minutes - inactive_gap
         if wait < 0:
             wait = 0
         if wait > cfg.max_idle_time:
