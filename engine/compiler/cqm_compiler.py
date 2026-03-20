@@ -68,48 +68,109 @@ class CQMCompiler(BaseCompiler):
         max_columns: int,
     ) -> List[FeasibleColumn]:
         """
-        Column cap 적용 시 coverage 보장.
+        Column cap 적용 시 coverage 보장 (greedy set cover anchor).
 
-        1단계: 각 task를 커버하는 최소 1개 column 보호
+        1단계: Greedy set cover로 최소 anchor 확보 (gain/cost 비율)
         2단계: 나머지 budget을 cost 기준으로 채움
+
+        fallback: greedy anchor가 30% 이상이면 기존 단순 anchor로 전환
         """
-        # 1단계: coverage 보장 — 각 task의 best column 1개씩 보호
-        protected_ids = set()
         col_map = {c.id: c for c in columns}
+        all_tasks = set(task_ids)
 
-        for tid in task_ids:
-            col_ids = task_to_columns.get(tid, [])
-            if not col_ids:
-                continue
-            # 이미 보호된 column이 이 task를 커버하면 skip
-            if any(cid in protected_ids for cid in col_ids):
-                continue
-            # cost 가장 낮은 column 보호
-            best_cid = min(col_ids, key=lambda cid: col_map[cid].cost if cid in col_map else float('inf'))
-            protected_ids.add(best_cid)
+        # ── 1단계: Greedy set cover anchor ──
+        # gain(새로 커버하는 task 수) / cost 비율이 높은 column 우선
+        anchor_ids = set()
+        covered = set()
 
-        # 2단계: 나머지 budget
-        remaining_budget = max_columns - len(protected_ids)
+        # column별 task set 사전 구축
+        col_tasks = {c.id: set(c.trips) for c in columns}
+
+        # task별 column 인덱스 (빠른 탐색)
+        task_to_col_set = {}
+        for c in columns:
+            for tid in c.trips:
+                task_to_col_set.setdefault(tid, []).append(c)
+
+        while covered < all_tasks:
+            # uncovered task 중 가장 적은 column을 가진 task부터 (MRV)
+            best_id = None
+            best_score = -1.0
+
+            uncovered_tasks = all_tasks - covered
+            # 샘플링: uncovered task의 column만 탐색 (전체 스캔 방지)
+            candidate_ids = set()
+            for tid in uncovered_tasks:
+                for c in task_to_col_set.get(tid, []):
+                    if c.id not in anchor_ids:
+                        candidate_ids.add(c.id)
+
+            for cid in candidate_ids:
+                c = col_map[cid]
+                gain = len(col_tasks[c.id] & uncovered_tasks)
+                if gain == 0:
+                    continue
+                score = gain / max(c.cost, 0.01)
+                if score > best_score:
+                    best_score = score
+                    best_id = c.id
+
+            if best_id is None:
+                break
+
+            anchor_ids.add(best_id)
+            covered |= col_tasks[best_id]
+
+        # ── fallback: anchor가 budget 30% 초과 시 단순 방식으로 전환 ──
+        anchor_limit = int(max_columns * 0.3)
+        if len(anchor_ids) > anchor_limit:
+            logger.warning(f"CQM cap: greedy anchor {len(anchor_ids)} > 30% limit "
+                          f"({anchor_limit}), falling back to simple anchor")
+            anchor_ids = set()
+            covered = set()
+            for tid in task_ids:
+                if tid in covered:
+                    continue
+                col_ids = task_to_columns.get(tid, [])
+                if not col_ids:
+                    continue
+                best_cid = min(col_ids,
+                               key=lambda cid: col_map[cid].cost if cid in col_map else float('inf'))
+                anchor_ids.add(best_cid)
+                covered |= col_tasks.get(best_cid, set())
+
+        logger.info(f"CQM cap: {len(anchor_ids)} anchor columns "
+                     f"(covers {len(covered)}/{len(all_tasks)} tasks)")
+
+        # ── 2단계: 나머지 budget을 cost 기준으로 채움 ──
+        remaining_budget = max_columns - len(anchor_ids)
         if remaining_budget > 0:
-            # cost 기준 상위 N개 (보호된 것 제외)
             candidates = sorted(
-                [c for c in columns if c.id not in protected_ids],
+                [c for c in columns if c.id not in anchor_ids],
                 key=lambda c: c.cost
             )
             fill_ids = {c.id for c in candidates[:remaining_budget]}
         else:
             fill_ids = set()
 
-        selected_ids = protected_ids | fill_ids
+        selected_ids = anchor_ids | fill_ids
         result = [c for c in columns if c.id in selected_ids]
 
-        # coverage 검증
-        covered = set()
+        # ── coverage 최종 검증 ──
+        final_covered = set()
         for c in result:
-            covered.update(c.trips)
-        uncovered = set(task_ids) - covered
+            final_covered.update(c.trips)
+        uncovered = all_tasks - final_covered
         if uncovered:
-            logger.warning(f"CQM cap: {len(uncovered)} tasks still uncovered after protection!")
+            logger.warning(f"CQM cap: {len(uncovered)} tasks STILL uncovered!")
+            # auto-repair: uncovered task의 column 강제 추가
+            for tid in uncovered:
+                col_ids = task_to_columns.get(tid, [])
+                if col_ids:
+                    repair_cid = min(col_ids,
+                                     key=lambda cid: col_map[cid].cost if cid in col_map else float('inf'))
+                    result.append(col_map[repair_cid])
+                    logger.info(f"CQM cap: auto-repair added column {repair_cid} for task {tid}")
 
         return result
 
