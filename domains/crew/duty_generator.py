@@ -198,6 +198,13 @@ class CrewDutyGenerator(BaseColumnGenerator):
         """주간 duty feasibility"""
         if has_early:
             return False  # 새벽 trip은 주간 duty 불가
+
+        # 주간 출근 시각 제한: duty_start(= first_dep - prep) >= day_start_earliest
+        # prep은 주간 기준 (setup_time_day)
+        duty_start = column.first_trip_dep - cfg.setup_time_day
+        if duty_start < cfg.day_start_earliest:
+            return False
+
         return True
 
     def _check_night_feasibility(self, column, cfg, task_map, has_early, has_evening) -> bool:
