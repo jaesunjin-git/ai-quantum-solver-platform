@@ -119,6 +119,9 @@ class SetPartitioningCompiler(BaseCompiler):
             f"{extra_count} extra, {problem.num_tasks} tasks"
         )
 
+        # ── SP 진단 정보 (INFEASIBLE 시 사용자 피드백용) ──
+        sp_diagnostics = _build_sp_diagnostics(problem)
+
         return CompileResult(
             success=True,
             solver_model=model,
@@ -133,5 +136,82 @@ class SetPartitioningCompiler(BaseCompiler):
                 "task_count": problem.num_tasks,
                 "coverage_constraints": coverage_count,
                 "duty_map": {c.id: c for c in problem.columns},
+                "sp_diagnostics": sp_diagnostics,
             },
         )
+
+
+def _build_sp_diagnostics(problem: SetPartitioningProblem) -> Dict[str, Any]:
+    """
+    SP 문제 사전 진단 정보 구축.
+
+    INFEASIBLE 발생 시 사용자에게 구체적 원인 제공:
+    - coverage 밀도 (어떤 task가 취약한지)
+    - crew count 실현 가능성 (column_type 분포)
+    - 잠재적 충돌 (제약 간 모순)
+    """
+    from collections import Counter
+
+    # column_type별 수
+    type_dist = Counter(c.column_type for c in problem.columns)
+
+    # task별 coverage density
+    density = {tid: len(cids) for tid, cids in problem.task_to_columns.items()}
+    min_density = min(density.values()) if density else 0
+    weak_tasks = [tid for tid, d in density.items() if d <= 3]
+
+    # extra constraint 실현 가능성 체크
+    constraint_risks = []
+    for con in problem.extra_constraints:
+        available = len(con.column_ids)
+        if con.operator == "==" and available < con.rhs:
+            constraint_risks.append({
+                "constraint": con.name,
+                "label": con.label,
+                "required": con.rhs,
+                "available_columns": available,
+                "risk": "INFEASIBLE_CERTAIN",
+                "message": f"{con.label}: 필요한 {con.rhs}개보다 후보가 {available}개 부족",
+            })
+        elif con.operator == "==" and available < con.rhs * 2:
+            constraint_risks.append({
+                "constraint": con.name,
+                "label": con.label,
+                "required": con.rhs,
+                "available_columns": available,
+                "risk": "INFEASIBLE_LIKELY",
+                "message": f"{con.label}: 후보 {available}개로 {con.rhs}개 선택은 매우 빡빡",
+            })
+
+    # 복합 제약 충돌 체크 (total = day + night)
+    total_con = next((c for c in problem.extra_constraints if c.name == "total_columns"), None)
+    day_con = next((c for c in problem.extra_constraints if c.name == "day_columns"), None)
+    night_con = next((c for c in problem.extra_constraints if c.name == "night_columns"), None)
+    if total_con and day_con and night_con:
+        if day_con.rhs + night_con.rhs != total_con.rhs:
+            constraint_risks.append({
+                "constraint": "crew_count_sum",
+                "risk": "INFEASIBLE_CERTAIN",
+                "message": f"day({day_con.rhs}) + night({night_con.rhs}) = "
+                           f"{day_con.rhs + night_con.rhs} ≠ total({total_con.rhs})",
+            })
+
+    diagnostics = {
+        "column_type_distribution": dict(type_dist),
+        "task_count": problem.num_tasks,
+        "column_count": problem.num_columns,
+        "min_coverage_density": min_density,
+        "weak_tasks_count": len(weak_tasks),
+        "weak_tasks_sample": weak_tasks[:10],
+        "degree_1_count": len(problem.degree_1_tasks),
+        "constraint_risks": constraint_risks,
+    }
+
+    # 리스크 경고 로그
+    for risk in constraint_risks:
+        if risk["risk"] == "INFEASIBLE_CERTAIN":
+            logger.error(f"SP diagnostic: {risk['message']}")
+        elif risk["risk"] == "INFEASIBLE_LIKELY":
+            logger.warning(f"SP diagnostic: {risk['message']}")
+
+    return diagnostics

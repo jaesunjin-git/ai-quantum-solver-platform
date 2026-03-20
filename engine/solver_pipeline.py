@@ -433,7 +433,7 @@ class SolverPipeline:
                 "objective_value": execute_result.objective_value,
                 "execute_time_sec": execute_result.execution_time_sec,
             },
-            "infeasibility_info": None,
+            "infeasibility_info": execute_result.infeasibility_info,
         }
 
         return summary

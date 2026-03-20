@@ -75,9 +75,15 @@ class ORToolsExecutor(BaseExecutor):
         # INFEASIBLE 진단
         infeasibility_info = None
         if status == cp_model.INFEASIBLE:
-            infeasibility_info = self._diagnose_infeasibility(
-                compile_result, solver, elapsed
-            )
+            # SP 모델이면 SP 전용 진단 사용
+            if compile_result.metadata.get("model_type") == "SetPartitioning":
+                infeasibility_info = self._diagnose_sp_infeasibility(
+                    compile_result, solver, elapsed
+                )
+            else:
+                infeasibility_info = self._diagnose_infeasibility(
+                    compile_result, solver, elapsed
+                )
 
         return ExecuteResult(
             success=success,
@@ -245,5 +251,110 @@ class ORToolsExecutor(BaseExecutor):
             f"conflicts={solver_stats['conflicts']}, "
             f"hints={len(conflict_hints)}"
         )
+
+        return diagnosis
+
+    def _diagnose_sp_infeasibility(
+        self, compile_result, solver, elapsed: float
+    ) -> Dict[str, Any]:
+        """
+        Set Partitioning INFEASIBLE 진단.
+
+        SP 모델은 coverage(==1) + crew count 제약만 있으므로
+        원인이 명확히 분류 가능:
+        1. crew count 제약 충돌 (day+night != total, 후보 부족)
+        2. exact cover 불가능 (column 다양성 부족)
+        3. coverage + crew count 동시 충돌
+        """
+        metadata = compile_result.metadata or {}
+        sp_diag = metadata.get("sp_diagnostics", {})
+        constraint_risks = sp_diag.get("constraint_risks", [])
+
+        solver_stats = {
+            "conflicts": solver.num_conflicts if hasattr(solver, 'num_conflicts') else 0,
+            "branches": solver.num_branches if hasattr(solver, 'num_branches') else 0,
+            "wall_time": solver.wall_time if hasattr(solver, 'wall_time') else elapsed,
+        }
+
+        # ── 원인 분석 ──
+        causes = []
+        suggestions = []
+
+        # 1. compile 시 감지된 리스크
+        for risk in constraint_risks:
+            causes.append({
+                "type": risk["risk"],
+                "constraint": risk.get("constraint", ""),
+                "message": risk["message"],
+            })
+
+        # 2. column_type 분포 기반 진단
+        type_dist = sp_diag.get("column_type_distribution", {})
+        if type_dist:
+            night_available = type_dist.get("night", 0) + type_dist.get("overnight", 0)
+            day_available = type_dist.get("day", 0) + type_dist.get("default", 0)
+
+            if night_available == 0:
+                causes.append({
+                    "type": "NO_NIGHT_COLUMNS",
+                    "message": "야간/숙박조 column이 0개입니다. "
+                               "숙박조(overnight) 설정을 확인하세요.",
+                })
+                suggestions.append("숙박조(is_overnight_crew) 파라미터를 활성화하세요.")
+
+            if night_available < 13:
+                suggestions.append(
+                    f"야간 column이 {night_available}개로 부족합니다. "
+                    f"Generator의 overnight chain 범위를 확장하세요."
+                )
+
+        # 3. coverage density 기반
+        weak_count = sp_diag.get("weak_tasks_count", 0)
+        if weak_count > 0:
+            causes.append({
+                "type": "WEAK_COVERAGE",
+                "message": f"{weak_count}개 task의 coverage가 3개 이하입니다. "
+                           f"exact cover 조합이 불가능할 수 있습니다.",
+            })
+            suggestions.append("Generator beam_width를 늘리거나 max_columns_target을 증가시키세요.")
+
+        # 4. 원인이 없으면 일반적 진단
+        if not causes:
+            if solver_stats["conflicts"] == 0:
+                causes.append({
+                    "type": "PRESOLVE_INFEASIBLE",
+                    "message": "solver가 탐색 없이 즉시 INFEASIBLE 판정. "
+                               "crew count 제약이 현재 column pool과 모순됩니다.",
+                })
+            else:
+                causes.append({
+                    "type": "SEARCH_INFEASIBLE",
+                    "message": f"탐색 후 INFEASIBLE ({solver_stats['conflicts']} conflicts). "
+                               f"exact cover 조합이 현재 column pool에 없습니다.",
+                })
+            suggestions.append("crew count 제약을 완화하거나, Generator pool 크기를 늘리세요.")
+
+        # ── 사용자 메시지 생성 ──
+        user_message = "최적화 실행 불가 (INFEASIBLE):\n"
+        for i, cause in enumerate(causes, 1):
+            user_message += f"  {i}. {cause['message']}\n"
+        if suggestions:
+            user_message += "\n제안:\n"
+            for s in suggestions:
+                user_message += f"  • {s}\n"
+
+        diagnosis = {
+            "model_type": "SetPartitioning",
+            "causes": causes,
+            "suggestions": suggestions,
+            "user_message": user_message,
+            "sp_diagnostics": sp_diag,
+            "solver_stats": solver_stats,
+        }
+
+        logger.info(f"SP INFEASIBLE diagnosis: {len(causes)} causes, "
+                     f"{len(suggestions)} suggestions")
+        for cause in causes:
+            logger.warning(f"  SP cause: {cause['message']}")
 
         return diagnosis
