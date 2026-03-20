@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from engine.compiler import get_compiler
+from engine.compiler import get_compiler, get_compiler_unified
 from engine.compiler.base import DataBinder, CompileResult
 from engine.result_interpreter import interpret_result, save_artifacts
 from engine.executor import get_executor
@@ -150,7 +150,7 @@ class SolverPipeline:
                         bound_data["parameters"]["big_m"] = _new_big_m
                         logger.info(f"Policy: big_m = {_new_big_m}")
 
-                compiler = get_compiler(solver_id)
+                compiler = get_compiler_unified(solver_id, use_sp=False)
                 logger.info(f"Compiler: {type(compiler).__name__}")
 
                 compile_start = time.time()
