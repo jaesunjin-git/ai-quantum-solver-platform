@@ -30,7 +30,18 @@ import yaml
 
 from engine.validation.base import AutoFix, BaseValidator, UserInput, ValidationResult
 
-KNOWLEDGE_BASE = Path(__file__).resolve().parents[3] / "knowledge" / "domains"
+# GR-1: engine은 knowledge 파일시스템 레이아웃을 몰라야 함.
+# context["knowledge_base_path"]로 주입 권장. fallback: 기존 경로.
+_FALLBACK_KNOWLEDGE_BASE = Path(__file__).resolve().parents[3] / "knowledge" / "domains"
+
+
+def _resolve_knowledge_base(context: Optional[dict] = None) -> Path:
+    """context에서 knowledge_base_path를 가져오거나, fallback 사용."""
+    if context:
+        kb = context.get("knowledge_base_path")
+        if kb:
+            return Path(kb)
+    return _FALLBACK_KNOWLEDGE_BASE
 
 
 class InfeasibilityDiagnosisValidator(BaseValidator):
@@ -194,7 +205,7 @@ class InfeasibilityDiagnosisValidator(BaseValidator):
                 for p in parameters if p.get("id")
             }
         if parameters and domain:
-            tight_params = self._check_parameter_tightness(parameters, domain)
+            tight_params = self._check_parameter_tightness(parameters, domain, context)
             if tight_params:
                 param_list = ", ".join(tight_params[:5])
                 result.add_warning(
@@ -275,10 +286,11 @@ class InfeasibilityDiagnosisValidator(BaseValidator):
                         )
 
     def _check_parameter_tightness(
-        self, parameters: dict, domain: str
+        self, parameters: dict, domain: str, context: Optional[dict] = None
     ) -> list[str]:
         """Find parameters that are at or near their reference range extremes."""
-        ref_path = KNOWLEDGE_BASE / domain / "reference_ranges.yaml"
+        kb = _resolve_knowledge_base(context)
+        ref_path = kb / domain / "reference_ranges.yaml"
         if not ref_path.exists():
             return []
 

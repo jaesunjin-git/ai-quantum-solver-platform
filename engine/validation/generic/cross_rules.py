@@ -28,15 +28,28 @@ from engine.validation.base import AutoFix, BaseValidator, ValidationResult
 logger = logging.getLogger(__name__)
 
 # ── Rule file discovery ──
+# GR-1: engine은 knowledge 파일시스템 레이아웃을 몰라야 함.
+# context["knowledge_base_path"] 또는 context["cross_rules_data"]로 주입 권장.
+# fallback: 기존 경로 (하위 호환)
 
-KNOWLEDGE_BASE = Path(__file__).resolve().parents[3] / "knowledge" / "domains"
+_FALLBACK_KNOWLEDGE_BASE = Path(__file__).resolve().parents[3] / "knowledge" / "domains"
 
 
-def _find_cross_rules(domain: str) -> Optional[Path]:
+def _resolve_knowledge_base(context: Optional[dict] = None) -> Path:
+    """context에서 knowledge_base_path를 가져오거나, fallback 사용."""
+    if context:
+        kb = context.get("knowledge_base_path")
+        if kb:
+            return Path(kb)
+    return _FALLBACK_KNOWLEDGE_BASE
+
+
+def _find_cross_rules(domain: str, knowledge_base: Optional[Path] = None) -> Optional[Path]:
     """Find cross_rules.yaml for a given domain."""
+    base = knowledge_base or _FALLBACK_KNOWLEDGE_BASE
     candidates = [
-        KNOWLEDGE_BASE / domain / "cross_rules.yaml",
-        KNOWLEDGE_BASE / domain / "cross_rules.yml",
+        base / domain / "cross_rules.yaml",
+        base / domain / "cross_rules.yml",
     ]
     for path in candidates:
         if path.exists():
@@ -44,9 +57,16 @@ def _find_cross_rules(domain: str) -> Optional[Path]:
     return None
 
 
-def _load_rules(domain: str) -> list[dict]:
+def _load_rules(domain: str, context: Optional[dict] = None) -> list[dict]:
     """Load and parse cross-validation rules for a domain."""
-    path = _find_cross_rules(domain)
+    # context에 이미 로드된 rules가 있으면 사용 (GR-1 권장 방식)
+    if context:
+        preloaded = context.get("cross_rules_data")
+        if preloaded is not None:
+            return preloaded if isinstance(preloaded, list) else preloaded.get("rules", [])
+
+    kb = _resolve_knowledge_base(context)
+    path = _find_cross_rules(domain, kb)
     if not path:
         return []
     try:
@@ -136,7 +156,7 @@ class ParameterCrossRuleValidator(BaseValidator):
         if not domain:
             return result
 
-        rules = _load_rules(domain)
+        rules = _load_rules(domain, context)
         if not rules:
             return result
 
@@ -232,8 +252,9 @@ class ParameterRangeValidator(BaseValidator):
         if not domain:
             return result
 
-        # Load reference ranges
-        ref_path = KNOWLEDGE_BASE / domain / "reference_ranges.yaml"
+        # Load reference ranges (context 주입 또는 fallback)
+        kb = _resolve_knowledge_base(context)
+        ref_path = kb / domain / "reference_ranges.yaml"
         if not ref_path.exists():
             return result
 
