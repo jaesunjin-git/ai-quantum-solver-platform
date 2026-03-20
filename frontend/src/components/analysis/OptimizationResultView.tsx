@@ -170,7 +170,7 @@ export function OptimizationResultView({
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
+      <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4">
         {activeTab === 'kpi' && <KPIDashboard data={data} interpreted={interpreted} />}
         {activeTab === 'schedule' && <DutyScheduleTab interpreted={interpreted} />}
         {activeTab === 'constraints' && <ConstraintCheckTab interpreted={interpreted} />}

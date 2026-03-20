@@ -51,8 +51,14 @@ export default function VersionBar({
   };
 
   const toggleCompareMode = () => {
-    setCompareMode(!compareMode);
-    setCompareSelection([]);
+    if (!compareMode) {
+      // 비교 모드 진입 시 현재 버전을 첫 번째 선택으로 자동 포함
+      setCompareMode(true);
+      setCompareSelection(currentVersionIndex >= 0 ? [currentVersionIndex] : []);
+    } else {
+      setCompareMode(false);
+      setCompareSelection([]);
+    }
   };
 
   return (
