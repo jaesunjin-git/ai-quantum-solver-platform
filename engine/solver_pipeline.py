@@ -114,13 +114,11 @@ class SolverPipeline:
 
         #  Phase 2: Compile
         try:
-            # ── Set Partitioning 경로 (classical solver) ──
+            # ── Set Partitioning 경로 판단 (SolverInfo 기반 — 하드코딩 제거) ──
             # crew scheduling 등 assignment 문제는 SP가 구조적으로 올바름.
             # DutyGenerator가 시간 검증 전부 수행 → solver는 coverage만 결정.
-            _use_sp = solver_id in (
-                "classical_cpu", "nvidia_cuopt",
-                "dwave_hybrid_cqm",  # D-Wave도 SP 경로 사용
-            )
+            from engine.compiler.compiler_registry import supports_set_partitioning
+            _use_sp = supports_set_partitioning(solver_id)
 
             if _use_sp:
                 compile_start = time.time()
@@ -309,13 +307,34 @@ class SolverPipeline:
             )
 
             if not execute_result.success:
+                # INFEASIBLE 등 실패 시에도 진단 정보를 summary에 포함
+                fail_summary = {
+                    "status": execute_result.status,
+                    "timing": {
+                        "compile_sec": round(compile_time, 3),
+                        "execute_sec": execute_result.execution_time_sec,
+                        "total_sec": round(compile_time + execute_result.execution_time_sec, 3),
+                    },
+                    "model_stats": {
+                        "total_variables": compile_result.variable_count,
+                        "total_constraints": compile_result.constraint_count,
+                    },
+                    "solver_info": execute_result.solver_info,
+                    "infeasibility_info": execute_result.infeasibility_info,
+                }
+                # user_message가 있으면 에러 메시지에 활용
+                user_msg = None
+                if execute_result.infeasibility_info:
+                    user_msg = execute_result.infeasibility_info.get("user_message")
+                error_msg = user_msg or f"Execution failed: {execute_result.error or execute_result.status}"
                 return PipelineResult(
                     success=False, phase="execute", solver_id=solver_id,
                     solver_name=solver_name,
                     compile_result=compile_result,
                     compile_time_sec=round(compile_time, 3),
                     execute_result=execute_result,
-                    error=f"Execution failed: {execute_result.error or execute_result.status}"
+                    summary=fail_summary,
+                    error=error_msg,
                 )
 
             logger.info(
@@ -383,6 +402,8 @@ class SolverPipeline:
             from engine.sp_result_converter import convert_sp_result
             converter_fn = convert_sp_result
 
+        # params 전달 — crew converter가 제약 기준값에 사용
+        _params = bound_data.get("parameters", {}) if bound_data else {}
         interpretation = converter_fn(
             solution=execute_result.solution,
             column_map=column_map,
@@ -391,6 +412,7 @@ class SolverPipeline:
             solver_name=solver_name or "CP-SAT (Set Partitioning)",
             project_dir=project_dir,
             objective_value=execute_result.objective_value,
+            params=_params,
         )
 
         # 기존 summary 포맷과 호환

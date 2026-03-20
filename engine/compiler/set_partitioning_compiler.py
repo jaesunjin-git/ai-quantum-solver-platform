@@ -46,29 +46,49 @@ class SetPartitioningCompiler(BaseCompiler):
             params = bound_data.get("parameters", {})
             sp_problem = build_sp_problem(columns, params)
 
-        # 유효성 검증
-        valid, errors = sp_problem.validate()
+        # 유효성 검증 (infeasibility_reasons 포함)
+        valid, errors, warnings = sp_problem.validate()
+        for w in warnings:
+            logger.warning(f"SP: {w}")
         if not valid:
             return CompileResult(
                 success=False,
                 error=f"SP problem invalid: {'; '.join(errors)}",
+                metadata={"sp_diagnostics": sp_problem.diagnostics},
             )
 
         try:
-            return self._compile_cpsat(sp_problem, math_model=math_model,
-                                        params=bound_data.get("parameters", {}))
+            return self._compile_cpsat(
+                sp_problem,
+                math_model=math_model,
+                params=bound_data.get("parameters", {}),
+            )
         except Exception as e:
             logger.error(f"SP compilation failed: {e}", exc_info=True)
             return CompileResult(success=False, error=str(e))
 
-    def _compile_cpsat(self, problem: SetPartitioningProblem, **kwargs) -> CompileResult:
+    def _compile_cpsat(self, problem: SetPartitioningProblem,
+                       math_model: Dict, params: Dict) -> CompileResult:
         """SetPartitioningProblem → CP-SAT 모델 변환"""
         from ortools.sat.python import cp_model
 
+        # ── INFEASIBLE 사전 차단: 확정적 원인이 있으면 solver 탐색 불필요 ──
+        sp_diagnostics = problem.diagnostics
+        certain_risks = [
+            r for r in sp_diagnostics.get("constraint_risks", [])
+            if r["risk"] == "INFEASIBLE_CERTAIN"
+        ]
+        if certain_risks:
+            messages = [r["message"] for r in certain_risks]
+            return CompileResult(
+                success=False,
+                error=f"SP known infeasible: {'; '.join(messages)}",
+                metadata={"sp_diagnostics": sp_diagnostics},
+            )
+
         model = cp_model.CpModel()
 
-        # ── 1. 변수: dense index 기반 (#1) ──
-        # col.id는 hole이 있을 수 있으므로 0~N-1 dense index 사용
+        # ── 1. 변수: dense index 기반 ──
         col_index = {col.id: i for i, col in enumerate(problem.columns)}
         z = {}
         for col in problem.columns:
@@ -80,7 +100,6 @@ class SetPartitioningCompiler(BaseCompiler):
         for tid in problem.task_ids:
             col_ids = problem.task_to_columns.get(tid, [])
             if not col_ids:
-                # #1: uncovered task → 즉시 실패 (continue 금지)
                 return CompileResult(
                     success=False,
                     error=f"Task {tid} has no covering column. SP infeasible.",
@@ -92,13 +111,14 @@ class SetPartitioningCompiler(BaseCompiler):
         extra_count = 0
         for constraint in problem.extra_constraints:
             col_vars = [z[cid] for cid in constraint.column_ids if cid in z]
-            # #2: 부분 적용 감지
             missing = [cid for cid in constraint.column_ids if cid not in z]
             if missing:
                 logger.warning(f"SP: constraint '{constraint.name}' has {len(missing)} missing columns")
             if not col_vars:
-                logger.error(f"SP: constraint '{constraint.name}' has no valid columns!")
-                continue
+                return CompileResult(
+                    success=False,
+                    error=f"Constraint '{constraint.name}' ({constraint.label}) has no applicable columns — infeasible",
+                )
             if constraint.operator == "==":
                 model.add(sum(col_vars) == constraint.rhs)
             elif constraint.operator == "<=":
@@ -111,15 +131,20 @@ class SetPartitioningCompiler(BaseCompiler):
         # ── 4. 목적함수: ObjectiveBuilder (solver-independent) ──
         from engine.compiler.objective_builder import ObjectiveBuilder, ObjectiveConfig, extract_objective_type
 
-        math_model = kwargs.get("math_model", {})
         objective_type = extract_objective_type(math_model)
-        obj_config = ObjectiveConfig.from_params(kwargs.get("params", {}))
+        obj_config = ObjectiveConfig.from_params(params)
 
         builder = ObjectiveBuilder(problem.columns, obj_config)
-        scores = builder.build(objective_type, kwargs.get("params", {}))
+        scores = builder.build(objective_type, params)
 
-        # fallback: missing score → 충분히 큰 penalty (#3: 과도하지 않게)
-        max_score = max(scores.values(), default=1000)
+        if not scores:
+            return CompileResult(
+                success=False,
+                error="ObjectiveBuilder returned no scores — check objective configuration",
+            )
+
+        # fallback: missing score → 충분히 큰 penalty
+        max_score = max(scores.values())
         penalty = max_score * 10
         missing_count = 0
 
@@ -142,99 +167,22 @@ class SetPartitioningCompiler(BaseCompiler):
             f"{extra_count} extra, {problem.num_tasks} tasks"
         )
 
-        # ── SP 진단 정보 (INFEASIBLE 시 사용자 피드백용) ──
-        sp_diagnostics = _build_sp_diagnostics(problem)
-
         return CompileResult(
             success=True,
             solver_model=model,
             solver_type="ortools_cp",
             variable_count=len(z),
             constraint_count=total_constraints,
-            variable_map={"z": z, "col_index": col_index},
+            variable_map={"z": z},
             metadata={
                 "model_type": "SetPartitioning",
                 "engine": "ortools_cp_sat",
+                "col_index": col_index,
                 "column_count": problem.num_columns,
                 "task_count": problem.num_tasks,
                 "coverage_constraints": coverage_count,
                 "duty_map": {c.id: c for c in problem.columns},
+                "all_task_ids": problem.task_ids,
                 "sp_diagnostics": sp_diagnostics,
             },
         )
-
-
-def _build_sp_diagnostics(problem: SetPartitioningProblem) -> Dict[str, Any]:
-    """
-    SP 문제 사전 진단 정보 구축.
-
-    INFEASIBLE 발생 시 사용자에게 구체적 원인 제공:
-    - coverage 밀도 (어떤 task가 취약한지)
-    - crew count 실현 가능성 (column_type 분포)
-    - 잠재적 충돌 (제약 간 모순)
-    """
-    from collections import Counter
-
-    # column_type별 수
-    type_dist = Counter(c.column_type for c in problem.columns)
-
-    # task별 coverage density
-    density = {tid: len(cids) for tid, cids in problem.task_to_columns.items()}
-    min_density = min(density.values()) if density else 0
-    weak_tasks = [tid for tid, d in density.items() if d <= 3]
-
-    # extra constraint 실현 가능성 체크
-    constraint_risks = []
-    for con in problem.extra_constraints:
-        available = len(con.column_ids)
-        if con.operator == "==" and available < con.rhs:
-            constraint_risks.append({
-                "constraint": con.name,
-                "label": con.label,
-                "required": con.rhs,
-                "available_columns": available,
-                "risk": "INFEASIBLE_CERTAIN",
-                "message": f"{con.label}: 필요한 {con.rhs}개보다 후보가 {available}개 부족",
-            })
-        elif con.operator == "==" and available < con.rhs * 2:
-            constraint_risks.append({
-                "constraint": con.name,
-                "label": con.label,
-                "required": con.rhs,
-                "available_columns": available,
-                "risk": "INFEASIBLE_LIKELY",
-                "message": f"{con.label}: 후보 {available}개로 {con.rhs}개 선택은 매우 빡빡",
-            })
-
-    # 복합 제약 충돌 체크 (total = day + night)
-    total_con = next((c for c in problem.extra_constraints if c.name == "total_columns"), None)
-    day_con = next((c for c in problem.extra_constraints if c.name == "day_columns"), None)
-    night_con = next((c for c in problem.extra_constraints if c.name == "night_columns"), None)
-    if total_con and day_con and night_con:
-        if day_con.rhs + night_con.rhs != total_con.rhs:
-            constraint_risks.append({
-                "constraint": "crew_count_sum",
-                "risk": "INFEASIBLE_CERTAIN",
-                "message": f"day({day_con.rhs}) + night({night_con.rhs}) = "
-                           f"{day_con.rhs + night_con.rhs} ≠ total({total_con.rhs})",
-            })
-
-    diagnostics = {
-        "column_type_distribution": dict(type_dist),
-        "task_count": problem.num_tasks,
-        "column_count": problem.num_columns,
-        "min_coverage_density": min_density,
-        "weak_tasks_count": len(weak_tasks),
-        "weak_tasks_sample": weak_tasks[:10],
-        "degree_1_count": len(problem.degree_1_tasks),
-        "constraint_risks": constraint_risks,
-    }
-
-    # 리스크 경고 로그
-    for risk in constraint_risks:
-        if risk["risk"] == "INFEASIBLE_CERTAIN":
-            logger.error(f"SP diagnostic: {risk['message']}")
-        elif risk["risk"] == "INFEASIBLE_LIKELY":
-            logger.warning(f"SP diagnostic: {risk['message']}")
-
-    return diagnostics

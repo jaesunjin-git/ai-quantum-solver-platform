@@ -51,7 +51,10 @@ class ObjectiveConfig:
                       'balance_penalty_weight', 'short_threshold']:
             val = params.get(f'objective_{attr}')
             if val is not None:
-                setattr(cfg, attr, val)
+                try:
+                    setattr(cfg, attr, float(val))
+                except (ValueError, TypeError):
+                    pass  # 잘못된 값은 기본값 유지
         return cfg
 
 
@@ -98,7 +101,9 @@ class ObjectiveBuilder:
             logger.warning(f"Unknown objective '{objective_type}', using minimize_duties")
             scores = self._minimize_duties(params)
 
-        # 정수 스케일링 (#5: 정규화 후 1~1000 범위)
+        # 정수 스케일링: 정규화 후 1~100000 범위 (CP-SAT int64 호환)
+        # 넓은 범위로 score 차이를 최대한 보존
+        SCALE = 100000
         vals = list(scores.values())
         min_s = min(vals) if vals else 0
         max_s = max(vals) if vals else 1
@@ -107,7 +112,7 @@ class ObjectiveBuilder:
         int_scores = {}
         for col_id, score in scores.items():
             norm = (score - min_s) / range_s
-            int_scores[col_id] = max(1, int(1 + norm * 999))
+            int_scores[col_id] = max(1, int(1 + norm * (SCALE - 1)))
 
         logger.info(f"Objective '{objective_type}': "
                      f"score range [{min(int_scores.values())}..{max(int_scores.values())}], "
@@ -172,7 +177,12 @@ class ObjectiveBuilder:
         if target_duties:
             target_trips = math.ceil(total_task_count / int(target_duties))
         else:
-            target_trips = round(total_task_count / max(len(self.columns), 1)) or 8
+            # column pool의 평균 trip 수 기반 추정 (pool 수로 나누면 항상 0)
+            avg_trips = sum(len(c.trips) for c in self.columns) / max(len(self.columns), 1)
+            estimated_duties = math.ceil(total_task_count / max(avg_trips, 1))
+            target_trips = math.ceil(total_task_count / max(estimated_duties, 1))
+            logger.info(f"balance_workload: estimated target_trips={target_trips} "
+                        f"(avg_trips={avg_trips:.1f}, est_duties={estimated_duties})")
 
         scores = {}
         for col in self.columns:
@@ -213,7 +223,8 @@ class ObjectiveBuilder:
             dead_span = max(0, col.span_minutes - col.active_minutes)
             dead_norm = dead_span / max_span
 
-            score = 0.1 * cfg.duty_weight + idle_norm + 0.5 * dead_norm
+            # idle + dead span만으로 scoring (offset 제거 — 정규화 시 상쇄됨)
+            score = idle_norm + 0.5 * dead_norm
             scores[col.id] = max(score, 0.01)
 
         return scores
@@ -243,13 +254,16 @@ def extract_objective_type(math_model: Dict) -> str:
     if obj_id:
         return obj_id
 
-    # description 기반 fallback
+    # description 기반 fallback (우선순위: 구체적 → 일반적)
     desc = obj.get("description", "").lower()
-    if "효율" in desc or "efficiency" in desc:
-        return "maximize_efficiency"
-    if "균형" in desc or "balance" in desc or "균등" in desc:
+    # 복합어 매칭을 위해 구체적 키워드 먼저 체크
+    if "balance" in desc or "균형" in desc or "균등" in desc:
         return "balance_workload"
     if "비용" in desc or "cost" in desc:
         return "minimize_cost"
+    if "효율" in desc or "efficiency" in desc:
+        return "maximize_efficiency"
+    if "최소" in desc or "minimize" in desc:
+        return "minimize_duties"
 
     return "minimize_duties"  # default

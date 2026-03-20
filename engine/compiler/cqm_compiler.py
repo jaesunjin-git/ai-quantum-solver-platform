@@ -37,11 +37,14 @@ class CQMCompiler(BaseCompiler):
             params = bound_data.get("parameters", {})
             sp_problem = build_sp_problem(columns, params)
 
-        valid, errors = sp_problem.validate()
+        valid, errors, warnings = sp_problem.validate()
+        for w in warnings:
+            logger.warning(f"CQM: {w}")
         if not valid:
             return CompileResult(
                 success=False,
                 error=f"SP problem invalid: {'; '.join(errors)}",
+                metadata={"sp_diagnostics": sp_problem.diagnostics},
             )
 
         try:
@@ -58,7 +61,8 @@ class CQMCompiler(BaseCompiler):
             return CompileResult(success=False, error=str(e))
 
     # CQM용 column cap (100K는 compile에 263초 소요)
-    CQM_MAX_COLUMNS = 20000
+    import os as _os
+    CQM_MAX_COLUMNS = int(_os.environ.get("CQM_MAX_COLUMNS", 20000))
 
     @staticmethod
     def _cap_with_coverage(
@@ -257,9 +261,8 @@ class CQMCompiler(BaseCompiler):
         compile_time = time.time() - t0
         total_constraints = coverage_count + extra_count
 
-        # ── SP 진단 정보 ──
-        from engine.compiler.set_partitioning_compiler import _build_sp_diagnostics
-        sp_diagnostics = _build_sp_diagnostics(problem)
+        # ── SP 진단 정보 (problem 구축 시 이미 생성됨) ──
+        sp_diagnostics = problem.diagnostics
 
         logger.info(
             f"CQM compiled: {len(z)} vars, {coverage_count} coverage, "
@@ -281,6 +284,7 @@ class CQMCompiler(BaseCompiler):
                 "task_count": problem.num_tasks,
                 "coverage_constraints": coverage_count,
                 "duty_map": {c.id: c for c in columns},
+                "all_task_ids": problem.task_ids,
                 "compile_time": compile_time,
                 "sp_diagnostics": sp_diagnostics,
             },
@@ -342,7 +346,16 @@ class CQMExecutor:
 
         # ── 실행 ──
         t0 = time.time()
-        sampleset = sampler.sample_cqm(cqm, time_limit=effective_limit)
+        try:
+            sampleset = sampler.sample_cqm(cqm, time_limit=effective_limit)
+        except Exception as e:
+            wall_time = time.time() - t0
+            logger.error(f"D-Wave API call failed: {e}", exc_info=True)
+            return ExecuteResult(
+                success=False, solver_type="dwave_cqm", status="ERROR",
+                error=f"D-Wave API call failed: {e}",
+                execution_time_sec=round(wall_time, 3),
+            )
         wall_time = time.time() - t0
 
         # ── 결과 해석: best sample 사용 (feasible 우선, 없으면 best overall) ──
@@ -523,9 +536,15 @@ class CQMExecutor:
         CQM 결과의 coverage ==1 검증.
 
         Returns:
-            {trip_id: actual_count} — 위반 trip만 (count != 1)
+            {trip_id: actual_count} — 위반 trip만 (count != 1, 0=uncovered)
         """
         duty_map = compile_result.metadata.get("duty_map", {})
+        # 전체 task set: metadata에서 가져오거나 duty_map에서 추출
+        all_task_ids = set(compile_result.metadata.get("all_task_ids", []))
+        if not all_task_ids:
+            for col in duty_map.values():
+                all_task_ids.update(col.trips)
+
         z_solution = solution.get("z", {})
 
         from collections import defaultdict
@@ -538,8 +557,11 @@ class CQMExecutor:
                     for tid in col.trips:
                         coverage[tid] += 1
 
-        violations = {
-            tid: cnt for tid, cnt in coverage.items()
-            if cnt != 1
-        }
+        # 전체 task set 기반 검증: uncovered(0) + duplicate(>1) 모두 감지
+        violations = {}
+        for tid in all_task_ids:
+            cnt = coverage.get(tid, 0)
+            if cnt != 1:
+                violations[tid] = cnt
+
         return violations

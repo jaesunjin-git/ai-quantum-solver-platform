@@ -51,6 +51,7 @@ def convert_sp_result(
     solver_name: str = "CP-SAT (Set Partitioning)",
     project_dir: Optional[str] = None,
     objective_value: Optional[float] = None,
+    params: Optional[Dict] = None,
     # 하위 호환
     duty_map: Optional[Dict[int, FeasibleColumn]] = None,
     trips: Optional[List[TaskItem]] = None,

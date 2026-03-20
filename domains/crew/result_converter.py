@@ -12,13 +12,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from engine.column_generator import FeasibleColumn, TaskItem
-from engine.sp_result_converter import (
-    convert_sp_result as _generic_convert,
-    _build_kpi,
-    _build_schedule_rows,
-    _build_columns_detail,
-    _save_result_files,
-)
+from engine.sp_result_converter import convert_sp_result as _generic_convert
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +25,7 @@ def convert_crew_result(
     solver_name: str = "CP-SAT (Set Partitioning)",
     project_dir: Optional[str] = None,
     objective_value: Optional[float] = None,
+    params: Optional[Dict] = None,
     # 하위 호환
     duty_map: Optional[Dict[int, FeasibleColumn]] = None,
     trips: Optional[List[TaskItem]] = None,
@@ -90,8 +85,8 @@ def convert_crew_result(
         "overlap_trips": kpi.get("overlap_trips", 0),
     }
 
-    # constraint status (crew domain)
-    result["constraint_status"] = _build_crew_constraint_status(selected, len(_tasks))
+    # constraint status (crew domain) — params 기반 실제 검증
+    result["constraint_status"] = _build_crew_constraint_status(selected, len(_tasks), params=params)
     result["soft_constraint_status"] = _build_crew_soft_status(selected)
 
     return result
@@ -102,14 +97,26 @@ def convert_crew_result(
 def _build_crew_constraint_status(
     selected: List[FeasibleColumn],
     total_tasks: int,
+    params: Optional[Dict] = None,
 ) -> List[Dict[str, Any]]:
-    """선택된 duty의 metrics 기반 hard 제약 달성 현황"""
+    """선택된 duty의 metrics 기반 hard 제약 달성 현황 (실제 limit 기반 검증)"""
     if not selected:
         return []
 
+    params = params or {}
+
+    # 제약 기준값: params에서 로딩 (하드코딩 제거)
+    max_driving_limit = int(params.get('max_driving_minutes', 360))
+    max_work_limit = int(params.get('max_work_minutes', 660))
+    max_wait_limit = int(params.get('max_wait_minutes', 300))
+    min_sleep_limit = int(params.get('min_night_sleep_minutes', 240))
+    total_duties_param = params.get('total_duties')
+    day_crew_param = params.get('day_crew_count')
+    night_crew_param = params.get('night_crew_count')
+
     actives = [c.active_minutes for c in selected]
-    spans = [c.span_minutes for c in selected]
     idles = [c.idle_minutes for c in selected]
+    works = [c.elapsed_minutes for c in selected]
     night_cols = [c for c in selected if c.column_type in ("night", "overnight")]
     day_cols = [c for c in selected if c.column_type not in ("night", "overnight")]
 
@@ -119,32 +126,40 @@ def _build_crew_constraint_status(
 
     status = []
 
-    # 최대 운전시간
+    # 최대 운전시간 — 실제 검증
+    max_active = max(actives)
+    driving_violations = sum(1 for a in actives if a > max_driving_limit)
     status.append({
         "name": "최대 운전시간 (max_driving_time)",
-        "satisfied": True,
-        "max_actual": f"{max(actives)}분",
-        "limit": "360분",
+        "satisfied": driving_violations == 0,
+        "max_actual": f"{max_active}분",
+        "limit": f"{max_driving_limit}분",
         "constraint_type": "parametric",
+        "violation_count": driving_violations,
     })
 
-    # 최대 근무시간
-    works = [c.elapsed_minutes for c in selected]
+    # 최대 근무시간 — 실제 검증
+    max_work = max(works)
+    work_violations = sum(1 for w in works if w > max_work_limit)
     status.append({
         "name": "최대 근무시간 (max_work_time)",
-        "satisfied": True,
-        "max_actual": f"{max(works)}분",
-        "limit": "660분",
+        "satisfied": work_violations == 0,
+        "max_actual": f"{max_work}분",
+        "limit": f"{max_work_limit}분",
         "constraint_type": "parametric",
+        "violation_count": work_violations,
     })
 
-    # 최대 대기시간
+    # 최대 대기시간 — 실제 검증
+    max_idle = max(idles)
+    idle_violations = sum(1 for i in idles if i > max_wait_limit)
     status.append({
         "name": "최대 대기시간 (max_wait_time)",
-        "satisfied": True,
-        "max_actual": f"{max(idles)}분",
-        "limit": "300분",
+        "satisfied": idle_violations == 0,
+        "max_actual": f"{max_idle}분",
+        "limit": f"{max_wait_limit}분",
         "constraint_type": "parametric",
+        "violation_count": idle_violations,
     })
 
     # Trip 커버리지
@@ -156,41 +171,51 @@ def _build_crew_constraint_status(
         "constraint_type": "structural",
     })
 
-    # 승무원 수
-    status.append({
-        "name": "총 승무원 수",
-        "satisfied": True,
-        "max_actual": f"{len(selected)}명",
-        "limit": f"{len(selected)}명",
-        "constraint_type": "structural",
-    })
+    # 총 승무원 수 — params 기준 검증
+    if total_duties_param is not None:
+        total_limit = int(total_duties_param)
+        status.append({
+            "name": "총 승무원 수",
+            "satisfied": len(selected) == total_limit,
+            "max_actual": f"{len(selected)}명",
+            "limit": f"{total_limit}명",
+            "constraint_type": "structural",
+        })
 
-    # 주간/야간 분배
-    status.append({
-        "name": "주간 승무원",
-        "satisfied": True,
-        "max_actual": f"{len(day_cols)}명",
-        "limit": f"{len(day_cols)}명",
-        "constraint_type": "structural",
-    })
-    status.append({
-        "name": "야간 승무원",
-        "satisfied": True,
-        "max_actual": f"{len(night_cols)}명",
-        "limit": f"{len(night_cols)}명",
-        "constraint_type": "structural",
-    })
+    # 주간 승무원 — params 기준 검증
+    if day_crew_param is not None:
+        day_limit = int(day_crew_param)
+        status.append({
+            "name": "주간 승무원",
+            "satisfied": len(day_cols) == day_limit,
+            "max_actual": f"{len(day_cols)}명",
+            "limit": f"{day_limit}명",
+            "constraint_type": "structural",
+        })
 
-    # 야간 수면시간
+    # 야간 승무원 — params 기준 검증
+    if night_crew_param is not None:
+        night_limit = int(night_crew_param)
+        status.append({
+            "name": "야간 승무원",
+            "satisfied": len(night_cols) == night_limit,
+            "max_actual": f"{len(night_cols)}명",
+            "limit": f"{night_limit}명",
+            "constraint_type": "structural",
+        })
+
+    # 야간 수면시간 — 실제 검증
     if night_cols:
         sleeps = [c.inactive_minutes for c in night_cols]
         min_sleep = min(sleeps) if sleeps else 0
+        sleep_violations = sum(1 for s in sleeps if s < min_sleep_limit)
         status.append({
             "name": "야간 수면시간 (night_sleep)",
-            "satisfied": min_sleep >= 240,
+            "satisfied": sleep_violations == 0,
             "max_actual": f"{min_sleep}분 (최소)",
-            "limit": "240분",
+            "limit": f"{min_sleep_limit}분",
             "constraint_type": "parametric",
+            "violation_count": sleep_violations,
         })
 
     return status

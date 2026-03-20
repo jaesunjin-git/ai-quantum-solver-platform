@@ -110,8 +110,9 @@ export function SolverView({
   // Single job: react to terminal status
   useEffect(() => {
     if (execMode === 'compare') return;
-    if (jobPoll.status === 'complete' && jobPoll.result) {
-      const result = jobPoll.result;
+    const result = jobPoll.result;
+
+    if (jobPoll.status === 'complete' && result) {
       const hasResult = result.success || (result.summary && Object.keys(result.summary).length > 0);
       if (hasResult) {
         const solver = solvers[selectedSolver];
@@ -129,8 +130,13 @@ export function SolverView({
         onAction?.('execute_done', `${label}으로 최적화 실행이 ${statusText}되었습니다. 결과를 설명해주세요.`);
       }
       if (!result.success) {
-        setInfeasibilityInfo(result.infeasibility_info || null);
+        setInfeasibilityInfo(result.infeasibility_info || result.summary?.infeasibility_info || null);
       }
+    }
+
+    // FAILED 상태에서도 infeasibility 진단 정보 표시 (INFEASIBLE → FAILED 경로)
+    if (jobPoll.status === 'failed' && result) {
+      setInfeasibilityInfo(result.infeasibility_info || result.summary?.infeasibility_info || null);
     }
   }, [jobPoll.status, jobPoll.result]);
 
@@ -434,8 +440,8 @@ export function SolverView({
         ) : null}
       </div>
 
-      {/* Execution Mode UI */}
-      {step >= 3 && jobStatus === 'idle' && !jobPoll.result && Object.keys(compareResults).length === 0 && (
+      {/* Execution Mode UI — idle 또는 done(결과 있지만 다른 솔버 선택 가능) */}
+      {step >= 3 && ['idle', 'done', 'error'].includes(jobStatus) && (
         <div className="flex-shrink-0 border-t border-slate-800">
           {/* Mode selector */}
           <div className="flex p-2 gap-1 bg-slate-900/80">

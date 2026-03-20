@@ -556,8 +556,13 @@ class BaseColumnGenerator:
     # ── Column 생성 + feasibility 검증 (override 가능) ────────
 
     def _check_domain_feasibility(self, column: FeasibleColumn) -> bool:
-        """도메인별 추가 feasibility 검증 (base: 항상 통과). override 가능."""
+        """도메인별 추가 feasibility 검증 (base: 항상 통과). override 가능.
+        주의: 이 메서드는 column을 수정하지 않아야 함. 수정은 _finalize_column에서."""
         return True
+
+    def _finalize_column(self, column: FeasibleColumn) -> FeasibleColumn:
+        """feasibility 통과 후 도메인별 보정 적용 (base: 패스스루). override 가능."""
+        return column
 
     def _get_prep_cleanup(self, state: _BeamState) -> tuple:
         """(prep, cleanup) 반환. 도메인에서 override하여 최소 prep 사용 가능."""
@@ -638,9 +643,12 @@ class BaseColumnGenerator:
             cost=cost,
         )
 
-        # 도메인별 추가 검증
+        # 도메인별 추가 검증 (column 수정 금지 — 순수 검증)
         if not self._check_domain_feasibility(column):
             return None
+
+        # 도메인별 보정 적용 (검증 통과 후)
+        column = self._finalize_column(column)
 
         return column
 

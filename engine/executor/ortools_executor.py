@@ -29,13 +29,25 @@ class ORToolsExecutor(BaseExecutor):
         model = compile_result.solver_model
         var_map = compile_result.variable_map
 
+        import os
+        num_workers = int(os.environ.get("CPSAT_NUM_WORKERS", min(os.cpu_count() or 4, 8)))
+
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = time_limit
-        solver.parameters.num_workers = 8
+        solver.parameters.num_workers = num_workers
 
-        logger.info(f"CP-SAT: solving with time_limit={time_limit}s")
+        logger.info(f"CP-SAT: solving with time_limit={time_limit}s, workers={num_workers}")
         start = time.time()
-        status = solver.solve(model)
+        try:
+            status = solver.solve(model)
+        except Exception as e:
+            elapsed = time.time() - start
+            logger.error(f"CP-SAT solve() crashed: {e}", exc_info=True)
+            return ExecuteResult(
+                success=False, solver_type="ortools_cp", status="ERROR",
+                error=f"Solver crashed: {e}",
+                execution_time_sec=round(elapsed, 3),
+            )
         elapsed = time.time() - start
 
         status_map = {
@@ -69,7 +81,7 @@ class ORToolsExecutor(BaseExecutor):
         if success:
             try:
                 best_bound = solver.best_objective_bound
-            except Exception:
+            except (RuntimeError, AttributeError):
                 pass
 
         # INFEASIBLE 진단
@@ -97,7 +109,7 @@ class ORToolsExecutor(BaseExecutor):
                 "branches": solver.num_branches,
                 "conflicts": solver.num_conflicts,
                 "wall_time": solver.wall_time,
-                "num_workers": 8,
+                "num_workers": num_workers,
                 "best_bound": best_bound,
             },
             infeasibility_info=infeasibility_info,

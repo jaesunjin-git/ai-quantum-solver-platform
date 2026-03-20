@@ -145,7 +145,9 @@ def _run_solver_sync(
         # progress ticker 중지
         _progress_stop.set()
 
-        summary = result.summary if result.success else {}
+        summary = result.summary or {}
+        # INFEASIBLE 시에도 summary 보존 (infeasibility_info, timing 등 진단 정보 포함)
+        infeasibility_info = summary.get("infeasibility_info")
         output = {
             "success": result.success,
             "phase": result.phase,
@@ -153,6 +155,7 @@ def _run_solver_sync(
             "solver_name": result.solver_name,
             "error": result.error,
             "summary": summary,
+            "infeasibility_info": infeasibility_info,
         }
 
         # 최종 상태 업데이트 (취소 가드 적용)
