@@ -80,9 +80,11 @@ class SetPartitioningCompiler(BaseCompiler):
         for tid in problem.task_ids:
             col_ids = problem.task_to_columns.get(tid, [])
             if not col_ids:
-                # #2: silent skip 금지 → 에러
-                logger.error(f"SP: task {tid} has no covering column!")
-                continue
+                # #1: uncovered task → 즉시 실패 (continue 금지)
+                return CompileResult(
+                    success=False,
+                    error=f"Task {tid} has no covering column. SP infeasible.",
+                )
             model.add(sum(z[cid] for cid in col_ids) == 1)
             coverage_count += 1
 
@@ -90,9 +92,12 @@ class SetPartitioningCompiler(BaseCompiler):
         extra_count = 0
         for constraint in problem.extra_constraints:
             col_vars = [z[cid] for cid in constraint.column_ids if cid in z]
+            # #2: 부분 적용 감지
+            missing = [cid for cid in constraint.column_ids if cid not in z]
+            if missing:
+                logger.warning(f"SP: constraint '{constraint.name}' has {len(missing)} missing columns")
             if not col_vars:
-                # #5: silent drop 금지 → 경고
-                logger.warning(f"SP: constraint '{constraint.name}' has no valid columns, skipped")
+                logger.error(f"SP: constraint '{constraint.name}' has no valid columns!")
                 continue
             if constraint.operator == "==":
                 model.add(sum(col_vars) == constraint.rhs)
@@ -113,8 +118,9 @@ class SetPartitioningCompiler(BaseCompiler):
         builder = ObjectiveBuilder(problem.columns, obj_config)
         scores = builder.build(objective_type, kwargs.get("params", {}))
 
-        # fallback: missing score → 절대 비선택 penalty (#4)
-        penalty = max(max(scores.values(), default=1000) * 100, 1000000)
+        # fallback: missing score → 충분히 큰 penalty (#3: 과도하지 않게)
+        max_score = max(scores.values(), default=1000)
+        penalty = max_score * 10
         missing_count = 0
 
         cost_terms = []
@@ -145,7 +151,7 @@ class SetPartitioningCompiler(BaseCompiler):
             solver_type="ortools_cp",
             variable_count=len(z),
             constraint_count=total_constraints,
-            variable_map={"z": z},
+            variable_map={"z": z, "col_index": col_index},
             metadata={
                 "model_type": "SetPartitioning",
                 "engine": "ortools_cp_sat",
