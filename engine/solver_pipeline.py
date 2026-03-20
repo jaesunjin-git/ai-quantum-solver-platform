@@ -117,7 +117,10 @@ class SolverPipeline:
             # ── Set Partitioning 경로 (classical solver) ──
             # crew scheduling 등 assignment 문제는 SP가 구조적으로 올바름.
             # DutyGenerator가 시간 검증 전부 수행 → solver는 coverage만 결정.
-            _use_sp = solver_id in ("classical_cpu", "nvidia_cuopt")
+            _use_sp = solver_id in (
+                "classical_cpu", "nvidia_cuopt",
+                "dwave_hybrid_cqm",  # D-Wave도 SP 경로 사용
+            )
 
             if _use_sp:
                 compile_start = time.time()
@@ -459,7 +462,7 @@ class SolverPipeline:
             ), 0.0
 
         from engine.column_generator import load_tasks_from_csv, BaseColumnGenerator, BaseColumnConfig
-        from engine.compiler.set_partitioning_compiler import SetPartitioningCompiler
+        from engine.compiler.compiler_registry import get_sp_compiler
 
         tasks = load_tasks_from_csv(trips_path)
         logger.info(f"SP: loaded {len(tasks)} tasks from {trips_path}")
@@ -474,8 +477,8 @@ class SolverPipeline:
         duties = gen.generate()
         logger.info(f"SP: {len(duties)} feasible duties generated")
 
-        # SP 컴파일
-        compiler = SetPartitioningCompiler()
+        # SP 컴파일 — compiler registry로 solver별 자동 선택
+        compiler = get_sp_compiler(solver_id)
         compile_result = compiler.compile(math_model, bound_data, duties=duties)
         compile_time = time.time() - compile_start
 
