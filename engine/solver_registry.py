@@ -220,6 +220,14 @@ def build_problem_profile(math_model: Dict, data_facts: Optional[Dict] = None) -
     obj_expression = str(objective.get("expression", ""))
     is_nonlinear_obj = any(kw in obj_expression.lower() for kw in ["*", "quadratic", "min(", "max(", "abs("])
 
+    # ── 목적함수 의도 분류 (v3.0 신규) ──
+    objective_intent = _classify_objective_intent(objective)
+
+    # ── 모델링 패턴 감지 (v3.0 신규) ──
+    modeling_pattern = _detect_modeling_pattern(
+        problem_classes, has_multi_index_binary, constraint_features, var_count
+    )
+
     return {
         "variable_count": var_count,
         "variable_count_source": var_count_source,
@@ -237,6 +245,9 @@ def build_problem_profile(math_model: Dict, data_facts: Optional[Dict] = None) -
         "is_nonlinear_objective": is_nonlinear_obj,
         "has_multi_index_binary": has_multi_index_binary,
         "data_facts_available": data_facts is not None and bool(data_facts.get("unique_counts")),
+        # v3.0 신규 필드
+        "objective_intent": objective_intent,
+        "modeling_pattern": modeling_pattern,
     }
 
 
@@ -342,6 +353,113 @@ def _analyze_constraint_structure(constraints: List[Dict]) -> Dict:
                 features[f"has_{feature_key}"] = True
 
     return features
+
+
+# ── 목적함수 의도 분류 (v3.0) ──────────────────────────────
+
+def _classify_objective_intent(objective: Dict) -> Dict:
+    """
+    목적함수에서 최적화 의도를 추출.
+
+    primary_goal: 주 목표 (minimize_count / balance / efficiency / cost)
+    secondary_goals: 부 목표 (multi-objective 대응)
+    structure: 수식 구조 (linear / quadratic / nonlinear)
+    """
+    desc = str(objective.get("description", objective.get("description_ko", ""))).lower()
+    expr = str(objective.get("expression", "")).lower()
+    obj_id = str(objective.get("id", objective.get("name", ""))).lower()
+
+    intent = {
+        "primary_goal": "minimize_count",
+        "secondary_goals": [],
+        "structure": "linear",
+        "is_multi_objective": False,
+    }
+
+    # ── primary_goal 분류 ──
+    # ID 기반 (가장 정확)
+    if "balance" in obj_id or "workload" in obj_id:
+        intent["primary_goal"] = "balance"
+    elif "efficiency" in obj_id:
+        intent["primary_goal"] = "efficiency"
+    elif "cost" in obj_id:
+        intent["primary_goal"] = "cost"
+    elif "minimize" in obj_id and ("dut" in obj_id or "crew" in obj_id or "count" in obj_id):
+        intent["primary_goal"] = "minimize_count"
+    # description 기반 fallback
+    elif any(k in desc for k in ["균형", "공평", "균등", "balance", "fair"]):
+        intent["primary_goal"] = "balance"
+    elif any(k in desc for k in ["효율", "efficiency", "idle", "유휴"]):
+        intent["primary_goal"] = "efficiency"
+    elif any(k in desc for k in ["비용", "cost", "원가"]):
+        intent["primary_goal"] = "cost"
+    elif any(k in desc for k in ["최소", "minimize", "줄이", "인원", "수 최소"]):
+        intent["primary_goal"] = "minimize_count"
+
+    # ── secondary_goals 추출 ──
+    secondary_keywords = {
+        "efficiency": ["효율", "efficiency", "idle", "유휴"],
+        "balance": ["균형", "균등", "balance", "공평"],
+        "cost": ["비용", "cost", "수당"],
+        "minimize_count": ["최소", "인원", "duty 수"],
+    }
+    for goal, keywords in secondary_keywords.items():
+        if goal == intent["primary_goal"]:
+            continue
+        if any(k in desc for k in keywords):
+            intent["secondary_goals"].append(goal)
+
+    # ── 수식 구조 분석 ──
+    if any(k in expr for k in ["**2", "variance", "std", "abs("]):
+        intent["structure"] = "quadratic"
+    elif any(k in expr for k in ["min(", "max(", "if "]):
+        intent["structure"] = "nonlinear"
+
+    # ── multi-objective 판정 ──
+    if intent["secondary_goals"] or objective.get("alternatives"):
+        intent["is_multi_objective"] = True
+
+    return intent
+
+
+# ── 모델링 패턴 감지 (v3.0) ────────────────────────────────
+
+def _detect_modeling_pattern(
+    problem_classes: set,
+    has_multi_index_binary: bool,
+    constraint_features: Dict,
+    var_count: int,
+) -> str:
+    """
+    문제 구조에서 최적 모델링 패턴을 감지.
+
+    반환값:
+      "set_partitioning"  — column generation / duty selection
+      "assignment"        — I×J binary assignment
+      "network_flow"      — routing / path cover / flow
+      "generic_mip"       — 일반 MIP
+    """
+    # Set Partitioning 패턴: scheduling + 대규모 + binary assignment
+    is_scheduling = "scheduling" in problem_classes
+    is_assignment = "assignment" in problem_classes
+    has_coverage = constraint_features.get("has_equality", False)
+
+    # SP 패턴 조건: 스케줄링/배정 + 대규모 변수 + coverage 제약
+    if is_scheduling and has_multi_index_binary and var_count > 1000 and has_coverage:
+        return "set_partitioning"
+    # coverage 없어도 대규모 scheduling이면 SP 후보
+    if is_scheduling and has_multi_index_binary and var_count > 5000:
+        return "set_partitioning"
+
+    # Network flow 패턴: routing / TSP / path
+    if any(c in problem_classes for c in ["routing", "TSP", "flow", "path_cover"]):
+        return "network_flow"
+
+    # Assignment 패턴: 2-index binary + 중소규모
+    if is_assignment or (has_multi_index_binary and var_count <= 5000):
+        return "assignment"
+
+    return "generic_mip"
 
 
 def _classify_problem(
@@ -485,15 +603,87 @@ _MODEL_TYPE_AFFINITY = {
 }
 
 
+# ── Objective Intent × Solver 적합성 (v3.0) ──────────────────
+# rule-based scoring: YAML 수정 없이 유지보수 가능
+
+def _score_objective_intent(solver_model_type: str, intent: Dict) -> tuple:
+    """목적함수 의도에 따른 solver 보너스/페널티 (점수, 이유)"""
+    goal = intent.get("primary_goal", "minimize_count")
+    structure = intent.get("structure", "linear")
+
+    # 목적함수별 solver 적합성 매트릭스
+    _OBJECTIVE_SCORES = {
+        "minimize_count": {"LP_MIP": 10, "CQM": 5, "NL": 5, "BQM": 3},
+        "balance":        {"LP_MIP": 5, "CQM": 10, "NL": 10, "BQM": 3},
+        "efficiency":     {"LP_MIP": 10, "CQM": 5, "NL": 5, "BQM": 3},
+        "cost":           {"LP_MIP": 8, "CQM": 8, "NL": 5, "BQM": 5},
+    }
+
+    scores_map = _OBJECTIVE_SCORES.get(goal, {})
+    score = scores_map.get(solver_model_type, 0)
+
+    # 비선형 구조 보너스
+    if structure in ("quadratic", "nonlinear") and solver_model_type in ("NL", "CQM"):
+        score += 5
+
+    _GOAL_LABELS = {
+        "minimize_count": "수량 최소화",
+        "balance": "균형 최적화",
+        "efficiency": "효율 최적화",
+        "cost": "비용 최적화",
+    }
+    reason = f"{_GOAL_LABELS.get(goal, goal)} 적합" if score >= 8 else ""
+
+    return score, reason
+
+
+# ── Modeling Pattern × Solver 적합성 (v3.0) ──────────────────
+
+# SP capability: solver별 Set Partitioning 처리 방식
+_SP_CAPABILITY = {
+    "LP_MIP":  {"supported": True,  "method": "direct_mip",       "strength": 1.0},
+    "CQM":     {"supported": True,  "method": "constraint_native", "strength": 0.9},
+    "NL":      {"supported": True,  "method": "nonlinear_native",  "strength": 0.8},
+    "BQM":     {"supported": True,  "method": "penalty",           "strength": 0.5},
+    "circuit":  {"supported": False, "method": None,                "strength": 0.0},
+    "analog":   {"supported": False, "method": None,                "strength": 0.0},
+}
+
+
+def _score_modeling_pattern(solver_model_type: str, pattern: str) -> tuple:
+    """모델링 패턴에 따른 solver 보너스/페널티 (점수, 이유)"""
+    if pattern == "set_partitioning":
+        cap = _SP_CAPABILITY.get(solver_model_type, {})
+        if not cap.get("supported"):
+            return -5, "Set Partitioning 미지원"
+        score = int(cap.get("strength", 0) * 10)
+        method = cap.get("method", "")
+        return score, f"SP {method} 지원" if score >= 8 else ""
+
+    elif pattern == "assignment":
+        _scores = {"LP_MIP": 8, "CQM": 5, "BQM": 5, "NL": 5}
+        score = _scores.get(solver_model_type, 0)
+        return score, "배정 문제 적합" if score >= 8 else ""
+
+    elif pattern == "network_flow":
+        _scores = {"LP_MIP": 10, "CQM": 5, "NL": 8}
+        score = _scores.get(solver_model_type, 0)
+        return score, "네트워크 흐름 적합" if score >= 8 else ""
+
+    return 0, ""
+
+
 def score_solver(solver: Dict, profile: Dict) -> Dict:
     """
-    솔버와 문제 프로파일을 비교하여 점수 산출 (v2.0)
+    솔버와 문제 프로파일을 비교하여 점수 산출 (v3.0)
 
-    구조 점수 배분 (최대 100점):
+    구조 점수 배분 (최대 120점 → 100점 정규화):
       변수 타입 매칭:      40점
       제약조건 지원:       25점
       문제 클래스 매칭:    20점
       NL 네이티브 보너스:  15점 (model_type 매칭)
+      목적함수 의도:       10점 (v3.0)
+      모델링 패턴:         10점 (v3.0)
     """
     scores = {
         "structure": 0.0,
@@ -572,6 +762,24 @@ def score_solver(solver: Dict, profile: Dict) -> Dict:
     if profile.get("is_nonlinear_objective") and affinity.get("supports_nonlinear"):
         scores["structure"] += 5
         reasons.append("비선형 목적함수 네이티브 지원")
+
+    # ── 1e) 목적함수 의도 매칭 (10점, v3.0 신규) ──
+    objective_intent = profile.get("objective_intent", {})
+    obj_score, obj_reason = _score_objective_intent(solver_model_type, objective_intent)
+    if obj_score > 0:
+        scores["structure"] += obj_score
+        if obj_reason:
+            reasons.append(obj_reason)
+
+    # ── 1f) 모델링 패턴 매칭 (10점, v3.0 신규) ──
+    modeling_pattern = profile.get("modeling_pattern", "generic_mip")
+    pat_score, pat_reason = _score_modeling_pattern(solver_model_type, modeling_pattern)
+    if pat_score > 0:
+        scores["structure"] += pat_score
+        if pat_reason:
+            reasons.append(pat_reason)
+    elif pat_score < 0:
+        warnings.append(pat_reason or "모델링 패턴 불일치")
 
     scores["structure"] = min(100, scores["structure"])
 

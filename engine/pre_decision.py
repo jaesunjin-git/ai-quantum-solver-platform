@@ -503,9 +503,89 @@ def _generate_execution_strategies(
                 ],
             })
 
-    # 
+    # ═══════════════════════════════════════════════════
+    # Strategy: Objective-driven (v3.0 신규)
+    # ═══════════════════════════════════════════════════
+    objective_intent = profile.get("objective_intent", {})
+    modeling_pattern = profile.get("modeling_pattern", "generic_mip")
+    primary_goal = objective_intent.get("primary_goal", "minimize_count")
+
+    if modeling_pattern == "set_partitioning" and classical_solvers:
+        top_classical = classical_solvers[0]
+        sp_strategy = {
+            "strategy_id": "sp_column_generation",
+            "strategy_type": "single",
+            "name": "Column Generation + Set Partitioning",
+            "description": (
+                "Duty/Route Generator가 feasible column을 미리 생성하고, "
+                "solver는 최적 조합만 선택합니다. "
+                f"목적: {primary_goal}."
+            ),
+            "pros": ["시간 제약 사전 검증", "solver 부하 최소", "exact optimal"],
+            "cons": ["Generator 품질에 의존"],
+            "estimated_time": [3.0, 30.0],
+            "estimated_cost": [0.0, 0.0],
+            "confidence": top_classical["total_score"] + 5,  # SP 보너스
+            "steps": [
+                {
+                    "step_id": "step_1",
+                    "step_order": 1,
+                    "solver_id": top_classical["solver_id"],
+                    "solver_name": top_classical["solver_name"],
+                    "provider": top_classical["provider"],
+                    "role": "main_solver",
+                    "input_type": "set_partitioning",
+                    "description": "Column Generator → Set Partitioning → 최적 선택",
+                    "parallel_group": None,
+                }
+            ],
+        }
+        strategies.insert(0, sp_strategy)
+
+        # CQM hybrid가 있으면 비교 전략 추가
+        if hybrid_solvers:
+            top_hybrid = hybrid_solvers[0]
+            strategies.append({
+                "strategy_id": "sp_quantum_comparison",
+                "strategy_type": "parallel_comparison",
+                "name": f"Classical vs Quantum 비교 ({primary_goal})",
+                "description": (
+                    "동일한 Set Partitioning 문제를 CP-SAT과 D-Wave에서 동시 실행하여 비교합니다."
+                ),
+                "pros": ["양자 성능 벤치마크", "해 다양성 확보"],
+                "cons": ["D-Wave API 비용 발생"],
+                "estimated_time": [5.0, 60.0],
+                "estimated_cost": [0.0, 0.05],
+                "confidence": min(top_classical["total_score"], top_hybrid["total_score"]),
+                "steps": [
+                    {
+                        "step_id": "classical",
+                        "step_order": 1,
+                        "solver_id": top_classical["solver_id"],
+                        "solver_name": top_classical["solver_name"],
+                        "provider": top_classical["provider"],
+                        "role": "baseline",
+                        "input_type": "set_partitioning",
+                        "description": "CP-SAT exact solve (baseline)",
+                        "parallel_group": "compare",
+                    },
+                    {
+                        "step_id": "quantum",
+                        "step_order": 1,
+                        "solver_id": top_hybrid["solver_id"],
+                        "solver_name": top_hybrid["solver_name"],
+                        "provider": top_hybrid["provider"],
+                        "role": "comparison",
+                        "input_type": "set_partitioning",
+                        "description": "D-Wave hybrid solve (비교)",
+                        "parallel_group": "compare",
+                    },
+                ],
+            })
+
+    #
     # 중복 제거 + 정렬 + 상위 5개
-    # 
+    #
     seen_ids = set()
     unique = []
     for s in strategies:
