@@ -173,9 +173,10 @@ class CrewDutyGenerator(BaseColumnGenerator):
                           for tid in column.trips)
 
         is_overnight = has_early and has_evening
-        # 야간: 자정 넘김 OR overnight OR 저녁 시간대 출발 (night_threshold 이후)
-        starts_evening = column.first_trip_dep >= cfg.night_threshold
-        is_night = cross_midnight or is_overnight or starts_evening
+        # 야간: 자정 넘김 OR overnight만
+        # 주간 근무자는 day_duty_end_latest(23:00)까지 근무 가능하므로
+        # 저녁 시간대(17:00+) 출발만으로는 night 판정 안 함
+        is_night = cross_midnight or is_overnight
 
         # ── column_type 설정 ──
         if is_overnight:
@@ -273,9 +274,12 @@ class CrewDutyGenerator(BaseColumnGenerator):
             [t for t in self.tasks if t.dep_time >= cfg.night_threshold - 120],
             key=lambda t: t.dep_time
         )
-        # 새벽 trip (dep < day_start_earliest)
+        # 새벽~이른 아침 trip (overnight 새벽 chain 후보)
+        # day_start_earliest까지만이 아니라 overnight_morning_end까지 포함
+        # 숙박조는 06:20 이후에도 1~2 trip 더 운행 가능
+        morning_cutoff = cfg.overnight_morning_end or cfg.day_start_earliest
         morning_trips = sorted(
-            [t for t in self.tasks if t.dep_time < cfg.day_start_earliest],
+            [t for t in self.tasks if t.dep_time < morning_cutoff],
             key=lambda t: t.dep_time
         )
 
@@ -433,10 +437,11 @@ class CrewDutyGenerator(BaseColumnGenerator):
 
             # 수면 gap 판정: gap >= min_sleep_minutes이고
             # 저녁→새벽 전환 (current.arr >= night_threshold-60, next.dep < day_start)
+            morning_cutoff = cfg.overnight_morning_end or cfg.day_start_earliest
             is_rest_gap = (
                 gap >= cfg.min_sleep_minutes
                 and curr.arr_time >= cfg.night_threshold - 60
-                and next_t.dep_time < cfg.day_start_earliest
+                and next_t.dep_time < morning_cutoff
             )
 
             if is_rest_gap:
@@ -463,7 +468,8 @@ class CrewDutyGenerator(BaseColumnGenerator):
                 for t in self._location_departures.get(loc, []):
                     if t.id in task_set:
                         continue
-                    if t.dep_time >= 480:  # 08:00 이후는 새벽 아님
+                    morning_cutoff = cfg.overnight_morning_end or 480
+                    if t.dep_time >= morning_cutoff:
                         continue
 
                     effective_dep = t.dep_time + 1440

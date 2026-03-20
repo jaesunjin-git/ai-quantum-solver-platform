@@ -95,11 +95,21 @@ class SetPartitioningCompiler(BaseCompiler):
             extra_count += 1
             logger.info(f"SP: {constraint.label}")
 
-        # ── 4. 목적함수: cost 최소화 (정수화) ──
+        # ── 4. 목적함수: lexicographic (column 수 우선 + secondary cost) ──
+        # Big-M: 1 column 줄이는 것이 어떤 secondary 차이보다 항상 우선
+        def _secondary_cost(col):
+            tc = len(col.trips)
+            short_penalty = 30 * max(0, 8 - tc) ** 2  # 짧은 column 억제
+            idle_penalty = col.idle_minutes
+            return short_penalty + idle_penalty
+
+        max_secondary = max((_secondary_cost(c) for c in problem.columns), default=1)
+        big_m = max_secondary + 1  # column 1개 > 최대 secondary
+
         cost_terms = []
         for col in problem.columns:
-            cost_int = int(problem.costs.get(col.id, 1.0) * 1000)
-            cost_terms.append(cost_int * z[col.id])
+            total_cost = big_m + _secondary_cost(col)
+            cost_terms.append(total_cost * z[col.id])
         model.minimize(sum(cost_terms))
 
         total_constraints = coverage_count + extra_count
