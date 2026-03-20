@@ -1,147 +1,112 @@
 """
 set_partitioning_compiler.py ────────────────────────────────
-Set Partitioning Compiler (CP-SAT / MILP).
+Set Partitioning Compiler (CP-SAT backend).
 
-업계 표준 crew scheduling 모델:
-  - DutyGenerator가 생성한 feasible duty 중 어떤 것을 선택할지만 결정
-  - solver는 시간 제약을 전혀 모름 (prep/cleanup/break/sleep 없음)
-  - 모든 시간 검증은 Generator에서 완료됨
+Backend-agnostic SP problem을 CP-SAT 모델로 변환.
+다른 backend(CQM, BQM 등)는 별도 compiler 파일에서 구현.
 
 모델:
-  변수: z[k] ∈ {0,1} — duty k를 선택
-  제약: ∀i ∈ trips, sum(z[k] for k if i ∈ duty[k].trips) == 1  (coverage)
+  변수: z[k] ∈ {0,1} — column k를 선택
+  제약: ∀i ∈ tasks, sum(z[k] for k if i ∈ column[k].tasks) == 1
   목적: min sum(z[k] * cost[k])
 """
 
 from __future__ import annotations
 
 import logging
-import time
 from typing import Any, Dict, List, Optional
 
 from engine.compiler.base import BaseCompiler, CompileResult
-from engine.column_generator import FeasibleColumn as FeasibleDuty
+from engine.column_generator import FeasibleColumn
+from engine.compiler.sp_problem import SetPartitioningProblem, build_sp_problem
 
 logger = logging.getLogger(__name__)
 
 
 class SetPartitioningCompiler(BaseCompiler):
-    """Set Partitioning 모델 컴파일러 (CP-SAT 기반)"""
+    """CP-SAT 기반 Set Partitioning 컴파일러"""
 
     def compile(self, math_model: Dict, bound_data: Dict, **kwargs) -> CompileResult:
         """
         Set Partitioning 모델 컴파일.
 
-        kwargs 필수:
-          duties: List[FeasibleDuty] — DutyGenerator 출력
+        kwargs:
+          duties: List[FeasibleColumn] — ColumnGenerator 출력
+          sp_problem: SetPartitioningProblem — 직접 제공 시 (duties 대신)
         """
-        duties: List[FeasibleDuty] = kwargs.pop("duties", [])
-        if not duties:
+        # SP problem 구축 (또는 직접 제공)
+        sp_problem = kwargs.pop("sp_problem", None)
+        if sp_problem is None:
+            columns: List[FeasibleColumn] = kwargs.pop("duties", [])
+            if not columns:
+                return CompileResult(
+                    success=False,
+                    error="No columns provided. Run ColumnGenerator first.",
+                )
+            params = bound_data.get("parameters", {})
+            sp_problem = build_sp_problem(columns, params)
+
+        # 유효성 검증
+        valid, errors = sp_problem.validate()
+        if not valid:
             return CompileResult(
                 success=False,
-                error="No feasible duties provided. Run DutyGenerator first.",
+                error=f"SP problem invalid: {'; '.join(errors)}",
             )
 
         try:
-            return self._compile_sp(duties, bound_data, **kwargs)
+            return self._compile_cpsat(sp_problem)
         except Exception as e:
             logger.error(f"SP compilation failed: {e}", exc_info=True)
             return CompileResult(success=False, error=str(e))
 
-    def _compile_sp(
-        self, duties: List[FeasibleDuty], bound_data: Dict, **kwargs
-    ) -> CompileResult:
-        """CP-SAT Set Partitioning 모델 생성"""
+    def _compile_cpsat(self, problem: SetPartitioningProblem) -> CompileResult:
+        """SetPartitioningProblem → CP-SAT 모델 변환"""
         from ortools.sat.python import cp_model
 
         model = cp_model.CpModel()
-        params = bound_data.get("parameters", {})
 
-        # ── 1. 변수: z[k] (duty 선택) ──
+        # ── 1. 변수: z[k] (column 선택) ──
         z = {}
-        for d in duties:
-            z[d.id] = model.new_bool_var(f"z_{d.id}")
+        for col in problem.columns:
+            z[col.id] = model.new_bool_var(f"z_{col.id}")
 
-        # ── 2. Trip → Duty 인덱스 구축 ──
-        # trip_id → [duty_id, ...]
-        trip_to_duties: Dict[int, List[int]] = {}
-        for d in duties:
-            for tid in d.trips:
-                trip_to_duties.setdefault(tid, []).append(d.id)
-
-        # ── 3. Coverage 사전 검증 + 제약 생성 ──
-        all_trip_ids = sorted(trip_to_duties.keys())
+        # ── 2. Coverage 제약: 각 task를 정확히 1개 column에 배정 ──
         coverage_count = 0
-
-        # 사전 검증: uncovered trip, low-coverage trip 진단
-        uncovered = [tid for tid, dids in trip_to_duties.items() if not dids]
-        if uncovered:
-            logger.error(f"SP: {len(uncovered)} trips have NO covering column: {uncovered[:10]}")
-            return CompileResult(
-                success=False,
-                error=f"{len(uncovered)} trips have no covering column. "
-                      f"Generator coverage 부족. trip_ids: {uncovered[:10]}",
-            )
-
-        # coverage density 진단 (degree 1 = 선택의 여지 없는 trip)
-        degree_1 = [tid for tid, dids in trip_to_duties.items() if len(dids) == 1]
-        if degree_1:
-            logger.warning(
-                f"SP: {len(degree_1)} trips have only 1 covering column "
-                f"(forced selection, no flexibility)"
-            )
-
-        # coverage 제약 생성: 각 trip을 정확히 1개 column에 배정 (Set Partitioning)
-        for tid in all_trip_ids:
-            duty_ids = trip_to_duties[tid]
-            model.add(sum(z[did] for did in duty_ids) == 1)
+        for tid in problem.task_ids:
+            col_ids = problem.task_to_columns.get(tid, [])
+            if not col_ids:
+                continue  # validate()에서 이미 체크
+            model.add(sum(z[cid] for cid in col_ids) == 1)
             coverage_count += 1
 
-        # ── 4. 선택적 제약: crew 수 고정 ──
-        total_duties_param = params.get("total_duties")
-        day_count_param = params.get("day_crew_count")
-        night_count_param = params.get("night_crew_count")
+        # ── 3. 추가 제약 (SP problem에서 정의) ──
+        extra_count = 0
+        for constraint in problem.extra_constraints:
+            col_vars = [z[cid] for cid in constraint.column_ids if cid in z]
+            if not col_vars:
+                continue
+            if constraint.operator == "==":
+                model.add(sum(col_vars) == constraint.rhs)
+            elif constraint.operator == "<=":
+                model.add(sum(col_vars) <= constraint.rhs)
+            elif constraint.operator == ">=":
+                model.add(sum(col_vars) >= constraint.rhs)
+            extra_count += 1
+            logger.info(f"SP: {constraint.label}")
 
-        duty_map = {d.id: d for d in duties}
-        extra_constraints = 0
+        # ── 4. 목적함수: cost 최소화 (정수화) ──
+        cost_terms = []
+        for col in problem.columns:
+            cost_int = int(problem.costs.get(col.id, 1.0) * 1000)
+            cost_terms.append(cost_int * z[col.id])
+        model.minimize(sum(cost_terms))
 
-        if total_duties_param is not None:
-            total = int(total_duties_param)
-            model.add(sum(z.values()) == total)
-            extra_constraints += 1
-            logger.info(f"SP: fixed total duties = {total}")
-
-        if day_count_param is not None:
-            day_target = int(day_count_param)
-            day_z = [z[d.id] for d in duties if d.column_type == "day" or d.column_type == "default"]
-            if day_z:
-                model.add(sum(day_z) == day_target)
-                extra_constraints += 1
-                logger.info(f"SP: fixed day duties = {day_target}")
-
-        if night_count_param is not None:
-            night_target = int(night_count_param)
-            night_z = [z[d.id] for d in duties if d.column_type in ("night", "overnight")]
-            if night_z:
-                model.add(sum(night_z) == night_target)
-                extra_constraints += 1
-                logger.info(f"SP: fixed night duties = {night_target}")
-
-        # ── 5. 목적함수: 비용 최소화 ──
-        # cost = 1.0 기본 + wait 페널티 + span 페널티
-        # 정수화: cost * 1000
-        cost_vars = []
-        for d in duties:
-            cost_int = int(d.cost * 1000)
-            cost_vars.append(cost_int * z[d.id])
-
-        model.minimize(sum(cost_vars))
-
-        total_constraints = coverage_count + extra_constraints
+        total_constraints = coverage_count + extra_count
 
         logger.info(
-            f"SP compiled: {len(z)} duty vars, {coverage_count} coverage constraints, "
-            f"{extra_constraints} extra constraints, {len(all_trip_ids)} trips"
+            f"SP compiled: {len(z)} vars, {coverage_count} coverage, "
+            f"{extra_count} extra, {problem.num_tasks} tasks"
         )
 
         return CompileResult(
@@ -154,9 +119,9 @@ class SetPartitioningCompiler(BaseCompiler):
             metadata={
                 "model_type": "SetPartitioning",
                 "engine": "ortools_cp_sat",
-                "duty_count": len(duties),
-                "trip_count": len(all_trip_ids),
+                "column_count": problem.num_columns,
+                "task_count": problem.num_tasks,
                 "coverage_constraints": coverage_count,
-                "duty_map": duty_map,
+                "duty_map": {c.id: c for c in problem.columns},
             },
         )
