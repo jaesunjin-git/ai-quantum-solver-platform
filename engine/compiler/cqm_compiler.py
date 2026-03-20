@@ -203,17 +203,20 @@ class CQMCompiler(BaseCompiler):
         # ── 1. 변수: z[k] (binary) — 한번에 생성 ──
         z = {col.id: Binary(f"z_{col.id}") for col in columns}
 
-        # ── 2. Coverage 제약: >=1 (CQM 완화) ──
-        # CQM은 heuristic solver → ==1 strict는 feasible 못 찾을 수 있음
-        # >=1 (set covering)으로 완화, post-solve repair로 ==1 복구
+        # ── 2. Coverage 제약: soft ==1 (#1) ──
+        # CQM은 hard ==1에서 feasible 못 찾을 수 있으므로
+        # soft constraint(weight=1000)로 설정 → solver가 trade-off
+        # repair는 여전히 보험으로 유지
         coverage_count = 0
         for tid in problem.task_ids:
             col_ids = task_to_columns.get(tid, [])
             if not col_ids:
+                logger.error(f"CQM: task {tid} has no covering column!")
                 continue
             cqm.add_constraint(
-                quicksum(z[cid] for cid in col_ids) >= 1,
+                quicksum(z[cid] for cid in col_ids) == 1,
                 label=f"cover_{tid}",
+                weight=1000,  # soft: 위반 시 penalty
             )
             coverage_count += 1
 
@@ -243,9 +246,10 @@ class CQMCompiler(BaseCompiler):
         builder = ObjectiveBuilder(columns, obj_config)
         scores = builder.build(objective_type, kwargs.get("params", {}))
 
-        # quicksum으로 objective 구축
+        # quicksum으로 objective 구축 (#3: 정규화 스케일링)
+        max_score = max(scores.values(), default=1000)
         obj_terms = [
-            (scores.get(col.id, 1000) / 1000.0) * z[col.id]
+            (scores.get(col.id, max_score) / max(max_score, 1)) * z[col.id]
             for col in columns
         ]
         cqm.set_objective(quicksum(obj_terms))
@@ -355,12 +359,12 @@ class CQMExecutor:
 
         sample = best.sample
 
-        # z 변수 추출 → solution dict
+        # z 변수 추출 → solution dict (#5: key는 str 통일 — converter 호환)
         solution = {"z": {}}
         for var_name, val in sample.items():
             if var_name.startswith("z_"):
-                col_id = var_name[2:]
-                solution["z"][col_id] = int(val)
+                col_id = var_name[2:]  # "z_123" → "123" (str)
+                solution["z"][str(col_id)] = int(val)
 
         objective_value = best.energy
         selected_count = sum(1 for v in solution["z"].values() if v > 0)
@@ -480,7 +484,8 @@ class CQMExecutor:
                 continue  # 이미 제거됨
 
             # 이 column의 모든 task가 다른 column으로도 커버되면 제거 가능
-            safe_to_remove = all(coverage[t] >= 2 for t in col.trips)
+            # #4: remove 후 모든 task가 여전히 coverage >= 1 유지 확인
+            safe_to_remove = all((coverage[t] - 1) >= 1 for t in col.trips)
 
             if safe_to_remove:
                 z_solution[cid_str] = 0
