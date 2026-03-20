@@ -85,6 +85,19 @@ def _run_solver_sync(
         import asyncio
         pipeline = SolverPipeline()
 
+        # 도메인 adapter 주입 (GR-1: engine이 아닌 app/task 계층에서 주입)
+        try:
+            from domains.crew.duty_generator import CrewDutyGenerator, CrewDutyConfig
+            from domains.crew.result_converter import convert_crew_result
+            pipeline.set_domain_adapter(
+                generator_factory=lambda tasks, params: CrewDutyGenerator(
+                    tasks, CrewDutyConfig.from_params(params)
+                ),
+                result_converter=convert_crew_result,
+            )
+        except ImportError:
+            logger.warning("Crew domain adapter not available — using generic base")
+
         # 시간 기반 progress 업데이트 (별도 스레드)
         import threading
         _progress_stop = threading.Event()

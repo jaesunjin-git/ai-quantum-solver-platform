@@ -51,14 +51,34 @@ class SolverPipeline:
     """
     수학 모델 IR을 선택된 솔버로 컴파일하고 실행하는 파이프라인.
 
+    GR-1: engine은 domain을 직접 import하지 않음.
+    도메인별 generator/converter는 외부에서 주입.
+
     Usage:
         pipeline = SolverPipeline()
-        result = await pipeline.run(
-            math_model=session.state.math_model,
-            solver_id="dwave_hybrid_cqm",
-            project_id="abc123",
+        # 도메인 adapter 주입 (agent/app 계층에서)
+        pipeline.set_domain_adapter(
+            generator_factory=lambda trips, params: CrewDutyGenerator(trips, CrewDutyConfig.from_params(params)),
+            result_converter=convert_crew_result,
         )
+        result = await pipeline.run(...)
     """
+
+    def __init__(self):
+        # 도메인 adapter (외부 주입, GR-1)
+        self._generator_factory = None   # (tasks, params) -> generator instance
+        self._sp_result_converter = None  # convert function
+
+    def set_domain_adapter(
+        self,
+        generator_factory=None,
+        result_converter=None,
+    ):
+        """도메인별 generator/converter 주입 (GR-1 준수)"""
+        if generator_factory:
+            self._generator_factory = generator_factory
+        if result_converter:
+            self._sp_result_converter = result_converter
 
     async def run(
         self,
@@ -340,24 +360,30 @@ class SolverPipeline:
         compile_result, compile_time, execute_result, bound_data,
     ) -> Dict[str, Any]:
         """Set Partitioning 결과 → 기존 프론트엔드 포맷 summary"""
-        from engine.sp_result_converter import convert_sp_result
-        from engine.column_generator import load_tasks_from_csv as load_trips_from_csv
+        from engine.column_generator import load_tasks_from_csv
         import os
 
-        duty_map = getattr(self, "_sp_duty_map", {})
+        column_map = getattr(self, "_sp_duty_map", {})
         project_id = getattr(self, "_current_project_id", "")
         trips_path = os.path.join("uploads", str(project_id), "normalized", "trips.csv")
 
-        trips = []
+        tasks = []
         if os.path.exists(trips_path):
-            trips = load_trips_from_csv(trips_path)
+            tasks = load_tasks_from_csv(trips_path)
 
         project_dir = f"uploads/{project_id}" if project_id else None
 
-        interpretation = convert_sp_result(
+        # converter 주입: _sp_result_converter가 설정되어 있으면 사용,
+        # 없으면 generic fallback (GR-1: engine이 domain을 직접 import 안 함)
+        converter_fn = getattr(self, "_sp_result_converter", None)
+        if converter_fn is None:
+            from engine.sp_result_converter import convert_sp_result
+            converter_fn = convert_sp_result
+
+        interpretation = converter_fn(
             solution=execute_result.solution,
-            duty_map=duty_map,
-            trips=trips,
+            column_map=column_map,
+            tasks=tasks,
             solver_id=solver_id,
             solver_name=solver_name or "CP-SAT (Set Partitioning)",
             project_dir=project_dir,
@@ -432,18 +458,19 @@ class SolverPipeline:
                 success=False, error=f"trips.csv not found: {trips_path}"
             ), 0.0
 
-        from domains.crew.duty_generator import CrewDutyGenerator, CrewDutyConfig
-        from engine.column_generator import load_tasks_from_csv
+        from engine.column_generator import load_tasks_from_csv, BaseColumnGenerator, BaseColumnConfig
         from engine.compiler.set_partitioning_compiler import SetPartitioningCompiler
 
-        trips = load_tasks_from_csv(trips_path)
-        logger.info(f"SP: loaded {len(trips)} trips from {trips_path}")
+        tasks = load_tasks_from_csv(trips_path)
+        logger.info(f"SP: loaded {len(tasks)} tasks from {trips_path}")
 
-        # Generator 설정 (bound_data 파라미터 기반)
-        config = CrewDutyConfig.from_params(bound_data.get("parameters", {}))
-
-        # Duty 생성 (crew 도메인 전용 generator)
-        gen = CrewDutyGenerator(trips, config)
+        # Generator: 주입된 factory 사용, 없으면 base fallback
+        params = bound_data.get("parameters", {})
+        if self._generator_factory:
+            gen = self._generator_factory(tasks, params)
+        else:
+            config = BaseColumnConfig.from_params(params)
+            gen = BaseColumnGenerator(tasks, config)
         duties = gen.generate()
         logger.info(f"SP: {len(duties)} feasible duties generated")
 
@@ -452,7 +479,7 @@ class SolverPipeline:
         compile_result = compiler.compile(math_model, bound_data, duties=duties)
         compile_time = time.time() - compile_start
 
-        # duty_map을 pipeline에서 참조할 수 있도록 저장
+        # column_map을 pipeline에서 참조할 수 있도록 저장
         if compile_result.success:
             self._sp_duties = duties
             self._sp_duty_map = {d.id: d for d in duties}
