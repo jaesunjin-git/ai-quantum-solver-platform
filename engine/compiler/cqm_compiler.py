@@ -57,37 +57,55 @@ class CQMCompiler(BaseCompiler):
             logger.error(f"CQM compilation failed: {e}", exc_info=True)
             return CompileResult(success=False, error=str(e))
 
+    # CQM용 column cap (100K는 compile에 263초 소요)
+    CQM_MAX_COLUMNS = 20000
+
     def _compile_cqm(self, problem: SetPartitioningProblem, **kwargs) -> CompileResult:
-        """SetPartitioningProblem → CQM 모델 변환"""
-        from dimod import Binary, ConstrainedQuadraticModel
+        """SetPartitioningProblem → CQM 모델 변환 (dimod.quicksum 최적화)"""
+        from dimod import Binary, ConstrainedQuadraticModel, quicksum
 
         t0 = time.time()
+
+        # ── 0. Column cap: CQM은 대규모 변수에 느리므로 제한 ──
+        columns = problem.columns
+        if len(columns) > self.CQM_MAX_COLUMNS:
+            # cost 기준 상위 N개만 사용 (다양성은 SP problem에서 이미 보장)
+            columns = sorted(columns, key=lambda c: c.cost)[:self.CQM_MAX_COLUMNS]
+            logger.info(f"CQM: column cap applied {len(problem.columns)} → {len(columns)}")
+
+            # task_to_columns 재구축 (cap 적용된 columns만)
+            col_id_set = {c.id for c in columns}
+            task_to_columns = {}
+            for c in columns:
+                for tid in c.trips:
+                    task_to_columns.setdefault(tid, []).append(c.id)
+        else:
+            task_to_columns = problem.task_to_columns
+
         cqm = ConstrainedQuadraticModel()
 
-        # ── 1. 변수: z[k] (binary) ──
-        z = {}
-        for col in problem.columns:
-            z[col.id] = Binary(f"z_{col.id}")
+        # ── 1. 변수: z[k] (binary) — 한번에 생성 ──
+        z = {col.id: Binary(f"z_{col.id}") for col in columns}
 
-        # ── 2. Coverage 제약: 각 task를 정확히 1개 column에 배정 ──
+        # ── 2. Coverage 제약: quicksum 사용 (dimod 최적화) ──
         coverage_count = 0
         for tid in problem.task_ids:
-            col_ids = problem.task_to_columns.get(tid, [])
+            col_ids = task_to_columns.get(tid, [])
             if not col_ids:
                 continue
             cqm.add_constraint(
-                sum(z[cid] for cid in col_ids) == 1,
+                quicksum(z[cid] for cid in col_ids) == 1,
                 label=f"cover_{tid}",
             )
             coverage_count += 1
 
-        # ── 3. 추가 제약 ──
+        # ── 3. 추가 제약: quicksum 사용 ──
         extra_count = 0
         for constraint in problem.extra_constraints:
             col_vars = [z[cid] for cid in constraint.column_ids if cid in z]
             if not col_vars:
                 continue
-            expr = sum(col_vars)
+            expr = quicksum(col_vars)
             if constraint.operator == "==":
                 cqm.add_constraint(expr == constraint.rhs, label=constraint.name)
             elif constraint.operator == "<=":
@@ -97,22 +115,22 @@ class CQMCompiler(BaseCompiler):
             extra_count += 1
             logger.info(f"CQM: {constraint.label}")
 
-        # ── 4. 목적함수: ObjectiveBuilder (solver-independent) ──
+        # ── 4. 목적함수: ObjectiveBuilder + quicksum ──
         from engine.compiler.objective_builder import ObjectiveBuilder, ObjectiveConfig, extract_objective_type
 
         math_model = kwargs.get("math_model", {})
         objective_type = extract_objective_type(math_model)
         obj_config = ObjectiveConfig.from_params(kwargs.get("params", {}))
 
-        builder = ObjectiveBuilder(problem.columns, obj_config)
+        builder = ObjectiveBuilder(columns, obj_config)
         scores = builder.build(objective_type, kwargs.get("params", {}))
 
-        # CQM objective: float 계수 (정수 스케일링 불필요)
-        objective = sum(
+        # quicksum으로 objective 구축
+        obj_terms = [
             (scores.get(col.id, 1000) / 1000.0) * z[col.id]
-            for col in problem.columns
-        )
-        cqm.set_objective(objective)
+            for col in columns
+        ]
+        cqm.set_objective(quicksum(obj_terms))
 
         compile_time = time.time() - t0
         total_constraints = coverage_count + extra_count
@@ -137,10 +155,10 @@ class CQMCompiler(BaseCompiler):
             metadata={
                 "model_type": "SetPartitioning",
                 "engine": "dwave_cqm",
-                "column_count": problem.num_columns,
+                "column_count": len(columns),
                 "task_count": problem.num_tasks,
                 "coverage_constraints": coverage_count,
-                "duty_map": {c.id: c for c in problem.columns},
+                "duty_map": {c.id: c for c in columns},
                 "compile_time": compile_time,
                 "sp_diagnostics": sp_diagnostics,
             },
