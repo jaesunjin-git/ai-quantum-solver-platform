@@ -60,6 +60,59 @@ class CQMCompiler(BaseCompiler):
     # CQM용 column cap (100K는 compile에 263초 소요)
     CQM_MAX_COLUMNS = 20000
 
+    @staticmethod
+    def _cap_with_coverage(
+        columns: List[FeasibleColumn],
+        task_to_columns: Dict,
+        task_ids: List[int],
+        max_columns: int,
+    ) -> List[FeasibleColumn]:
+        """
+        Column cap 적용 시 coverage 보장.
+
+        1단계: 각 task를 커버하는 최소 1개 column 보호
+        2단계: 나머지 budget을 cost 기준으로 채움
+        """
+        # 1단계: coverage 보장 — 각 task의 best column 1개씩 보호
+        protected_ids = set()
+        col_map = {c.id: c for c in columns}
+
+        for tid in task_ids:
+            col_ids = task_to_columns.get(tid, [])
+            if not col_ids:
+                continue
+            # 이미 보호된 column이 이 task를 커버하면 skip
+            if any(cid in protected_ids for cid in col_ids):
+                continue
+            # cost 가장 낮은 column 보호
+            best_cid = min(col_ids, key=lambda cid: col_map[cid].cost if cid in col_map else float('inf'))
+            protected_ids.add(best_cid)
+
+        # 2단계: 나머지 budget
+        remaining_budget = max_columns - len(protected_ids)
+        if remaining_budget > 0:
+            # cost 기준 상위 N개 (보호된 것 제외)
+            candidates = sorted(
+                [c for c in columns if c.id not in protected_ids],
+                key=lambda c: c.cost
+            )
+            fill_ids = {c.id for c in candidates[:remaining_budget]}
+        else:
+            fill_ids = set()
+
+        selected_ids = protected_ids | fill_ids
+        result = [c for c in columns if c.id in selected_ids]
+
+        # coverage 검증
+        covered = set()
+        for c in result:
+            covered.update(c.trips)
+        uncovered = set(task_ids) - covered
+        if uncovered:
+            logger.warning(f"CQM cap: {len(uncovered)} tasks still uncovered after protection!")
+
+        return result
+
     def _compile_cqm(self, problem: SetPartitioningProblem, **kwargs) -> CompileResult:
         """SetPartitioningProblem → CQM 모델 변환 (dimod.quicksum 최적화)"""
         from dimod import Binary, ConstrainedQuadraticModel, quicksum
@@ -67,14 +120,16 @@ class CQMCompiler(BaseCompiler):
         t0 = time.time()
 
         # ── 0. Column cap: CQM은 대규모 변수에 느리므로 제한 ──
+        # coverage 보장: 모든 task를 커버하는 column은 cap에서 보호
         columns = problem.columns
         if len(columns) > self.CQM_MAX_COLUMNS:
-            # cost 기준 상위 N개만 사용 (다양성은 SP problem에서 이미 보장)
-            columns = sorted(columns, key=lambda c: c.cost)[:self.CQM_MAX_COLUMNS]
-            logger.info(f"CQM: column cap applied {len(problem.columns)} → {len(columns)}")
+            columns = self._cap_with_coverage(
+                problem.columns, problem.task_to_columns, problem.task_ids,
+                self.CQM_MAX_COLUMNS
+            )
+            logger.info(f"CQM: column cap {len(problem.columns)} → {len(columns)}")
 
-            # task_to_columns 재구축 (cap 적용된 columns만)
-            col_id_set = {c.id for c in columns}
+            # task_to_columns 재구축
             task_to_columns = {}
             for c in columns:
                 for tid in c.trips:
