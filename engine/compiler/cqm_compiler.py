@@ -203,14 +203,16 @@ class CQMCompiler(BaseCompiler):
         # ── 1. 변수: z[k] (binary) — 한번에 생성 ──
         z = {col.id: Binary(f"z_{col.id}") for col in columns}
 
-        # ── 2. Coverage 제약: quicksum 사용 (dimod 최적화) ──
+        # ── 2. Coverage 제약: >=1 (CQM 완화) ──
+        # CQM은 heuristic solver → ==1 strict는 feasible 못 찾을 수 있음
+        # >=1 (set covering)으로 완화, post-solve repair로 ==1 복구
         coverage_count = 0
         for tid in problem.task_ids:
             col_ids = task_to_columns.get(tid, [])
             if not col_ids:
                 continue
             cqm.add_constraint(
-                quicksum(z[cid] for cid in col_ids) == 1,
+                quicksum(z[cid] for cid in col_ids) >= 1,
                 label=f"cover_{tid}",
             )
             coverage_count += 1
@@ -323,11 +325,13 @@ class CQMExecutor:
         logger.info(f"D-Wave CQM: {num_vars} vars, {num_constraints} constraints, "
                      f"capacity: max_vars={max_vars}, max_constraints={max_constraints}")
 
-        # ── time_limit: min_time_limit() 런타임 조회 ──
+        # ── time_limit: 런타임 조회, 기본 180초 (600초는 과도) ──
+        default_limit = 180
         min_time = sampler.min_time_limit(cqm)
-        effective_limit = max(time_limit_sec or 0, min_time)
-        if time_limit_sec and time_limit_sec < min_time:
-            logger.warning(f"CQM: time_limit {time_limit_sec}s < min_time_limit {min_time}s, "
+        user_limit = time_limit_sec or default_limit
+        effective_limit = max(user_limit, min_time)
+        if user_limit < min_time:
+            logger.warning(f"CQM: time_limit {user_limit}s < min_time_limit {min_time}s, "
                           f"using {min_time}s")
 
         logger.info(f"D-Wave CQM: submitting (time_limit={effective_limit}s)")
@@ -337,22 +341,18 @@ class CQMExecutor:
         sampleset = sampler.sample_cqm(cqm, time_limit=effective_limit)
         wall_time = time.time() - t0
 
-        # ── 결과 해석 ──
+        # ── 결과 해석: best sample 사용 (feasible 우선, 없으면 best overall) ──
         feasible = sampleset.filter(lambda s: s.is_feasible)
-        if len(feasible) == 0:
-            logger.warning("CQM: no feasible solutions found")
-            return ExecuteResult(
-                success=False, solver_type="dwave_cqm", status="INFEASIBLE",
-                execution_time_sec=round(wall_time, 3),
-                solver_info={
-                    "sample_count": len(sampleset),
-                    "feasible_count": 0,
-                    "wall_time": wall_time,
-                },
-            )
+        feasible_count = len(feasible)
 
-        # 최적 feasible sample
-        best = feasible.first
+        if feasible_count > 0:
+            best = feasible.first
+            logger.info(f"CQM: {feasible_count} feasible solutions found")
+        else:
+            # feasible 없으면 best sample (가장 적은 위반) 사용 → repair로 복구
+            logger.warning(f"CQM: no feasible solutions, using best sample for repair")
+            best = sampleset.first
+
         sample = best.sample
 
         # z 변수 추출 → solution dict
@@ -365,34 +365,147 @@ class CQMExecutor:
         objective_value = best.energy
         selected_count = sum(1 for v in solution["z"].values() if v > 0)
 
-        # ── Post-validation: coverage ==1 검증 ──
-        violations = self._validate_coverage(solution, compile_result)
+        # ── Post-solve: validate → repair → re-validate ──
+        violations_before = self._validate_coverage(solution, compile_result)
+        repaired = False
 
-        status = "FEASIBLE"
-        if violations:
+        if violations_before:
+            logger.info(f"CQM repair: {len(violations_before)} violations before repair "
+                        f"(uncovered={sum(1 for c in violations_before.values() if c == 0)}, "
+                        f"duplicate={sum(1 for c in violations_before.values() if c > 1)})")
+            solution = self._repair_coverage(solution, compile_result)
+            repaired = True
+
+        violations_after = self._validate_coverage(solution, compile_result)
+        selected_count = sum(1 for v in solution["z"].values() if v > 0)
+
+        if violations_after:
             status = "INFEASIBLE_POST"
-            logger.warning(f"CQM post-validation: {len(violations)} coverage violations")
+            logger.warning(f"CQM: {len(violations_after)} violations AFTER repair")
+        elif repaired:
+            status = "FEASIBLE_REPAIRED"
+            logger.info(f"CQM: repaired successfully, {selected_count} columns selected")
+        else:
+            status = "FEASIBLE"
 
         logger.info(f"D-Wave CQM: {status}, obj={objective_value:.2f}, "
                      f"selected={selected_count}, wall_time={wall_time:.1f}s, "
-                     f"feasible={len(feasible)}/{len(sampleset)}")
+                     f"feasible={feasible_count}/{len(sampleset)}, repaired={repaired}")
 
         return ExecuteResult(
-            success=status != "INFEASIBLE_POST",
+            success=status in ("FEASIBLE", "FEASIBLE_REPAIRED"),
             solver_type="dwave_cqm",
-            status=status,
+            status="FEASIBLE" if status == "FEASIBLE_REPAIRED" else status,
             objective_value=objective_value,
             solution=solution,
             execution_time_sec=round(wall_time, 3),
             solver_info={
                 "sample_count": len(sampleset),
-                "feasible_count": len(feasible),
+                "feasible_count": feasible_count,
                 "selected_columns": selected_count,
                 "wall_time": wall_time,
                 "timing": sampleset.info.get("timing", {}),
-                "coverage_violations": violations if violations else None,
+                "repaired": repaired,
+                "violations_before_repair": len(violations_before) if violations_before else 0,
+                "violations_after_repair": len(violations_after) if violations_after else 0,
             },
         )
+
+    @staticmethod
+    def _repair_coverage(
+        solution: Dict, compile_result: CompileResult
+    ) -> Dict:
+        """
+        CQM 결과의 coverage 위반을 repair.
+
+        Case A (uncovered, count=0): anchor column 추가
+        Case B (duplicate, count>1): cost 높은 column 제거
+
+        Returns:
+            repaired solution dict
+        """
+        duty_map = compile_result.metadata.get("duty_map", {})
+        z_solution = solution.get("z", {})
+
+        from collections import defaultdict
+        coverage = defaultdict(int)
+        task_to_selected = defaultdict(list)  # task → [selected col_ids]
+
+        for col_id_str, val in z_solution.items():
+            if int(val) == 1:
+                col = duty_map.get(int(col_id_str))
+                if col:
+                    for tid in col.trips:
+                        coverage[tid] += 1
+                        task_to_selected[tid].append(col_id_str)
+
+        # task → all covering columns (선택 여부 무관)
+        task_to_all_cols = defaultdict(list)
+        for col_id, col in duty_map.items():
+            for tid in col.trips:
+                task_to_all_cols[tid].append(col)
+
+        repaired_count = 0
+
+        # Case A: uncovered (count=0) → 가장 cost 낮은 column 추가
+        all_task_ids = set()
+        for col in duty_map.values():
+            all_task_ids.update(col.trips)
+
+        for tid in all_task_ids:
+            if coverage[tid] == 0:
+                candidates = task_to_all_cols.get(tid, [])
+                if candidates:
+                    best = min(candidates, key=lambda c: c.cost)
+                    z_solution[str(best.id)] = 1
+                    # coverage 업데이트
+                    for t in best.trips:
+                        coverage[t] += 1
+                        task_to_selected[t].append(str(best.id))
+                    repaired_count += 1
+                    logger.debug(f"Repair: added column {best.id} for uncovered task {tid}")
+
+        # Case B: duplicate (count>1) → cost 높은 column 제거
+        for tid in list(task_to_selected.keys()):
+            selected = task_to_selected[tid]
+            if len(selected) <= 1:
+                continue
+
+            # 이 task를 커버하는 선택된 column들
+            cols_with_cost = []
+            for cid_str in selected:
+                col = duty_map.get(int(cid_str))
+                if col and z_solution.get(cid_str, 0) == 1:
+                    cols_with_cost.append((cid_str, col.cost))
+
+            if len(cols_with_cost) <= 1:
+                continue
+
+            # cost 가장 낮은 것 1개만 유지
+            cols_with_cost.sort(key=lambda x: x[1])
+            keep_id = cols_with_cost[0][0]
+
+            for cid_str, cost in cols_with_cost[1:]:
+                # 이 column을 제거해도 다른 task가 uncovered 되지 않는지 확인
+                col = duty_map.get(int(cid_str))
+                if col:
+                    safe_to_remove = True
+                    for t in col.trips:
+                        if coverage[t] <= 1:
+                            safe_to_remove = False
+                            break
+                    if safe_to_remove:
+                        z_solution[cid_str] = 0
+                        for t in col.trips:
+                            coverage[t] -= 1
+                        repaired_count += 1
+                        logger.debug(f"Repair: removed duplicate column {cid_str}")
+
+        if repaired_count > 0:
+            logger.info(f"CQM repair: {repaired_count} operations applied")
+
+        solution["z"] = z_solution
+        return solution
 
     @staticmethod
     def _validate_coverage(
@@ -400,9 +513,6 @@ class CQMExecutor:
     ) -> Dict[int, int]:
         """
         CQM 결과의 coverage ==1 검증.
-
-        CQM은 equality constraint가 약할 수 있으므로
-        post-solve에서 반드시 검증.
 
         Returns:
             {trip_id: actual_count} — 위반 trip만 (count != 1)
