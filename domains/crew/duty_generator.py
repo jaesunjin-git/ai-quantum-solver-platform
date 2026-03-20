@@ -173,7 +173,9 @@ class CrewDutyGenerator(BaseColumnGenerator):
                           for tid in column.trips)
 
         is_overnight = has_early and has_evening
-        is_night = cross_midnight or is_overnight
+        # 야간: 자정 넘김 OR overnight OR 저녁 시간대 출발 (night_threshold 이후)
+        starts_evening = column.first_trip_dep >= cfg.night_threshold
+        is_night = cross_midnight or is_overnight or starts_evening
 
         # ── column_type 설정 ──
         if is_overnight:
