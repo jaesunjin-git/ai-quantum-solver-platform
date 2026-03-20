@@ -369,7 +369,7 @@ class CQMExecutor:
         objective_value = best.energy
         selected_count = sum(1 for v in solution["z"].values() if v > 0)
 
-        # ── Post-solve: validate → repair → re-validate ──
+        # ── Post-solve: validate → repair (반복) → re-validate ──
         violations_before = self._validate_coverage(solution, compile_result)
         repaired = False
 
@@ -377,15 +377,27 @@ class CQMExecutor:
             logger.info(f"CQM repair: {len(violations_before)} violations before repair "
                         f"(uncovered={sum(1 for c in violations_before.values() if c == 0)}, "
                         f"duplicate={sum(1 for c in violations_before.values() if c > 1)})")
-            solution = self._repair_coverage(solution, compile_result)
-            repaired = True
+            # 반복 repair (최대 5회, 수렴까지)
+            for repair_round in range(5):
+                solution = self._repair_coverage(solution, compile_result)
+                repaired = True
+                v = self._validate_coverage(solution, compile_result)
+                if not v:
+                    logger.info(f"CQM repair: converged at round {repair_round + 1}")
+                    break
+                logger.info(f"CQM repair round {repair_round + 1}: {len(v)} remaining")
 
         violations_after = self._validate_coverage(solution, compile_result)
         selected_count = sum(1 for v in solution["z"].values() if v > 0)
 
         if violations_after:
             status = "INFEASIBLE_POST"
-            logger.warning(f"CQM: {len(violations_after)} violations AFTER repair")
+            uncov = {t: c for t, c in violations_after.items() if c == 0}
+            dupl = {t: c for t, c in violations_after.items() if c > 1}
+            logger.warning(
+                f"CQM: {len(violations_after)} violations AFTER repair "
+                f"(uncovered={len(uncov)}, duplicate={len(dupl)})"
+            )
         elif repaired:
             status = "FEASIBLE_REPAIRED"
             logger.info(f"CQM: repaired successfully, {selected_count} columns selected")
@@ -412,6 +424,10 @@ class CQMExecutor:
                 "repaired": repaired,
                 "violations_before_repair": len(violations_before) if violations_before else 0,
                 "violations_after_repair": len(violations_after) if violations_after else 0,
+                "violation_detail": {
+                    "uncovered": [t for t, c in (violations_after or {}).items() if c == 0],
+                    "duplicate": [t for t, c in (violations_after or {}).items() if c > 1],
+                } if violations_after else None,
             },
         )
 
