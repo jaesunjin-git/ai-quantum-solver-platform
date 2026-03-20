@@ -401,6 +401,12 @@ class CrewDutyGenerator(BaseColumnGenerator):
                 col = self._try_build_column(state, next_id + count)
                 if col:
                     col.source = "overnight"
+                    # #3: overnight 보너스 — duty 수 감소 효과 큼
+                    tc = len(col.trips)
+                    if tc >= 6:
+                        col.cost *= 0.7
+                    elif tc >= 4:
+                        col.cost *= 0.8
                     columns.append(col)
                     count += 1
                 else:
@@ -492,8 +498,9 @@ class CrewDutyGenerator(BaseColumnGenerator):
             # 수면 gap 판정: gap >= min_sleep_minutes이고
             # 저녁→새벽 전환 (current.arr >= night_threshold-60, next.dep < day_start)
             morning_cutoff = self._get_morning_cutoff()
+            # #5: gap 판정 안정화 — 수면 최소 + 30분 여유
             is_rest_gap = (
-                gap >= cfg.min_sleep_minutes
+                gap >= cfg.min_sleep_minutes + 30
                 and curr.arr_time >= cfg.night_threshold - 60
                 and next_t.dep_time < morning_cutoff
             )
@@ -530,7 +537,9 @@ class CrewDutyGenerator(BaseColumnGenerator):
                     if (cfg.min_sleep_minutes <= gap
                             <= cfg.min_sleep_minutes + 360):
                         if state.total_driving + t.duration <= self._get_max_active_time(state):
-                            candidates.append(t)
+                            # #6: 중복 방지
+                            if t.id not in {c.id for c in candidates}:
+                                candidates.append(t)
 
         return candidates
 
