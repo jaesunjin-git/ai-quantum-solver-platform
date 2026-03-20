@@ -147,6 +147,17 @@ class CrewDutyGenerator(BaseColumnGenerator):
         logger.info(f"Phase 1: {len(eligible)}/{len(self.tasks)} day-eligible trips")
         return eligible
 
+    # ── prep/cleanup hook: 최소 prep으로 탐색 공간 확장 ──────
+
+    def _get_prep_cleanup(self, state) -> tuple:
+        """relay prep(40) 기준 — 가능한 duty를 넓게 생성"""
+        cfg = self._crew_config
+        return cfg.setup_time_relay, cfg.teardown_time_day
+
+    def _get_full_prep(self) -> int:
+        """cost 보정용 depot prep(60)"""
+        return self._crew_config.setup_time_day
+
     # ── depot 인접역 매칭 ─────────────────────────────────────
 
     def _can_connect(self, from_location: str, to_location: str) -> bool:
@@ -207,10 +218,12 @@ class CrewDutyGenerator(BaseColumnGenerator):
         if has_early:
             return False  # 새벽 trip은 주간 duty 불가
 
-        # 주간 출근 시각 제한: duty_start(= first_dep - prep) >= day_start_earliest
-        # column.start_time은 base에서 setup_time(=setup_time_day)으로 이미 계산됨
-        # 06:20 출근 + prep 60분 = 07:20 첫 출발 가능 → first_dep >= 440
-        if column.start_time < cfg.day_start_earliest:
+        # 주간 출근 시각 제한
+        # 최소 prep(relay=40) 기준: 06:20 + 40분 = 07:00 첫 출발 가능
+        # depot prep(60) 기준: 06:20 + 60분 = 07:20 첫 출발 가능
+        # relay 출무가 존재하므로 최소 prep으로 판정 (feasibility는 넓게, 실제 prep은 결과에서 결정)
+        duty_start = column.first_trip_dep - cfg.setup_time_relay
+        if duty_start < cfg.day_start_earliest:
             return False
 
         # 주간 퇴근 시각 제한: duty_end(= last_arr + cleanup) <= day_end_latest

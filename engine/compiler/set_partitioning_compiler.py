@@ -107,11 +107,21 @@ class SetPartitioningCompiler(BaseCompiler):
         builder = ObjectiveBuilder(problem.columns, obj_config)
         scores = builder.build(objective_type, kwargs.get("params", {}))
 
+        # fallback 안전장치: score 없는 column은 최대 penalty
+        max_score = max(scores.values()) if scores else 1000
+        missing_count = 0
+
         cost_terms = []
         for col in problem.columns:
-            score = scores.get(col.id, 1000)
+            score = scores.get(col.id)
+            if score is None:
+                score = max_score * 10  # 최대 penalty (선택 억제)
+                missing_count += 1
             cost_terms.append(score * z[col.id])
         model.minimize(sum(cost_terms))
+
+        if missing_count > 0:
+            logger.warning(f"SP: {missing_count} columns missing scores (fallback penalty applied)")
 
         total_constraints = coverage_count + extra_count
 

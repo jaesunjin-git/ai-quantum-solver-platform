@@ -545,7 +545,7 @@ class BaseColumnGenerator:
             last_end_location=next_task.end_location,
             total_driving=new_driving,
             first_dep_time=state.first_dep_time,
-            score=len(new_tasks) * 50 + new_driving - 0.3 * span_estimate,
+            score=len(new_tasks) * 80 + new_driving - 0.15 * span_estimate,
         )
 
     # ── Column 생성 + feasibility 검증 (override 가능) ────────
@@ -553,6 +553,14 @@ class BaseColumnGenerator:
     def _check_domain_feasibility(self, column: FeasibleColumn) -> bool:
         """도메인별 추가 feasibility 검증 (base: 항상 통과). override 가능."""
         return True
+
+    def _get_prep_cleanup(self, state: _BeamState) -> tuple:
+        """(prep, cleanup) 반환. 도메인에서 override하여 최소 prep 사용 가능."""
+        return self.config.setup_time, self.config.teardown_time
+
+    def _get_full_prep(self) -> int:
+        """cost 보정용 최대 prep. 도메인에서 override."""
+        return self.config.setup_time
 
     def _try_build_column(self, state: _BeamState, col_id: int) -> Optional[FeasibleColumn]:
         """상태에서 FeasibleColumn 생성. feasibility 실패 시 None."""
@@ -562,8 +570,8 @@ class BaseColumnGenerator:
         last_arr = state.last_arr_time
         driving = state.total_driving
 
-        prep = cfg.setup_time
-        cleanup = cfg.teardown_time
+        # prep/cleanup: hook으로 도메인별 최소값 사용 (탐색 공간 확장)
+        prep, cleanup = self._get_prep_cleanup(state)
 
         start_time = first_dep - prep
         end_time = last_arr + cleanup
@@ -592,7 +600,10 @@ class BaseColumnGenerator:
         if work > cfg.max_span_time:
             return None
 
-        cost = 1.0 + wait * 0.01 + (span - driving) * 0.005
+        # cost: full prep(depot) 기준으로 보정 — relay로 생성해도 cost는 depot 기준
+        full_prep = self._get_full_prep()
+        span_for_cost = span + (full_prep - prep)
+        cost = 1.0 + wait * 0.01 + (span_for_cost - driving) * 0.005
 
         column = FeasibleColumn(
             id=col_id,

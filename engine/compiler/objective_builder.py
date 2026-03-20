@@ -124,12 +124,19 @@ class ObjectiveBuilder:
             # 기본: duty 1개 = 1.0
             score = cfg.duty_weight
 
-            # secondary: 짧은 duty penalty + idle penalty
+            # secondary: 짧은 duty penalty (비선형)
             tc = len(col.trips)
             short_penalty = max(0, cfg.short_threshold - tc) ** 2
+
+            # trip 수 비선형 보너스: 10/tc (10-trip=1.0, 5-trip=2.0, 1-trip=10.0)
+            # set partitioning에서 선형 보너스는 효과 없으므로 역수형 사용
+            trip_inefficiency = 10.0 / max(tc, 1)
+
+            # idle penalty
             idle_penalty = col.idle_minutes
 
             score += cfg.short_penalty_weight * short_penalty
+            score += 0.1 * trip_inefficiency  # 짧은 duty일수록 비용 증가
             score += cfg.idle_penalty_weight * idle_penalty
 
             scores[col.id] = score
