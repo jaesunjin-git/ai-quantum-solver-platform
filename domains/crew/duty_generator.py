@@ -41,8 +41,12 @@ class CrewDutyConfig(BaseColumnConfig):
     overnight_morning_end: int = 480     # 08:00 — 숙박조 새벽 운행 최대 시각
     min_sleep_minutes: int = 240         # 최소 수면시간
 
+    # 주간 종료 제한
+    day_end_latest: int = 1380           # 23:00 — 주간 최대 퇴근 시각
+
     # 주간/야간별 준비·정리 시간
-    setup_time_day: int = 60             # 주간 출고 준비
+    setup_time_day: int = 60             # 주간 출고 준비 (depot 출발)
+    setup_time_relay: int = 40           # 주간 승계/편승 준비 (최소 prep)
     teardown_time_day: int = 40          # 주간 입고 정리
     setup_time_night: int = 50           # 야간 익일출고 준비
     teardown_time_night: int = 30        # 야간 당일입고 정리
@@ -82,7 +86,10 @@ class CrewDutyConfig(BaseColumnConfig):
         _crew_mapping = {
             'night_threshold': 'night_threshold',
             'day_duty_start_earliest': 'day_start_earliest',
+            'day_duty_end_latest': 'day_end_latest',
             'min_night_sleep_minutes': 'min_sleep_minutes',
+            'overnight_morning_end': 'overnight_morning_end',
+            'overnight_max_effective_span': 'overnight_max_effective_span',
         }
         for param_key, attr in _crew_mapping.items():
             val = params.get(param_key)
@@ -92,6 +99,7 @@ class CrewDutyConfig(BaseColumnConfig):
         # 주간 준비/정리
         cfg.setup_time_day = int(params.get('preparation_minutes_departure',
                                              params.get('preparation_minutes', 60)))
+        cfg.setup_time_relay = int(params.get('preparation_minutes_relay', 40))
         cfg.teardown_time_day = int(params.get('cleanup_minutes_arrival',
                                                 params.get('cleanup_minutes', 40)))
         # 야간 준비/정리
@@ -200,9 +208,16 @@ class CrewDutyGenerator(BaseColumnGenerator):
             return False  # 새벽 trip은 주간 duty 불가
 
         # 주간 출근 시각 제한: duty_start(= first_dep - prep) >= day_start_earliest
-        # prep은 주간 기준 (setup_time_day)
-        duty_start = column.first_trip_dep - cfg.setup_time_day
-        if duty_start < cfg.day_start_earliest:
+        # column.start_time은 base에서 setup_time(=setup_time_day)으로 이미 계산됨
+        # 06:20 출근 + prep 60분 = 07:20 첫 출발 가능 → first_dep >= 440
+        if column.start_time < cfg.day_start_earliest:
+            return False
+
+        # 주간 퇴근 시각 제한: duty_end(= last_arr + cleanup) <= day_end_latest
+        # 23:00 이후 종료는 숙박조로 전환해야 함
+        min_teardown = cfg.teardown_time_day
+        duty_end = column.last_trip_arr + min_teardown
+        if duty_end > cfg.day_end_latest:
             return False
 
         return True
