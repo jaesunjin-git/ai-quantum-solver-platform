@@ -1016,12 +1016,16 @@ async def handle_math_model_confirm(model, session: CrewSession, project_id: str
             logger.warning(f"Failed to create model version: {ve}")
         var_count = meta.get("estimated_variable_count", "?")
         return {
-            "type": "system",
+            "type": "analysis",
             "text": (
                 f"✅ **수학 모델이 확정되었습니다.**\n\n"
                 f"변수 규모({var_count}개)를 기반으로 솔버를 추천합니다."
             ),
-            "data": None,
+            "data": {
+                "view_mode": "math_model",
+                "math_model": state.math_model,
+                "math_model_summary": summarize_model(state.math_model) if state.math_model else None,
+            },
             "options": [
                 {"label": "⚡ 솔버 추천", "action": "send", "message": "솔버 추천해줘"},
             ],
