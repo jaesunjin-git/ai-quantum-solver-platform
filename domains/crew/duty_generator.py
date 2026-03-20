@@ -158,6 +158,22 @@ class CrewDutyGenerator(BaseColumnGenerator):
         """cost 보정용 depot prep(60)"""
         return self._crew_config.setup_time_day
 
+    def _get_max_active_time(self, state) -> int:
+        """overnight은 저녁+새벽 두 구간이므로 1.5배 허용"""
+        cfg = self._crew_config
+        # overnight 판정: 저녁 trip + 새벽 trip 동시 포함
+        has_evening = any(self._task_map[tid].dep_time >= cfg.night_threshold
+                         for tid in state.trips)
+        has_early = any(self._task_map[tid].dep_time < cfg.day_start_earliest
+                        for tid in state.trips)
+        if has_evening and has_early:
+            return int(cfg.max_active_time * 1.5)
+        return cfg.max_active_time
+
+    def _get_morning_cutoff(self) -> int:
+        """morning cutoff 통일 (#9)"""
+        return self._crew_config.overnight_morning_end or self._crew_config.day_start_earliest
+
     # ── depot 인접역 매칭 ─────────────────────────────────────
 
     def _can_connect(self, from_location: str, to_location: str) -> bool:
@@ -312,7 +328,7 @@ class CrewDutyGenerator(BaseColumnGenerator):
         # 새벽~이른 아침 trip (overnight 새벽 chain 후보)
         # day_start_earliest까지만이 아니라 overnight_morning_end까지 포함
         # 숙박조는 06:20 이후에도 1~2 trip 더 운행 가능
-        morning_cutoff = cfg.overnight_morning_end or cfg.day_start_earliest
+        morning_cutoff = self._get_morning_cutoff()
         morning_trips = sorted(
             [t for t in self.tasks if t.dep_time < morning_cutoff],
             key=lambda t: t.dep_time
@@ -475,7 +491,7 @@ class CrewDutyGenerator(BaseColumnGenerator):
 
             # 수면 gap 판정: gap >= min_sleep_minutes이고
             # 저녁→새벽 전환 (current.arr >= night_threshold-60, next.dep < day_start)
-            morning_cutoff = cfg.overnight_morning_end or cfg.day_start_earliest
+            morning_cutoff = self._get_morning_cutoff()
             is_rest_gap = (
                 gap >= cfg.min_sleep_minutes
                 and curr.arr_time >= cfg.night_threshold - 60
@@ -493,12 +509,12 @@ class CrewDutyGenerator(BaseColumnGenerator):
 
     def _find_next_tasks(self, state: _BeamState) -> List[TaskItem]:
         """crew 전용: base + 야간 자정 넘김 연결 허용"""
-        # base 연결 (주간)
         candidates = super()._find_next_tasks(state)
 
         # 야간 연결: 저녁 도착 후 → 다음날 새벽 출발 (수면 gap)
         cfg = self._crew_config
         task_set = set(state.trips)
+        morning_cutoff = self._get_morning_cutoff()
 
         if state.last_arr_time >= cfg.night_threshold - 60:
             reachable = self._reachable_locations(state.last_end_location)
@@ -506,7 +522,6 @@ class CrewDutyGenerator(BaseColumnGenerator):
                 for t in self._location_departures.get(loc, []):
                     if t.id in task_set:
                         continue
-                    morning_cutoff = cfg.overnight_morning_end or 480
                     if t.dep_time >= morning_cutoff:
                         continue
 
@@ -514,7 +529,7 @@ class CrewDutyGenerator(BaseColumnGenerator):
                     gap = effective_dep - state.last_arr_time
                     if (cfg.min_sleep_minutes <= gap
                             <= cfg.min_sleep_minutes + 360):
-                        if state.total_driving + t.duration <= cfg.max_active_time:
+                        if state.total_driving + t.duration <= self._get_max_active_time(state):
                             candidates.append(t)
 
         return candidates

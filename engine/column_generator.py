@@ -562,6 +562,10 @@ class BaseColumnGenerator:
         """cost 보정용 최대 prep. 도메인에서 override."""
         return self.config.setup_time
 
+    def _get_max_active_time(self, state: _BeamState) -> int:
+        """최대 활동시간. 도메인에서 override (예: overnight 1.5배)."""
+        return self.config.max_active_time
+
     def _try_build_column(self, state: _BeamState, col_id: int) -> Optional[FeasibleColumn]:
         """상태에서 FeasibleColumn 생성. feasibility 실패 시 None."""
         cfg = self.config
@@ -597,15 +601,20 @@ class BaseColumnGenerator:
         if wait > cfg.max_idle_time:
             return None
 
-        if driving > cfg.max_active_time:
+        if driving > self._get_max_active_time(state):
             return None
         if work > cfg.max_span_time:
             return None
 
-        # cost: full prep(depot) 기준으로 보정 — relay로 생성해도 cost는 depot 기준
+        # cost: full prep 기준 보정 + short column penalty + discrimination 강화
         full_prep = self._get_full_prep()
         span_for_cost = span + (full_prep - prep)
-        cost = 1.0 + wait * 0.01 + (span_for_cost - driving) * 0.005
+        tc = len(state.trips)
+        short_penalty = max(0, cfg.max_tasks - tc) * 0.05  # 짧을수록 비용 증가
+        cost = (1.0
+                + wait * 0.02
+                + (span_for_cost - driving) * 0.01
+                + short_penalty)
 
         column = FeasibleColumn(
             id=col_id,
