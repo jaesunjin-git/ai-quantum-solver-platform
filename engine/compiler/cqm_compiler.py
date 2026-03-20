@@ -465,41 +465,28 @@ class CQMExecutor:
                     repaired_count += 1
                     logger.debug(f"Repair: added column {best.id} for uncovered task {tid}")
 
-        # Case B: duplicate (count>1) → cost 높은 column 제거
-        for tid in list(task_to_selected.keys()):
-            selected = task_to_selected[tid]
-            if len(selected) <= 1:
-                continue
+        # Case B: duplicate (count>1) → column 단위로 제거
+        # 선택된 column을 cost 높은 순으로 정렬, 제거 가능하면 제거
+        selected_cols = [
+            (cid_str, duty_map.get(int(cid_str)))
+            for cid_str, val in z_solution.items()
+            if int(val) == 1 and int(cid_str) in duty_map
+        ]
+        # cost 높은 순 (제거 우선)
+        selected_cols.sort(key=lambda x: x[1].cost, reverse=True)
 
-            # 이 task를 커버하는 선택된 column들
-            cols_with_cost = []
-            for cid_str in selected:
-                col = duty_map.get(int(cid_str))
-                if col and z_solution.get(cid_str, 0) == 1:
-                    cols_with_cost.append((cid_str, col.cost))
+        for cid_str, col in selected_cols:
+            if z_solution.get(cid_str, 0) != 1:
+                continue  # 이미 제거됨
 
-            if len(cols_with_cost) <= 1:
-                continue
+            # 이 column의 모든 task가 다른 column으로도 커버되면 제거 가능
+            safe_to_remove = all(coverage[t] >= 2 for t in col.trips)
 
-            # cost 가장 낮은 것 1개만 유지
-            cols_with_cost.sort(key=lambda x: x[1])
-            keep_id = cols_with_cost[0][0]
-
-            for cid_str, cost in cols_with_cost[1:]:
-                # 이 column을 제거해도 다른 task가 uncovered 되지 않는지 확인
-                col = duty_map.get(int(cid_str))
-                if col:
-                    safe_to_remove = True
-                    for t in col.trips:
-                        if coverage[t] <= 1:
-                            safe_to_remove = False
-                            break
-                    if safe_to_remove:
-                        z_solution[cid_str] = 0
-                        for t in col.trips:
-                            coverage[t] -= 1
-                        repaired_count += 1
-                        logger.debug(f"Repair: removed duplicate column {cid_str}")
+            if safe_to_remove:
+                z_solution[cid_str] = 0
+                for t in col.trips:
+                    coverage[t] -= 1
+                repaired_count += 1
 
         if repaired_count > 0:
             logger.info(f"CQM repair: {repaired_count} operations applied")
