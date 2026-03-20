@@ -576,12 +576,12 @@ class BaseColumnGenerator:
 
         work = span
 
-        # break 계산: task 간 실제 gap 기반
-        total_gap = self._calculate_total_gap(state.trips)
-        break_minutes = min(total_gap, cfg.min_pause_time)
+        # break + inactive(수면 등) 계산: task 간 gap 분류 기반
+        regular_gap, inactive_gap = self._classify_gaps(state.trips)
+        break_minutes = min(regular_gap, cfg.min_pause_time)
 
-        # 대기시간 = span - driving - prep - cleanup - break
-        wait = span - driving - prep - cleanup - break_minutes
+        # 대기시간 = span - driving - prep - cleanup - break - inactive
+        wait = span - driving - prep - cleanup - break_minutes - inactive_gap
         if wait < 0:
             wait = 0
         if wait > cfg.max_idle_time:
@@ -604,10 +604,10 @@ class BaseColumnGenerator:
             end_time=end_time,
             active_minutes=driving,
             span_minutes=span,
-            elapsed_minutes=work,
+            elapsed_minutes=work - inactive_gap,
             idle_minutes=wait,
             pause_minutes=break_minutes,
-            inactive_minutes=0,
+            inactive_minutes=inactive_gap,
             cost=cost,
         )
 
@@ -711,6 +711,19 @@ class BaseColumnGenerator:
         return new_columns
 
     # ── Gap 기반 break 계산 ───────────────────────────────────
+
+    def _classify_gaps(self, task_ids: List[int]) -> tuple:
+        """
+        task 간 gap을 (regular_gap, inactive_gap)으로 분류.
+
+        base: 모든 gap을 regular로 분류 (inactive=0).
+        도메인에서 override하여 수면/비활동 gap을 inactive로 분류 가능.
+
+        Returns:
+            (regular_gap_total, inactive_gap_total)
+        """
+        total = self._calculate_total_gap(task_ids)
+        return total, 0  # base: 전부 regular
 
     def _calculate_total_gap(self, task_ids: List[int]) -> int:
         """task 간 총 gap (비작업 시간) 계산"""
