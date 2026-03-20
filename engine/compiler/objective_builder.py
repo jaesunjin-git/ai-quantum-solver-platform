@@ -98,10 +98,16 @@ class ObjectiveBuilder:
             logger.warning(f"Unknown objective '{objective_type}', using minimize_duties")
             scores = self._minimize_duties(params)
 
-        # 정수 스케일링 (CP-SAT, QUBO 모두 정수 필요)
+        # 정수 스케일링 (#5: 정규화 후 1~1000 범위)
+        vals = list(scores.values())
+        min_s = min(vals) if vals else 0
+        max_s = max(vals) if vals else 1
+        range_s = max(max_s - min_s, 1e-6)
+
         int_scores = {}
         for col_id, score in scores.items():
-            int_scores[col_id] = max(1, int(score * 1000))
+            norm = (score - min_s) / range_s
+            int_scores[col_id] = max(1, int(1 + norm * 999))
 
         logger.info(f"Objective '{objective_type}': "
                      f"score range [{min(int_scores.values())}..{max(int_scores.values())}], "
@@ -120,6 +126,9 @@ class ObjectiveBuilder:
         cfg = self.config
         scores = {}
 
+        # #4: idle 정규화용 최대값
+        max_idle = max((c.idle_minutes for c in self.columns), default=1) or 1
+
         for col in self.columns:
             # 기본: duty 1개 = 1.0
             score = cfg.duty_weight
@@ -129,15 +138,14 @@ class ObjectiveBuilder:
             short_penalty = max(0, cfg.short_threshold - tc) ** 2
 
             # trip 수 비선형 보너스: 10/tc (10-trip=1.0, 5-trip=2.0, 1-trip=10.0)
-            # set partitioning에서 선형 보너스는 효과 없으므로 역수형 사용
             trip_inefficiency = 10.0 / max(tc, 1)
 
-            # idle penalty
-            idle_penalty = col.idle_minutes
+            # idle penalty (정규화: 0~1 범위)
+            idle_norm = col.idle_minutes / max_idle
 
             score += cfg.short_penalty_weight * short_penalty
-            score += 0.1 * trip_inefficiency  # 짧은 duty일수록 비용 증가
-            score += cfg.idle_penalty_weight * idle_penalty
+            score += 0.1 * trip_inefficiency
+            score += cfg.idle_penalty_weight * idle_norm
 
             scores[col.id] = score
 
@@ -153,14 +161,18 @@ class ObjectiveBuilder:
         """
         cfg = self.config
 
-        # target trips per duty
-        total_trips = sum(len(c.trips) for c in self.columns) // max(len(self.columns), 1)
-        # 사용자 지정 target 또는 자동 계산
+        # target trips per duty (#3: 하드코딩 제거)
+        # 전체 unique task 수를 column pool에서 계산
+        all_tasks = set()
+        for c in self.columns:
+            all_tasks.update(c.trips)
+        total_task_count = len(all_tasks)
+
         target_duties = params.get("total_duties")
         if target_duties:
-            target_trips = math.ceil(320 / int(target_duties))  # 근사
+            target_trips = math.ceil(total_task_count / int(target_duties))
         else:
-            target_trips = 8  # 기본
+            target_trips = round(total_task_count / max(len(self.columns), 1)) or 8
 
         scores = {}
         for col in self.columns:
@@ -192,13 +204,17 @@ class ObjectiveBuilder:
         cfg = self.config
         scores = {}
 
-        for col in self.columns:
-            # idle 시간이 주 비용 (duty 수 가중치 낮음)
-            idle = col.idle_minutes
-            dead_span = max(0, col.span_minutes - col.active_minutes)
+        # #6: 정규화용 최대값
+        max_idle = max((c.idle_minutes for c in self.columns), default=1) or 1
+        max_span = max((c.span_minutes for c in self.columns), default=1) or 1
 
-            score = 0.1 * cfg.duty_weight + idle + 0.5 * dead_span
-            scores[col.id] = max(score, 0.1)
+        for col in self.columns:
+            idle_norm = col.idle_minutes / max_idle
+            dead_span = max(0, col.span_minutes - col.active_minutes)
+            dead_norm = dead_span / max_span
+
+            score = 0.1 * cfg.duty_weight + idle_norm + 0.5 * dead_norm
+            scores[col.id] = max(score, 0.01)
 
         return scores
 
