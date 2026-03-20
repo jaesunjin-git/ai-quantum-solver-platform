@@ -341,7 +341,7 @@ class SolverPipeline:
     ) -> Dict[str, Any]:
         """Set Partitioning 결과 → 기존 프론트엔드 포맷 summary"""
         from engine.sp_result_converter import convert_sp_result
-        from engine.duty_generator import load_trips_from_csv
+        from engine.column_generator import load_tasks_from_csv as load_trips_from_csv
         import os
 
         duty_map = getattr(self, "_sp_duty_map", {})
@@ -432,17 +432,18 @@ class SolverPipeline:
                 success=False, error=f"trips.csv not found: {trips_path}"
             ), 0.0
 
-        from engine.duty_generator import DutyGenerator, GeneratorConfig, load_trips_from_csv
+        from domains.crew.duty_generator import CrewDutyGenerator, CrewDutyConfig
+        from engine.column_generator import load_tasks_from_csv
         from engine.compiler.set_partitioning_compiler import SetPartitioningCompiler
 
-        trips = load_trips_from_csv(trips_path)
+        trips = load_tasks_from_csv(trips_path)
         logger.info(f"SP: loaded {len(trips)} trips from {trips_path}")
 
         # Generator 설정 (bound_data 파라미터 기반)
-        config = GeneratorConfig.from_params(bound_data.get("parameters", {}))
+        config = CrewDutyConfig.from_params(bound_data.get("parameters", {}))
 
-        # Duty 생성
-        gen = DutyGenerator(trips, config)
+        # Duty 생성 (crew 도메인 전용 generator)
+        gen = CrewDutyGenerator(trips, config)
         duties = gen.generate()
         logger.info(f"SP: {len(duties)} feasible duties generated")
 

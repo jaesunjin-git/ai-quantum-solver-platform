@@ -18,7 +18,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from engine.duty_generator import FeasibleDuty, TripInfo
+from engine.column_generator import FeasibleColumn as FeasibleDuty, TaskItem as TripInfo
 
 logger = logging.getLogger(__name__)
 
@@ -109,8 +109,8 @@ def convert_sp_result(
     # overlap 체크
     overlap_count = total_trips_covered - len(unique_trips)
 
-    day_duties = [d for d in selected_duties if not d.is_night]
-    night_duties = [d for d in selected_duties if d.is_night]
+    day_duties = [d for d in selected_duties if not d.column_type in ("night", "overnight")]
+    night_duties = [d for d in selected_duties if d.column_type in ("night", "overnight")]
     total_driving = sum(d.driving_minutes for d in selected_duties)
     total_wait = sum(d.wait_minutes for d in selected_duties)
     total_span = sum(d.span_minutes for d in selected_duties)
@@ -161,7 +161,7 @@ def convert_sp_result(
         duties_detail.append({
             "duty_id": crew_idx,
             "crew_id": crew_idx,
-            "is_night": duty.is_night,
+            "is_night": duty.column_type in ("night", "overnight"),
             "start_time": duty.start_time,
             "end_time": duty.end_time,
             # 프론트엔드 필수 필드
@@ -278,8 +278,8 @@ def _build_constraint_status(
     trip_counts = [len(d.trips) for d in selected_duties]
 
     # 야간 duty만
-    night_duties = [d for d in selected_duties if d.is_night]
-    day_duties = [d for d in selected_duties if not d.is_night]
+    night_duties = [d for d in selected_duties if d.column_type in ("night", "overnight")]
+    day_duties = [d for d in selected_duties if not d.column_type in ("night", "overnight")]
 
     status = []
 

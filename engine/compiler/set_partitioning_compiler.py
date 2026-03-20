@@ -20,7 +20,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from engine.compiler.base import BaseCompiler, CompileResult
-from engine.duty_generator import FeasibleDuty
+from engine.column_generator import FeasibleColumn as FeasibleDuty
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ class SetPartitioningCompiler(BaseCompiler):
 
         if day_count_param is not None:
             day_target = int(day_count_param)
-            day_z = [z[d.id] for d in duties if not d.is_night]
+            day_z = [z[d.id] for d in duties if d.column_type == "day" or d.column_type == "default"]
             if day_z:
                 model.add(sum(day_z) == day_target)
                 extra_constraints += 1
@@ -105,7 +105,7 @@ class SetPartitioningCompiler(BaseCompiler):
 
         if night_count_param is not None:
             night_target = int(night_count_param)
-            night_z = [z[d.id] for d in duties if d.is_night]
+            night_z = [z[d.id] for d in duties if d.column_type in ("night", "overnight")]
             if night_z:
                 model.add(sum(night_z) == night_target)
                 extra_constraints += 1

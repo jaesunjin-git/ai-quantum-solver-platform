@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 
 def _make_trips(n=20):
     """간단한 테스트 trip 목록 생성"""
-    from engine.duty_generator import TripInfo
+    from engine.column_generator import TaskItem as TripInfo
     trips = []
     for i in range(n):
         dep = 360 + i * 40  # 06:00부터 40분 간격
@@ -27,8 +27,8 @@ def _make_trips(n=20):
             dep_time=dep,
             arr_time=dep + 35,
             duration=35,
-            dep_station="A",
-            arr_station="B" if i % 2 == 0 else "A",
+            start_location="A",
+            end_location="B" if i % 2 == 0 else "A",
             direction="forward" if i % 2 == 0 else "reverse",
         ))
     return trips
@@ -36,7 +36,7 @@ def _make_trips(n=20):
 
 def _make_trips_with_night():
     """주간 + 야간 trip 포함"""
-    from engine.duty_generator import TripInfo
+    from engine.column_generator import TaskItem as TripInfo
     trips = _make_trips(15)
     # 야간 trip 추가
     for i in range(5):
@@ -46,8 +46,8 @@ def _make_trips_with_night():
             dep_time=dep,
             arr_time=dep + 35,
             duration=35,
-            dep_station="A",
-            arr_station="B" if i % 2 == 0 else "A",
+            start_location="A",
+            end_location="B" if i % 2 == 0 else "A",
             direction="forward" if i % 2 == 0 else "reverse",
         ))
     return trips
@@ -60,18 +60,18 @@ class TestDutyGenerator:
 
     def test_generate_produces_duties(self):
         """기본 생성 동작"""
-        from engine.duty_generator import DutyGenerator, GeneratorConfig
+        from domains.crew.duty_generator import CrewDutyGenerator as DutyGenerator, CrewDutyConfig as GeneratorConfig
         trips = _make_trips(10)
-        config = GeneratorConfig(beam_width=10, max_duties_target=100, max_trips_per_duty=5)
+        config = GeneratorConfig(beam_width=10, max_columns_target=100, max_tasks=5)
         gen = DutyGenerator(trips, config)
         duties = gen.generate()
         assert len(duties) > 0
 
     def test_full_coverage(self):
         """모든 trip이 최소 1개 duty에 포함"""
-        from engine.duty_generator import DutyGenerator, GeneratorConfig
+        from domains.crew.duty_generator import CrewDutyGenerator as DutyGenerator, CrewDutyConfig as GeneratorConfig
         trips = _make_trips(20)
-        config = GeneratorConfig(beam_width=20, max_duties_target=500, max_trips_per_duty=8)
+        config = GeneratorConfig(beam_width=20, max_columns_target=500, max_tasks=8)
         gen = DutyGenerator(trips, config)
         duties = gen.generate()
 
@@ -82,27 +82,27 @@ class TestDutyGenerator:
 
     def test_feasibility_checks(self):
         """생성된 duty가 driving/work 제한 준수"""
-        from engine.duty_generator import DutyGenerator, GeneratorConfig
+        from domains.crew.duty_generator import CrewDutyGenerator as DutyGenerator, CrewDutyConfig as GeneratorConfig
         trips = _make_trips(15)
         config = GeneratorConfig(
-            max_driving_minutes=360,
-            max_work_minutes=660,
+            max_active_time=360,
+            max_span_time=660,
             beam_width=10,
-            max_duties_target=200,
+            max_columns_target=200,
         )
         gen = DutyGenerator(trips, config)
         duties = gen.generate()
 
         for d in duties:
-            assert d.driving_minutes <= config.max_driving_minutes
-            if not d.is_night:
-                assert d.work_minutes <= config.max_work_minutes
+            assert d.driving_minutes <= config.max_active_time
+            if not d.column_type != "day":
+                assert d.work_minutes <= config.max_span_time
 
     def test_source_metadata(self):
         """duty source 메타데이터 존재"""
-        from engine.duty_generator import DutyGenerator, GeneratorConfig
+        from domains.crew.duty_generator import CrewDutyGenerator as DutyGenerator, CrewDutyConfig as GeneratorConfig
         trips = _make_trips(10)
-        config = GeneratorConfig(beam_width=10, max_duties_target=100)
+        config = GeneratorConfig(beam_width=10, max_columns_target=100)
         gen = DutyGenerator(trips, config)
         duties = gen.generate()
 
@@ -111,9 +111,9 @@ class TestDutyGenerator:
 
     def test_dominance_removes_duplicates(self):
         """같은 trip set → Pareto dominance로 중복 제거"""
-        from engine.duty_generator import DutyGenerator, GeneratorConfig
+        from domains.crew.duty_generator import CrewDutyGenerator as DutyGenerator, CrewDutyConfig as GeneratorConfig
         trips = _make_trips(10)
-        config = GeneratorConfig(beam_width=20, max_duties_target=500)
+        config = GeneratorConfig(beam_width=20, max_columns_target=500)
         gen = DutyGenerator(trips, config)
         duties = gen.generate()
 
@@ -126,13 +126,13 @@ class TestDutyGenerator:
 
     def test_night_duty_detection(self):
         """야간 trip → is_night=True"""
-        from engine.duty_generator import DutyGenerator, GeneratorConfig
+        from domains.crew.duty_generator import CrewDutyGenerator as DutyGenerator, CrewDutyConfig as GeneratorConfig
         trips = _make_trips_with_night()
-        config = GeneratorConfig(beam_width=10, max_duties_target=200)
+        config = GeneratorConfig(beam_width=10, max_columns_target=200)
         gen = DutyGenerator(trips, config)
         duties = gen.generate()
 
-        night_duties = [d for d in duties if d.is_night]
+        night_duties = [d for d in duties if d.column_type != "day"]
         # 야간 trip이 있으므로 야간 duty도 있어야
         assert len(night_duties) > 0
 
@@ -144,11 +144,11 @@ class TestSPCompiler:
 
     def test_compile_produces_model(self):
         """SP 모델 컴파일 성공"""
-        from engine.duty_generator import DutyGenerator, GeneratorConfig
+        from domains.crew.duty_generator import CrewDutyGenerator as DutyGenerator, CrewDutyConfig as GeneratorConfig
         from engine.compiler.set_partitioning_compiler import SetPartitioningCompiler
 
         trips = _make_trips(10)
-        config = GeneratorConfig(beam_width=10, max_duties_target=100)
+        config = GeneratorConfig(beam_width=10, max_columns_target=100)
         gen = DutyGenerator(trips, config)
         duties = gen.generate()
 
@@ -170,11 +170,11 @@ class TestSPCompiler:
     def test_solve_feasible(self):
         """SP 모델 풀이 가능"""
         from ortools.sat.python import cp_model
-        from engine.duty_generator import DutyGenerator, GeneratorConfig
+        from domains.crew.duty_generator import CrewDutyGenerator as DutyGenerator, CrewDutyConfig as GeneratorConfig
         from engine.compiler.set_partitioning_compiler import SetPartitioningCompiler
 
         trips = _make_trips(10)
-        config = GeneratorConfig(beam_width=10, max_duties_target=100)
+        config = GeneratorConfig(beam_width=10, max_columns_target=100)
         gen = DutyGenerator(trips, config)
         duties = gen.generate()
 
@@ -195,11 +195,11 @@ class TestSPResultConverter:
 
     def test_convert_produces_interpretation(self):
         """변환 결과에 필수 필드 존재"""
-        from engine.duty_generator import DutyGenerator, GeneratorConfig, FeasibleDuty
+        from domains.crew.duty_generator import CrewDutyGenerator as DutyGenerator, CrewDutyConfig as GeneratorConfig, FeasibleDuty
         from engine.sp_result_converter import convert_sp_result
 
         trips = _make_trips(10)
-        config = GeneratorConfig(beam_width=10, max_duties_target=100)
+        config = GeneratorConfig(beam_width=10, max_columns_target=100)
         gen = DutyGenerator(trips, config)
         duties = gen.generate()
         duty_map = {d.id: d for d in duties}
@@ -220,11 +220,11 @@ class TestSPResultConverter:
 
     def test_kpi_fields(self):
         """KPI 필수 필드 검증"""
-        from engine.duty_generator import DutyGenerator, GeneratorConfig
+        from domains.crew.duty_generator import CrewDutyGenerator as DutyGenerator, CrewDutyConfig as GeneratorConfig
         from engine.sp_result_converter import convert_sp_result
 
         trips = _make_trips(10)
-        config = GeneratorConfig(beam_width=10, max_duties_target=100)
+        config = GeneratorConfig(beam_width=10, max_columns_target=100)
         gen = DutyGenerator(trips, config)
         duties = gen.generate()
         duty_map = {d.id: d for d in duties}
@@ -257,18 +257,19 @@ class TestGeneratorConfig:
     """설정 로딩 테스트"""
 
     def test_default_values(self):
-        from engine.duty_generator import GeneratorConfig
-        cfg = GeneratorConfig()
-        assert cfg.max_driving_minutes == 360
-        assert cfg.max_trips_per_duty == 10
+        from domains.crew.duty_generator import CrewDutyConfig
+        cfg = CrewDutyConfig()
+        assert cfg.max_active_time == 360
+        assert cfg.max_tasks == 10
         assert cfg.beam_width == 50
+        assert cfg.night_threshold == 1020  # crew 전용
 
     def test_from_params(self):
-        from engine.duty_generator import GeneratorConfig
+        from domains.crew.duty_generator import CrewDutyConfig
         params = {
             "max_driving_minutes": 400,
             "preparation_minutes_departure": 50,
         }
-        cfg = GeneratorConfig.from_params(params)
-        assert cfg.max_driving_minutes == 400
-        assert cfg.prep_minutes_day == 50
+        cfg = CrewDutyConfig.from_params(params)
+        assert cfg.max_active_time == 400
+        assert cfg.setup_time_day == 50
