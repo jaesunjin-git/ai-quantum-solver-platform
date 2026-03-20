@@ -67,17 +67,24 @@ class SetPartitioningCompiler(BaseCompiler):
 
         model = cp_model.CpModel()
 
-        # ── 1. 변수: z[k] (column 선택) ──
+        # ── 1. 변수: dense index 기반 (#1) ──
+        # col.id는 hole이 있을 수 있으므로 0~N-1 dense index 사용
+        col_index = {col.id: i for i, col in enumerate(problem.columns)}
         z = {}
         for col in problem.columns:
-            z[col.id] = model.new_bool_var(f"z_{col.id}")
+            idx = col_index[col.id]
+            z[col.id] = model.new_bool_var(f"z_{idx}")
+            # 초기 hint: 0 (대부분 미선택) → solver 성능 개선 (#7)
+            model.add_hint(z[col.id], 0)
 
         # ── 2. Coverage 제약: 각 task를 정확히 1개 column에 배정 ──
         coverage_count = 0
         for tid in problem.task_ids:
             col_ids = problem.task_to_columns.get(tid, [])
             if not col_ids:
-                continue  # validate()에서 이미 체크
+                # #2: silent skip 금지 → 에러
+                logger.error(f"SP: task {tid} has no covering column!")
+                continue
             model.add(sum(z[cid] for cid in col_ids) == 1)
             coverage_count += 1
 
@@ -86,6 +93,8 @@ class SetPartitioningCompiler(BaseCompiler):
         for constraint in problem.extra_constraints:
             col_vars = [z[cid] for cid in constraint.column_ids if cid in z]
             if not col_vars:
+                # #5: silent drop 금지 → 경고
+                logger.warning(f"SP: constraint '{constraint.name}' has no valid columns, skipped")
                 continue
             if constraint.operator == "==":
                 model.add(sum(col_vars) == constraint.rhs)
@@ -99,7 +108,6 @@ class SetPartitioningCompiler(BaseCompiler):
         # ── 4. 목적함수: ObjectiveBuilder (solver-independent) ──
         from engine.compiler.objective_builder import ObjectiveBuilder, ObjectiveConfig, extract_objective_type
 
-        # math_model에서 objective type 추출 (kwargs로 전달)
         math_model = kwargs.get("math_model", {})
         objective_type = extract_objective_type(math_model)
         obj_config = ObjectiveConfig.from_params(kwargs.get("params", {}))
@@ -107,15 +115,15 @@ class SetPartitioningCompiler(BaseCompiler):
         builder = ObjectiveBuilder(problem.columns, obj_config)
         scores = builder.build(objective_type, kwargs.get("params", {}))
 
-        # fallback 안전장치: score 없는 column은 최대 penalty
-        max_score = max(scores.values()) if scores else 1000
+        # fallback: missing score → 절대 비선택 penalty (#4)
+        penalty = max(max(scores.values(), default=1000) * 100, 1000000)
         missing_count = 0
 
         cost_terms = []
         for col in problem.columns:
             score = scores.get(col.id)
             if score is None:
-                score = max_score * 10  # 최대 penalty (선택 억제)
+                score = penalty
                 missing_count += 1
             cost_terms.append(score * z[col.id])
         model.minimize(sum(cost_terms))
