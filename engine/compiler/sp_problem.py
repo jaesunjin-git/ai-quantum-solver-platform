@@ -86,6 +86,7 @@ class SetPartitioningProblem:
 def build_sp_problem(
     columns: List[FeasibleColumn],
     params: Optional[Dict[str, Any]] = None,
+    all_task_ids: Optional[set] = None,
 ) -> SetPartitioningProblem:
     """
     Column 목록에서 SetPartitioningProblem 구축.
@@ -93,11 +94,17 @@ def build_sp_problem(
     Args:
         columns: Generator 출력
         params: bound_data["parameters"] — 추가 제약용 (crew count 등)
+        all_task_ids: 전체 task id set (없으면 columns에서 추출)
 
     Returns:
         SetPartitioningProblem
     """
     params = params or {}
+
+    # ── Contract 검증 (#5) ──
+    assert len(columns) > 0, "SP: no columns provided"
+    assert all(len(c.trips) > 0 for c in columns), "SP: column with empty trips"
+    assert len({c.id for c in columns}) == len(columns), "SP: duplicate column ids"
 
     # task → column 인덱스 구축
     task_to_columns: Dict[int, List[int]] = {}
@@ -110,12 +117,30 @@ def build_sp_problem(
     # cost 맵
     costs = {col.id: col.cost for col in columns}
 
-    # 진단
-    uncovered = [tid for tid, cids in task_to_columns.items() if not cids]
+    # ── uncovered 진단 (#2: 전체 task set 기반) ──
+    covered_tasks = set(task_to_columns.keys())
+    if all_task_ids:
+        uncovered = sorted(all_task_ids - covered_tasks)
+    else:
+        uncovered = []  # 전체 task set 미제공 시 감지 불가
+
+    # ── degree_1 진단 (#3: forced selection 분석) ──
     degree_1 = [tid for tid, cids in task_to_columns.items() if len(cids) == 1]
 
     # 추가 제약 (params 기반)
     extra = _build_extra_constraints(columns, params)
+
+    # ── #3: forced column vs total_duties 충돌 사전 감지 ──
+    if degree_1:
+        forced_col_ids = set()
+        for tid in degree_1:
+            forced_col_ids.update(task_to_columns[tid])
+        total_con = next((c for c in extra if c.name == "total_columns"), None)
+        if total_con and len(forced_col_ids) > total_con.rhs:
+            logger.error(
+                f"SP: {len(forced_col_ids)} forced columns > total_duties({total_con.rhs}) "
+                f"→ INFEASIBLE 확정"
+            )
 
     problem = SetPartitioningProblem(
         columns=columns,
@@ -177,5 +202,22 @@ def _build_extra_constraints(
             rhs=int(night_count),
             label=f"night columns = {int(night_count)}",
         ))
+
+    # ── #4: crew count 충돌 사전 검증 ──
+    if total is not None and day_count is not None and night_count is not None:
+        if int(day_count) + int(night_count) != int(total):
+            logger.error(
+                f"SP constraint conflict: day({day_count}) + night({night_count}) = "
+                f"{int(day_count)+int(night_count)} ≠ total({total})"
+            )
+        # column 가용성 체크
+        if day_count is not None:
+            day_available = sum(1 for c in columns if c.column_type in ("day", "default"))
+            if day_available < int(day_count):
+                logger.error(f"SP: day columns {day_available} < required {day_count}")
+        if night_count is not None:
+            night_available = sum(1 for c in columns if c.column_type in ("night", "overnight"))
+            if night_available < int(night_count):
+                logger.error(f"SP: night columns {night_available} < required {night_count}")
 
     return constraints
