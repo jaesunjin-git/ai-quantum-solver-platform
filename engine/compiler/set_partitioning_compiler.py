@@ -74,8 +74,6 @@ class SetPartitioningCompiler(BaseCompiler):
         for col in problem.columns:
             idx = col_index[col.id]
             z[col.id] = model.new_bool_var(f"z_{idx}")
-            # 초기 hint: 0 (대부분 미선택) → solver 성능 개선 (#7)
-            model.add_hint(z[col.id], 0)
 
         # ── 2. Coverage 제약: 각 task를 정확히 1개 column에 배정 ──
         coverage_count = 0

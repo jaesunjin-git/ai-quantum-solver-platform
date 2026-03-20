@@ -500,12 +500,14 @@ class BaseColumnGenerator:
         candidates = []
         task_set = set(state.trips)
 
-        # 연결 가능한 위치에서 출발하는 task
+        # 연결 가능한 위치에서 출발하는 task (#4: heapq.merge로 정렬 최적화)
         reachable = self._reachable_locations(state.last_end_location)
-        location_tasks = []
-        for loc in reachable:
-            location_tasks.extend(self._location_departures.get(loc, []))
-        location_tasks.sort(key=lambda t: t.dep_time)
+        if len(reachable) == 1:
+            location_tasks = self._location_departures.get(reachable[0], [])
+        else:
+            from heapq import merge as _merge
+            iters = [self._location_departures.get(loc, []) for loc in reachable]
+            location_tasks = list(_merge(*iters, key=lambda t: t.dep_time))
 
         for t in location_tasks:
             if t.id in task_set:
@@ -539,13 +541,16 @@ class BaseColumnGenerator:
         if span_estimate > cfg.max_span_time * 1.5:
             return None
 
+        # beam score = objective proxy (#1: ObjectiveBuilder와 동일 방향)
+        idle_est = max(0, span_estimate - new_driving)
+
         return _BeamState(
             trips=new_tasks,
             last_arr_time=next_task.arr_time,
             last_end_location=next_task.end_location,
             total_driving=new_driving,
             first_dep_time=state.first_dep_time,
-            score=len(new_tasks) * 90 + new_driving - 0.1 * span_estimate,
+            score=100 * len(new_tasks) - idle_est,
         )
 
     # ── Column 생성 + feasibility 검증 (override 가능) ────────
