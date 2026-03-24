@@ -532,7 +532,7 @@ class SolverPipeline:
                         int(hint.min_tasks_per_column * 0.8),
                     )
 
-                # Seed-based diversification: bottleneck trip을 seed로 전달
+                # Seed-based diversification
                 if hint.seed_trips:
                     gen.config.seed_trips = hint.seed_trips
 
@@ -540,6 +540,20 @@ class SolverPipeline:
                     f"ACG hint applied: min_depth={gen.config.min_column_depth}, "
                     f"seed_trips={len(hint.seed_trips) if hint.seed_trips else 0}, "
                     f"prefer_longer={hint.prefer_longer}"
+                )
+
+            # Pair-frequency penalty: 기존 pool에서 trip-pair 빈도 계산
+            if all_columns and attempt > 1:
+                from collections import Counter as _Counter
+                pf = _Counter()
+                for col in all_columns:
+                    trips = sorted(col.trips)
+                    for i in range(len(trips)):
+                        for j in range(i + 1, len(trips)):
+                            pf[(trips[i], trips[j])] += 1
+                gen.config.pair_frequency = dict(pf)
+                logger.info(
+                    f"ACG pair-frequency: {len(pf)} unique pairs from {len(all_columns)} columns"
                 )
 
             new_columns = gen.generate()

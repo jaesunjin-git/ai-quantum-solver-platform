@@ -130,6 +130,8 @@ class BaseColumnConfig:
     acg_scale: float = 1.0          # 에스컬레이션 배율
     min_column_depth: int = 0       # 최소 task 수 (0=제한 없음, hint에서 설정)
     seed_trips: List = None         # bottleneck trip seed (ACG diversity용)
+    pair_frequency: Dict = None     # trip-pair 빈도 (diversity penalty용)
+    diversity_weight: float = 0.5   # pair-frequency penalty 가중치
 
     @property
     def effective_beam_width(self) -> int:
@@ -579,10 +581,24 @@ class BaseColumnGenerator:
 
         # beam score = objective proxy (#1: ObjectiveBuilder와 동일 방향)
         idle_est = max(0, span_estimate - new_driving)
-        # ACG hint: 더 긴 column에 보너스 (min_column_depth > 0일 때)
+
+        # ACG hint: 더 긴 column에 보너스
         depth_bonus = 0
         if cfg.min_column_depth > 0 and len(new_tasks) >= cfg.min_column_depth:
-            depth_bonus = 50  # 목표 depth 달성 보너스
+            depth_bonus = 50
+
+        # Pair-frequency penalty: 기존 pool에서 흔한 trip 조합에 감점
+        # → 기존과 다른 trip 조합을 가진 column 우선 탐색
+        pair_penalty = 0
+        if cfg.pair_frequency:
+            pf = cfg.pair_frequency
+            w = cfg.diversity_weight
+            # 새로 추가되는 trip과 기존 trip들 간의 pair 빈도 합산
+            for existing_tid in state.trips:
+                pair_key = (min(existing_tid, next_task.id),
+                            max(existing_tid, next_task.id))
+                pair_penalty += pf.get(pair_key, 0)
+            pair_penalty = w * pair_penalty
 
         return _BeamState(
             trips=new_tasks,
@@ -590,7 +606,7 @@ class BaseColumnGenerator:
             last_end_location=next_task.end_location,
             total_driving=new_driving,
             first_dep_time=state.first_dep_time,
-            score=100 * len(new_tasks) - idle_est + depth_bonus,
+            score=100 * len(new_tasks) - idle_est + depth_bonus - pair_penalty,
         )
 
     # ── Column 생성 + feasibility 검증 (override 가능) ────────
