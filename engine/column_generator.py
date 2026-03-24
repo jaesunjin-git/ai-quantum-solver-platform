@@ -126,8 +126,9 @@ class BaseColumnConfig:
     beam_width: int = 50
     max_columns_target: int = 100000
 
-    # Adaptive CG 에스컬레이션 배율 (solver_pipeline에서 설정)
-    acg_scale: float = 1.0
+    # Adaptive CG
+    acg_scale: float = 1.0          # 에스컬레이션 배율
+    min_column_depth: int = 0       # 최소 task 수 (0=제한 없음, hint에서 설정)
 
     @property
     def effective_beam_width(self) -> int:
@@ -555,6 +556,10 @@ class BaseColumnGenerator:
 
         # beam score = objective proxy (#1: ObjectiveBuilder와 동일 방향)
         idle_est = max(0, span_estimate - new_driving)
+        # ACG hint: 더 긴 column에 보너스 (min_column_depth > 0일 때)
+        depth_bonus = 0
+        if cfg.min_column_depth > 0 and len(new_tasks) >= cfg.min_column_depth:
+            depth_bonus = 50  # 목표 depth 달성 보너스
 
         return _BeamState(
             trips=new_tasks,
@@ -562,7 +567,7 @@ class BaseColumnGenerator:
             last_end_location=next_task.end_location,
             total_driving=new_driving,
             first_dep_time=state.first_dep_time,
-            score=100 * len(new_tasks) - idle_est,
+            score=100 * len(new_tasks) - idle_est + depth_bonus,
         )
 
     # ── Column 생성 + feasibility 검증 (override 가능) ────────
@@ -637,10 +642,17 @@ class BaseColumnGenerator:
         span_for_cost = span + (full_prep - prep)
         tc = len(state.trips)
         short_penalty = max(0, cfg.max_tasks - tc) * 0.05  # 짧을수록 비용 증가
+
+        # ACG hint: min_column_depth 미만이면 추가 페널티 (reject 대신 — coverage 보호)
+        depth_penalty = 0.0
+        if cfg.min_column_depth > 0 and tc < cfg.min_column_depth:
+            depth_penalty = (cfg.min_column_depth - tc) * 0.3
+
         cost = (1.0
                 + wait * 0.02
                 + (span_for_cost - driving) * 0.01
-                + short_penalty)
+                + short_penalty
+                + depth_penalty)
 
         column = FeasibleColumn(
             id=col_id,

@@ -507,13 +507,16 @@ class SolverPipeline:
             f"night_crew_count={params.get('night_crew_count')}"
         )
 
+        from engine.compiler.sp_problem import GenerationHint
+
         all_columns = []
         best_compile = None
+        hint = None  # Layer 2: 진단 결과 → generator 힌트
 
         for attempt in range(1, max_attempts + 1):
             acg_scale = 1.0 + (attempt - 1) * 0.5  # 1.0 → 1.5 → 2.0
 
-            # Generator (에스컬레이션된 config)
+            # Generator (에스컬레이션된 config + hint 적용)
             if self._generator_factory:
                 gen = self._generator_factory(tasks, params)
             else:
@@ -521,42 +524,58 @@ class SolverPipeline:
                 gen = BaseColumnGenerator(tasks, config)
             gen.config.acg_scale = acg_scale
 
+            # Layer 2: hint → min_column_depth 설정
+            if hint and hint.prefer_longer:
+                gen.config.min_column_depth = max(
+                    gen.config.min_column_depth,
+                    int(hint.min_tasks_per_column * 0.8),  # 80%는 확보
+                )
+                logger.info(
+                    f"ACG hint applied: min_column_depth={gen.config.min_column_depth} "
+                    f"(required_avg={hint.min_tasks_per_column:.1f})"
+                )
+
             new_columns = gen.generate()
 
             # Column pool 누적 (이전 attempt 결과 보존)
             if attempt == 1:
                 all_columns = new_columns
             else:
-                # 기존 pool에 새 column 추가 (id 충돌 방지)
                 max_id = max((c.id for c in all_columns), default=0)
                 for c in new_columns:
                     max_id += 1
                     c.id = max_id
                     all_columns.append(c)
-
-                # dominance 제거로 중복/열등 column 정리
                 all_columns = gen._remove_dominated(all_columns)
 
             # SP Problem 구축
             sp_problem = build_sp_problem(all_columns, params, all_task_ids)
 
-            # column_type 분포 로그
+            # Layer 1: Coverage capacity 진단
+            cov_diag = sp_problem.diagnose_coverage()
             type_dist = sp_problem.diagnostics.get("column_type_distribution", {})
+
             logger.info(
                 f"ACG attempt {attempt}/{max_attempts}: "
                 f"scale={acg_scale}, generated={len(new_columns)}, "
                 f"total_pool={len(all_columns)}, "
                 f"types={type_dist}, "
                 f"uncovered={len(sp_problem.uncovered_tasks)}, "
-                f"degree_1={len(sp_problem.degree_1_tasks)}"
+                f"degree_1={len(sp_problem.degree_1_tasks)}, "
+                f"coverage: required_avg={cov_diag.required_avg:.1f}, "
+                f"current_avg={cov_diag.current_avg:.1f}, "
+                f"capacity_gap={cov_diag.capacity_gap}, "
+                f"feasible={cov_diag.feasible}"
             )
 
             # Pre-solve: 재생성이 의미있는 경우만 계속
             if sp_problem.should_regenerate(params) and attempt < max_attempts:
+                # Layer 2: 진단 → 힌트 생성 (다음 attempt에서 사용)
+                hint = GenerationHint.from_diagnostics(cov_diag)
                 logger.warning(
-                    f"ACG attempt {attempt}: pool 부족, 재생성 필요 "
-                    f"(uncovered={len(sp_problem.uncovered_tasks)}, "
-                    f"types={type_dist})"
+                    f"ACG attempt {attempt}: pool 부족 → 재생성 "
+                    f"(gap={cov_diag.capacity_gap}, hint: prefer_longer={hint.prefer_longer}, "
+                    f"min_tasks={hint.min_tasks_per_column:.1f})"
                 )
                 continue
 
@@ -569,13 +588,58 @@ class SolverPipeline:
             if compile_result.success:
                 best_compile = compile_result
                 break
-            else:
-                # 컴파일 실패도 저장 (마지막 attempt 결과 반환용)
-                best_compile = compile_result
-                if attempt < max_attempts:
-                    logger.warning(f"ACG attempt {attempt}: compile failed, retrying")
-                    continue
-                break
+
+            # 컴파일 실패 → Layer 3: constraint 완화 시도
+            if not compile_result.success and cov_diag.capacity_gap > 0:
+                # == 제약을 <= 로 완화 (추가 slack 허용)
+                suggested_total = cov_diag.max_columns + max(
+                    2, cov_diag.capacity_gap // int(cov_diag.current_avg or 7)
+                )
+                logger.warning(
+                    f"ACG: compile failed with capacity_gap={cov_diag.capacity_gap}. "
+                    f"Relaxing total_columns: =={cov_diag.max_columns} → <={suggested_total}"
+                )
+                relaxed_params = dict(params)
+                relaxed_params["total_duties"] = suggested_total
+                # day/night도 비례 완화
+                if params.get("day_crew_count") and params.get("night_crew_count"):
+                    ratio = suggested_total / max(cov_diag.max_columns, 1)
+                    relaxed_params["day_crew_count"] = int(
+                        float(params["day_crew_count"]) * ratio
+                    )
+                    relaxed_params["night_crew_count"] = (
+                        suggested_total - relaxed_params["day_crew_count"]
+                    )
+                    logger.info(
+                        f"ACG relaxed: total={suggested_total}, "
+                        f"day={relaxed_params['day_crew_count']}, "
+                        f"night={relaxed_params['night_crew_count']}"
+                    )
+
+                # 완화된 params로 SP problem 재구축 + 재컴파일
+                relaxed_problem = build_sp_problem(
+                    all_columns, relaxed_params, all_task_ids
+                )
+                compile_result = compiler.compile(
+                    math_model,
+                    {**bound_data, "parameters": relaxed_params},
+                    sp_problem=relaxed_problem,
+                )
+                if compile_result.success:
+                    compile_result.warnings = compile_result.warnings or []
+                    compile_result.warnings.append(
+                        f"partition_count_relaxed: exact {cov_diag.max_columns} infeasible, "
+                        f"relaxed to {suggested_total}"
+                    )
+                    best_compile = compile_result
+                    break
+
+            best_compile = compile_result
+            if attempt < max_attempts:
+                hint = GenerationHint.from_diagnostics(cov_diag)
+                logger.warning(f"ACG attempt {attempt}: compile failed, retrying")
+                continue
+            break
 
         compile_time = time.time() - compile_start
 

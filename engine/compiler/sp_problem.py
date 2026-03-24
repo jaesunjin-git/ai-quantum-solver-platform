@@ -38,6 +38,37 @@ class ColumnType:
 
 
 @dataclass
+class CoverageDiagnostics:
+    """SP coverage capacity 진단 — solver 호출 전 수학적 feasibility 검증"""
+    feasible: bool
+    total_tasks: int = 0
+    max_columns: Optional[int] = None     # K (partition 수 제약)
+    required_avg: float = 0.0             # N/K
+    current_avg: float = 0.0             # 실제 column 평균 task 수
+    top_k_capacity: int = 0              # 가장 큰 K개 column의 task 수 합
+    capacity_gap: int = 0                # total_tasks - top_k_capacity (>0이면 부족)
+    type_deficits: Dict[str, int] = field(default_factory=dict)  # 타입별 부족분
+
+
+@dataclass
+class GenerationHint:
+    """SP 진단 → Generator로 전달되는 도메인 무관 힌트"""
+    min_tasks_per_column: float = 0.0     # column당 최소 task 수
+    prefer_longer: bool = False           # 더 긴 column 우선 생성
+    capacity_gap: int = 0                 # 추가로 커버해야 하는 task 수
+    column_type_deficits: Dict[str, int] = field(default_factory=dict)
+
+    @classmethod
+    def from_diagnostics(cls, diag: CoverageDiagnostics) -> "GenerationHint":
+        return cls(
+            min_tasks_per_column=diag.required_avg,
+            prefer_longer=(diag.current_avg < diag.required_avg),
+            capacity_gap=max(0, diag.capacity_gap),
+            column_type_deficits=diag.type_deficits,
+        )
+
+
+@dataclass
 class SPConstraint:
     """추가 제약 (crew count, capacity 등)"""
     name: str
@@ -91,6 +122,60 @@ class SetPartitioningProblem:
         """사전 감지된 INFEASIBLE 원인이 있는지"""
         return len(self.infeasibility_reasons) > 0
 
+    def diagnose_coverage(self) -> CoverageDiagnostics:
+        """SP coverage capacity 진단 — solver 호출 전 수학적 feasibility 검증.
+        도메인 지식 불필요, 순수 수학."""
+        total_tasks = len(self.task_ids)
+
+        # partition 수 제약 탐색 (total_columns == K)
+        total_con = next(
+            (c for c in self.extra_constraints if c.name == "total_columns"),
+            None,
+        )
+        if total_con is None:
+            return CoverageDiagnostics(feasible=True, total_tasks=total_tasks)
+
+        max_columns = total_con.rhs
+        required_avg = total_tasks / max(max_columns, 1)
+
+        # column 크기 분포
+        col_sizes = sorted(
+            (len(c.trips) for c in self.columns), reverse=True
+        )
+        current_avg = sum(col_sizes) / max(len(col_sizes), 1)
+
+        # Greedy upper bound: 가장 큰 K개 column으로 커버 가능한 최대 task 수
+        top_k_capacity = sum(col_sizes[:max_columns])
+        capacity_gap = max(0, total_tasks - top_k_capacity)
+
+        # 타입별 부족분 (extra constraint에서 type별 제약 확인)
+        type_deficits = {}
+        for con in self.extra_constraints:
+            if con.name in ("day_columns", "night_columns") and con.operator == "==":
+                type_name = "day" if con.name == "day_columns" else "night"
+                type_group = ColumnType.DAY_GROUP if type_name == "day" else ColumnType.NIGHT_GROUP
+                type_cols = [c for c in self.columns if c.column_type in type_group]
+                type_sizes = sorted((len(c.trips) for c in type_cols), reverse=True)
+                type_capacity = sum(type_sizes[:con.rhs])
+                # 해당 타입으로만 커버 가능한 task 추정은 복잡 → 단순 용량 비교
+                type_deficits[type_name] = {
+                    "required": con.rhs,
+                    "available_columns": len(type_cols),
+                    "avg_tasks": sum(type_sizes) / max(len(type_sizes), 1),
+                    "top_k_capacity": type_capacity,
+                }
+
+        return CoverageDiagnostics(
+            feasible=(capacity_gap == 0),
+            total_tasks=total_tasks,
+            max_columns=max_columns,
+            required_avg=required_avg,
+            current_avg=current_avg,
+            top_k_capacity=top_k_capacity,
+            capacity_gap=capacity_gap,
+            type_deficits=type_deficits,
+        )
+
     def should_regenerate(self, params: Optional[Dict] = None) -> bool:
         """ACG: column pool 재생성이 필요한지 판단.
         "재생성으로 풀릴 문제만" 감지 — constraint 충돌은 재생성 무의미."""
@@ -99,6 +184,17 @@ class SetPartitioningProblem:
 
         # 절대 재생성: uncovered task 존재
         if self.uncovered_tasks:
+            return True
+
+        # coverage capacity 부족 (solver 호출 전 수학적 검증)
+        cov_diag = self.diagnose_coverage()
+        if not cov_diag.feasible:
+            logger.warning(
+                f"Coverage capacity insufficient: "
+                f"gap={cov_diag.capacity_gap}, "
+                f"required_avg={cov_diag.required_avg:.1f}, "
+                f"current_avg={cov_diag.current_avg:.1f}"
+            )
             return True
 
         # 야간 column 부족
