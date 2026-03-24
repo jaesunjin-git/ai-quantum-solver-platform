@@ -488,20 +488,30 @@ def _build_extra_constraints(
     """
     constraints = []
 
-    # objective별 연산자 결정
+    # objective별 제약 범위 결정
+    #   balance_workload: total==, day==, night== (정확한 crew count 강제)
+    #   minimize_duties:  total<= (상한만, day/night 분배는 solver 자유)
+    #   기타:             total<=, day<=, night<= (상한)
     if objective_type == "balance_workload":
+        apply_total, apply_day, apply_night = True, True, True
         total_op, day_op, night_op = "==", "==", "=="
+    elif objective_type in ("minimize_duties", "minimize_duties_with_penalties"):
+        apply_total, apply_day, apply_night = True, False, False
+        total_op = "<="
+        day_op = night_op = None  # 사용하지 않음
     else:
+        apply_total, apply_day, apply_night = True, True, True
         total_op, day_op, night_op = "<=", "<=", "<="
 
     logger.info(
         f"SP extra constraints: objective={objective_type}, "
-        f"operators: total={total_op}, day={day_op}, night={night_op}"
+        f"total={total_op}, day={'skip' if not apply_day else day_op}, "
+        f"night={'skip' if not apply_night else night_op}"
     )
 
     # 총 column 수
     total = params.get("total_duties")
-    if total is not None:
+    if apply_total and total is not None:
         constraints.append(SPConstraint(
             name="total_columns",
             column_ids=[c.id for c in columns],
@@ -509,50 +519,47 @@ def _build_extra_constraints(
             rhs=int(total),
             label=f"총 column 수 {total_op} {int(total)}",
         ))
-    elif objective_type != "balance_workload" and (
-        params.get("day_crew_count") is not None
-        or params.get("night_crew_count") is not None
-    ):
-        # 사용자가 day/night count는 제공했지만 total은 안 준 경우 → 합산
+    elif apply_total and objective_type != "balance_workload":
+        # total_duties 미제공 + minimize 모드 → day+night 합산 또는 자동 추정
         day_val = params.get("day_crew_count")
         night_val = params.get("night_crew_count")
         if day_val is not None and night_val is not None:
             auto_total = int(day_val) + int(night_val)
-        else:
-            auto_total = _estimate_duty_upper_bound(columns, params)
-        constraints.append(SPConstraint(
-            name="total_columns",
-            column_ids=[c.id for c in columns],
-            operator="<=",
-            rhs=auto_total,
-            label=f"총 column 수 <= {auto_total} (auto)",
-        ))
+            constraints.append(SPConstraint(
+                name="total_columns",
+                column_ids=[c.id for c in columns],
+                operator="<=",
+                rhs=auto_total,
+                label=f"총 column 수 <= {auto_total} (day+night)",
+            ))
 
-    # day column 수 (ColumnType.DAY_GROUP: day + default)
-    day_count = params.get("day_crew_count")
-    if day_count is not None:
-        day_ids = [c.id for c in columns
-                   if c.column_type in ColumnType.DAY_GROUP]
-        constraints.append(SPConstraint(
-            name="day_columns",
-            column_ids=day_ids,
-            operator=day_op,
-            rhs=int(day_count),
-            label=f"day columns {day_op} {int(day_count)}",
-        ))
+    # day column 수 (balance_workload에서만 적용)
+    if apply_day:
+        day_count = params.get("day_crew_count")
+        if day_count is not None:
+            day_ids = [c.id for c in columns
+                       if c.column_type in ColumnType.DAY_GROUP]
+            constraints.append(SPConstraint(
+                name="day_columns",
+                column_ids=day_ids,
+                operator=day_op,
+                rhs=int(day_count),
+                label=f"day columns {day_op} {int(day_count)}",
+            ))
 
-    # night column 수 (ColumnType.NIGHT_GROUP: night + overnight)
-    night_count = params.get("night_crew_count")
-    if night_count is not None:
-        night_ids = [c.id for c in columns
-                     if c.column_type in ColumnType.NIGHT_GROUP]
-        constraints.append(SPConstraint(
-            name="night_columns",
-            column_ids=night_ids,
-            operator=night_op,
-            rhs=int(night_count),
-            label=f"night columns {night_op} {int(night_count)}",
-        ))
+    # night column 수 (balance_workload에서만 적용)
+    if apply_night:
+        night_count = params.get("night_crew_count")
+        if night_count is not None:
+            night_ids = [c.id for c in columns
+                         if c.column_type in ColumnType.NIGHT_GROUP]
+            constraints.append(SPConstraint(
+                name="night_columns",
+                column_ids=night_ids,
+                operator=night_op,
+                rhs=int(night_count),
+                label=f"night columns {night_op} {int(night_count)}",
+            ))
 
     return constraints
 

@@ -213,15 +213,10 @@ class CrewDutyGenerator(BaseColumnGenerator):
         return self._crew_config.setup_time_day
 
     def _get_max_active_time(self, state) -> int:
-        """overnight은 저녁+새벽 두 구간이므로 1.5배 허용"""
-        cfg = self._crew_config
-        has_evening = any(self._task_map[tid].dep_time >= cfg.night_threshold
-                         for tid in state.trips)
-        has_early = any(self._task_map[tid].dep_time < cfg.day_start_earliest
-                        for tid in state.trips)
-        if has_evening and has_early:
-            return int(cfg.max_active_time * cfg.overnight_active_multiplier)
-        return cfg.max_active_time
+        """최대 활동시간(driving)은 주간/야간/overnight 구분 없이 동일.
+        max_driving_minutes=360은 hard constraint — overnight에서도 완화 불가.
+        overnight에서 완화되는 것은 span(수면 포함)이지 driving이 아님."""
+        return self._crew_config.max_active_time
 
     def _get_morning_cutoff(self) -> int:
         """morning cutoff 통일"""
@@ -472,8 +467,8 @@ class CrewDutyGenerator(BaseColumnGenerator):
 
                 total_active = sum(t.duration for t in ev_chain) + \
                                sum(t.duration for t in mo_chain)
-                overnight_active_limit = int(cfg.max_active_time * cfg.overnight_active_multiplier)
-                if total_active > overnight_active_limit:
+                # driving 상한은 주간/야간 동일 — hard constraint
+                if total_active > cfg.max_active_time:
                     reject_reasons["max_active_exceeded"] += 1
                     continue
 

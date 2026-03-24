@@ -143,6 +143,7 @@ def _build_schedule_rows(
             rows.append({
                 "duty_id": idx,
                 "crew_id": idx,
+                "duty_type": col.column_type,
                 "duty_start": ds_hh,
                 "duty_end": de_hh,
                 "trip_id": tid,
