@@ -297,13 +297,23 @@ class SolverPipeline:
         #  Phase 3: Execute
         try:
             executor = get_executor(compile_result.solver_type)
-            logger.info(f"Executor: {type(executor).__name__}")
+
+            # 총 시간 예산: generation + compile 시간을 차감하여 solver에 할당
+            total_elapsed = compile_time  # compile_time은 generation 포함
+            margin = max(30, time_limit_sec * 0.05)
+            solver_time = max(60, time_limit_sec - total_elapsed - margin)
+            logger.info(
+                f"Executor: {type(executor).__name__}, "
+                f"time_budget: total={time_limit_sec}, "
+                f"gen+compile={total_elapsed:.0f}, margin={margin:.0f}, "
+                f"solver={solver_time:.0f}"
+            )
 
             import asyncio
             execute_result = await asyncio.to_thread(
                 executor.execute,
                 compile_result,
-                time_limit_sec=time_limit_sec,
+                time_limit_sec=int(solver_time),
             )
 
             if not execute_result.success:
@@ -578,11 +588,39 @@ class SolverPipeline:
                     all_columns.append(c)
                 all_columns = gen._remove_dominated(all_columns)
 
+            # balance_workload: type별 column cap (rhs 비례 — 하드코딩 없음)
+            if objective_type == "balance_workload" and len(all_columns) > 50000:
+                from engine.compiler.sp_problem import ColumnType
+                day_rhs = int(params.get("day_crew_count", 32))
+                night_rhs = int(params.get("night_crew_count", 13))
+                # config에서 cap 배수 로딩 (YAML 외부화 가능)
+                cap_per_rhs = int(os.environ.get("BALANCE_CAP_PER_RHS", "1500"))
+                day_cap = day_rhs * cap_per_rhs
+                night_cap = night_rhs * cap_per_rhs
+
+                day_cols = sorted(
+                    [c for c in all_columns if c.column_type in ColumnType.DAY_GROUP],
+                    key=lambda c: c.cost
+                )[:day_cap]
+                night_cols = sorted(
+                    [c for c in all_columns if c.column_type in ColumnType.NIGHT_GROUP],
+                    key=lambda c: c.cost
+                )[:night_cap]
+                before_cap = len(all_columns)
+                all_columns = day_cols + night_cols
+                logger.info(
+                    f"Balance column cap: {before_cap} → {len(all_columns)} "
+                    f"(day={len(day_cols)}/{day_cap}, night={len(night_cols)}/{night_cap}, "
+                    f"cap_per_rhs={cap_per_rhs})"
+                )
+
             # SP Problem 구축
             sp_problem = build_sp_problem(all_columns, params, all_task_ids, objective_type)
 
             # Layer 1: Coverage capacity 진단
-            cov_diag = sp_problem.diagnose_coverage()
+            # balance_workload: top-K 기반 (전체 avg 낮아도 top-K가 충분하면 feasible)
+            use_top_k = (objective_type == "balance_workload")
+            cov_diag = sp_problem.diagnose_coverage(use_top_k=use_top_k)
             type_dist = sp_problem.diagnostics.get("column_type_distribution", {})
 
             logger.info(

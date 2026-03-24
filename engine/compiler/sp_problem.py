@@ -127,7 +127,7 @@ class SetPartitioningProblem:
         """사전 감지된 INFEASIBLE 원인이 있는지"""
         return len(self.infeasibility_reasons) > 0
 
-    def diagnose_coverage(self) -> CoverageDiagnostics:
+    def diagnose_coverage(self, use_top_k: bool = False) -> CoverageDiagnostics:
         """SP coverage capacity 진단 — solver 호출 전 수학적 feasibility 검증.
         도메인 지식 불필요, 순수 수학.
 
@@ -217,7 +217,14 @@ class SetPartitioningProblem:
                     day_only_tasks if type_name == "day" else night_only_tasks
                 )
                 # 이 type의 총 용량
-                capacity = con.rhs * type_avg
+                # use_top_k: top-K column의 실제 capacity (balance_workload용)
+                # 기본: 전체 평균 기반 (minimize_duties용 — 보수적)
+                if use_top_k:
+                    capacity = type_top_k  # top-K column들의 trip 수 합
+                    top_k_avg = type_top_k / max(con.rhs, 1)
+                else:
+                    capacity = con.rhs * type_avg
+                    top_k_avg = type_avg
                 # 잔여 용량 (flexible task 배분 가능)
                 remaining_for_flexible = max(0, capacity - guaranteed)
 
