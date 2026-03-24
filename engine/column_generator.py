@@ -217,6 +217,12 @@ class BaseColumnConfig:
         if teardown is not None:
             cfg.teardown_time = int(teardown)
 
+        # block_combine derive: 0이면 max_idle_time에서 자동 도출
+        if cfg.block_combine_max_gap == 0:
+            cfg.block_combine_max_gap = cfg.max_idle_time
+        if cfg.block_combine_top_k == 0:
+            cfg.block_combine_top_k = int(cfg.max_columns_target * 0.3)
+
         return cfg
 
 
@@ -551,10 +557,12 @@ class BaseColumnGenerator:
                 score=start_task.duration,
             )
 
-            col = self._try_build_column(initial, col_id)
-            if col:
-                columns.append(col)
-                col_id += 1
+            # depth 1 column: min_column_depth <= 1일 때만 (과도 생성 방지)
+            if cfg.min_column_depth <= 1:
+                col = self._try_build_column(initial, col_id)
+                if col:
+                    columns.append(col)
+                    col_id += 1
 
             beam = [initial]
             for depth in range(cfg.max_tasks - 1):
@@ -576,8 +584,7 @@ class BaseColumnGenerator:
 
                         next_beam.append(new_state)
 
-                next_beam.sort(key=lambda s: s.score, reverse=True)
-                beam = next_beam[:cfg.effective_beam_width]
+                beam = self._select_diverse_beam(next_beam, cfg.effective_beam_width)
 
         return columns
 
@@ -810,6 +817,7 @@ class BaseColumnGenerator:
                 continue
 
             chain = [task]
+            chain_ids = {task.id}
             current = task
 
             # backward: 이전 task
@@ -818,7 +826,7 @@ class BaseColumnGenerator:
                 best_prev = None
                 best_gap = float('inf')
                 for pt in reversed(arrivals):
-                    if pt.id in {t.id for t in chain}:
+                    if pt.id in chain_ids:
                         continue
                     gap = current.dep_time - pt.arr_time
                     if 0 <= gap <= cfg.max_gap and gap < best_gap:
@@ -826,6 +834,7 @@ class BaseColumnGenerator:
                         best_gap = gap
                 if best_prev:
                     chain.insert(0, best_prev)
+                    chain_ids.add(best_prev.id)
                     current = best_prev
                 else:
                     break
@@ -837,7 +846,7 @@ class BaseColumnGenerator:
                 best_next = None
                 best_gap = float('inf')
                 for nt in departures:
-                    if nt.id in {t.id for t in chain}:
+                    if nt.id in chain_ids:
                         continue
                     if nt.dep_time < current.arr_time:
                         continue
@@ -847,6 +856,7 @@ class BaseColumnGenerator:
                         best_gap = gap
                 if best_next:
                     chain.append(best_next)
+                    chain_ids.add(best_next.id)
                     current = best_next
                 else:
                     break
@@ -913,8 +923,11 @@ class BaseColumnGenerator:
         def block_score(c: FeasibleColumn) -> float:
             return c.active_minutes - cfg.block_combine_score_penalty * c.idle_minutes
 
+        # overnight column은 결합 대상 제외 (overnight끼리 결합은 무의미)
         eligible = [c for c in columns
-                    if len(c.trips) >= 2 and c.active_minutes <= half_active]
+                    if len(c.trips) >= 2
+                    and c.active_minutes <= half_active
+                    and c.column_type not in ("overnight",)]
         scored = [(block_score(c), c) for c in eligible]
         scored.sort(key=lambda x: x[0], reverse=True)
         top_blocks = [c for _, c in scored[:top_k]]
@@ -965,24 +978,21 @@ class BaseColumnGenerator:
 
                 # wait 초과 → early stop (시간 정렬이므로 이후 gap은 더 큼)
                 combined_driving = block_a.active_minutes + block_b.active_minutes
-                estimated_wait = gap  # block 간 gap ≈ wait
+                # 총 대기 = block 간 gap + 각 block 내부 대기
+                estimated_wait = gap + block_a.idle_minutes + block_b.idle_minutes
                 if estimated_wait > cfg.max_idle_time:
                     break
 
                 # 결합 state 구축
                 combined_trips = block_a.trips + block_b.trips
+                last_task_b = self._task_map.get(block_b.trips[-1])
                 state = _BeamState(
                     trips=combined_trips,
                     last_arr_time=block_b.last_trip_arr,
-                    last_end_location=block_b.end_time,  # _try_build_column에서 사용하지 않음
+                    last_end_location=last_task_b.end_location if last_task_b else "",
                     total_driving=combined_driving,
                     first_dep_time=block_a.first_trip_dep,
                 )
-                # last_end_location은 block_b의 마지막 trip 종료 위치
-                if block_b.trips:
-                    last_task = self._task_map.get(block_b.trips[-1])
-                    if last_task:
-                        state.last_end_location = last_task.end_location
 
                 col = self._try_build_column(state, next_id + count)
                 if col:
