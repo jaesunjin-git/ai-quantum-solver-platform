@@ -126,8 +126,10 @@ class SetPartitioningProblem:
         """SP coverage capacity 진단 — solver 호출 전 수학적 feasibility 검증.
         도메인 지식 불필요, 순수 수학.
 
-        Type 제약이 있으면 type별 capacity를 합산하여 판단.
-        (전체 top-K가 충분해도 type별 top-K가 부족하면 infeasible)
+        Type 제약이 있으면 type별로 개별 진단:
+        - 해당 type에만 존재하는 task (type-exclusive) 수 파악
+        - type별 required_avg = type_exclusive_tasks / type_columns
+        - type별 avg_tasks < type별 required_avg이면 infeasible
         """
         total_tasks = len(self.task_ids)
 
@@ -148,56 +150,84 @@ class SetPartitioningProblem:
         )
         current_avg = sum(col_sizes) / max(len(col_sizes), 1)
 
-        # ── Type-constrained capacity ──
-        # type 제약이 있으면: type별 top-K capacity 합산
-        # type 제약이 없으면: 전체 top-K capacity
+        # ── Type 제약 분석 ──
         type_constraints = [
             c for c in self.extra_constraints
             if c.name in ("day_columns", "night_columns") and c.operator == "=="
         ]
 
         type_deficits = {}
+        all_type_feasible = True
+
         if type_constraints:
-            # type별 capacity 합산이 실제 feasibility를 결정
-            type_constrained_capacity = 0
+            # task별 커버 가능 type 분석
+            task_types: Dict[int, set] = {tid: set() for tid in self.task_ids}
+            for col in self.columns:
+                if col.column_type in ColumnType.DAY_GROUP:
+                    t_label = "day"
+                elif col.column_type in ColumnType.NIGHT_GROUP:
+                    t_label = "night"
+                else:
+                    t_label = "other"
+                for tid in col.trips:
+                    if tid in task_types:
+                        task_types[tid].add(t_label)
+
+            # type-exclusive task 계산
+            day_exclusive = sum(1 for ts in task_types.values() if ts == {"day"})
+            night_exclusive = sum(1 for ts in task_types.values() if ts == {"night"})
+            both_types = sum(1 for ts in task_types.values() if "day" in ts and "night" in ts)
+
             for con in type_constraints:
                 type_name = "day" if con.name == "day_columns" else "night"
                 type_group = ColumnType.DAY_GROUP if type_name == "day" else ColumnType.NIGHT_GROUP
                 type_cols = [c for c in self.columns if c.column_type in type_group]
                 type_sizes = sorted((len(c.trips) for c in type_cols), reverse=True)
-                type_top_k = sum(type_sizes[:con.rhs])
                 type_avg = sum(type_sizes) / max(len(type_sizes), 1)
-                type_constrained_capacity += type_top_k
+                type_top_k = sum(type_sizes[:con.rhs])
+
+                # type-exclusive tasks: 이 type의 column에만 존재하는 task 수
+                exclusive_count = day_exclusive if type_name == "day" else night_exclusive
+                # 이 type이 커버해야 하는 최소 task = exclusive + shared의 일부
+                # shared 배분: 각 type의 남은 용량 비율로 배분 (보수적 추정)
+                type_required_avg = exclusive_count / max(con.rhs, 1)
+                # type-exclusive만으로도 용량 부족하면 확실히 infeasible
+                type_feasible = (type_avg >= type_required_avg)
+
+                # 추가: shared tasks까지 고려한 전체 부담 추정
+                # day가 커버해야 하는 총 task ≈ day_exclusive + (both × day_share)
+                # 보수적: day_share = day_columns / total_columns
+                share_ratio = con.rhs / max(max_columns, 1)
+                estimated_total_tasks = exclusive_count + int(both_types * share_ratio)
+                full_required_avg = estimated_total_tasks / max(con.rhs, 1)
+
+                if type_avg < full_required_avg:
+                    type_feasible = False
+
+                if not type_feasible:
+                    all_type_feasible = False
 
                 type_deficits[type_name] = {
                     "required": con.rhs,
                     "available_columns": len(type_cols),
                     "avg_tasks": round(type_avg, 1),
                     "top_k_capacity": type_top_k,
-                    "required_avg": round(total_tasks * con.rhs / max(max_columns, 1) / max(con.rhs, 1), 1),
+                    "exclusive_tasks": exclusive_count,
+                    "estimated_total_tasks": estimated_total_tasks,
+                    "required_avg": round(full_required_avg, 1),
+                    "feasible": type_feasible,
                 }
 
-            top_k_capacity = type_constrained_capacity
+            top_k_capacity = sum(
+                td["top_k_capacity"] for td in type_deficits.values()
+            )
         else:
-            # type 제약 없음 — 전체 pool에서 top-K
             top_k_capacity = sum(col_sizes[:max_columns])
 
         capacity_gap = max(0, total_tasks - top_k_capacity)
 
-        # 추가 체크: type별 평균이 required_avg 미달이면 구조적으로 부족
-        # (top-K는 overlap 무시하므로 낙관적 — 평균이 더 현실적)
-        avg_feasible = True
-        if type_constraints:
-            for con in type_constraints:
-                type_name = "day" if con.name == "day_columns" else "night"
-                if type_name in type_deficits:
-                    t_avg = type_deficits[type_name]["avg_tasks"]
-                    if t_avg < required_avg * 0.85:  # 15% 마진
-                        avg_feasible = False
-                        break
-
         return CoverageDiagnostics(
-            feasible=(capacity_gap == 0 and avg_feasible),
+            feasible=(capacity_gap == 0 and all_type_feasible),
             total_tasks=total_tasks,
             max_columns=max_columns,
             required_avg=required_avg,
