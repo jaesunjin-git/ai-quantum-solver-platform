@@ -12,8 +12,10 @@ depot_suffixes:
   - "기지"
 
 # ── 야간 연결 마진 ───────────────────────────────────────────
-evening_margin_minutes: 60       # night_threshold 전 마진 (분)
+evening_margin_minutes: 60       # night_threshold 전 마진 (_classify_gaps 수면 판정)
+evening_search_margin: 120       # evening chain 탐색 범위 (night_threshold - 이 값)
 rest_gap_margin_minutes: 30      # 수면 gap 판단 마진 (분)
+overnight_max_chain_ratio: 0.5   # overnight chain 최대 길이 (max_tasks 대비)
 
 # ── 야간 Cost 가중치 ─────────────────────────────────────────
 night_idle_cost_weight: 0.015    # 야간 유휴 비용 계수

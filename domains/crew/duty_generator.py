@@ -63,8 +63,10 @@ class CrewDutyConfig(BaseColumnConfig):
     post_trip_training_minutes: Optional[int] = None  # 강차 후 교육시간
 
     # 야간 연결 마진
-    evening_margin_minutes: int = 60     # night_threshold 전 마진
+    evening_margin_minutes: int = 60     # night_threshold 전 마진 (_classify_gaps 수면 판정용)
+    evening_search_margin: int = 120     # evening chain 탐색 범위 (night_threshold 전)
     rest_gap_margin_minutes: int = 30    # 수면 gap 판단 마진
+    overnight_max_chain_ratio: float = 0.5  # overnight chain 최대 길이 비율 (max_tasks 대비)
 
     # 야간/overnight cost 가중치
     # (overnight_active_multiplier 제거 — driving은 주간/야간 동일 hard constraint)
@@ -200,8 +202,9 @@ class CrewDutyGenerator(BaseColumnGenerator):
 
     # ── 도메인 feasibility: 주간/야간/overnight ───────────────
 
-    def _classify_duty_type(self, column: FeasibleColumn) -> str:
-        """duty type 분류 (순수 함수 — column 수정 없음)"""
+    def _classify_duty_type(self, column: FeasibleColumn) -> tuple:
+        """duty type 분류. (duty_type, has_early, has_evening) 반환.
+        column을 수정하지 않음."""
         cfg = self._crew_config
         task_map = self._task_map
 
@@ -219,32 +222,25 @@ class CrewDutyGenerator(BaseColumnGenerator):
         is_night = cross_midnight or is_overnight or exceeds_day_end
 
         if is_overnight:
-            return "overnight"
+            return "overnight", has_early, has_evening
         elif is_night:
-            return "night"
+            return "night", has_early, has_evening
         else:
-            return "day"
+            return "day", has_early, has_evening
 
     def _check_domain_feasibility(self, column: FeasibleColumn) -> bool:
-        """crew scheduling 도메인 규칙 검증 (column 수정 없음 — 순수 검증)"""
+        """crew scheduling 도메인 규칙 검증.
+        주의: column.column_type을 태깅함 (feasibility 실패 시에도)."""
         cfg = self._crew_config
-        task_map = self._task_map
-        duty_type = self._classify_duty_type(column)
+        duty_type, has_early, has_evening = self._classify_duty_type(column)
 
-        # column_type 태깅 (분류 결과)
         column.column_type = duty_type
 
         if duty_type == "overnight":
-            return self._check_overnight_feasibility(column, cfg, task_map)
+            return self._check_overnight_feasibility(column, cfg, self._task_map)
         elif duty_type == "night":
-            has_early = any(task_map[tid].dep_time < cfg.day_start_earliest
-                            for tid in column.trips)
-            has_evening = any(task_map[tid].dep_time >= cfg.night_threshold
-                              for tid in column.trips)
             return self._check_night_feasibility(column, cfg, has_early, has_evening)
         else:
-            has_early = any(task_map[tid].dep_time < cfg.day_start_earliest
-                            for tid in column.trips)
             return self._check_day_feasibility(column, cfg, has_early)
 
     def _finalize_column(self, column: FeasibleColumn) -> FeasibleColumn:
@@ -365,12 +361,12 @@ class CrewDutyGenerator(BaseColumnGenerator):
         """저녁 trip chain 구축"""
         cfg = self._crew_config
         evening_trips = sorted(
-            [t for t in self.tasks if t.dep_time >= cfg.night_threshold - cfg.evening_margin_minutes * 2],
+            [t for t in self.tasks if t.dep_time >= cfg.night_threshold - cfg.evening_search_margin],
             key=lambda t: t.dep_time
         )
         if not evening_trips:
             return []
-        return self._build_chains(evening_trips, max_len=cfg.max_tasks // 2)
+        return self._build_chains(evening_trips, max_len=int(cfg.max_tasks * cfg.overnight_max_chain_ratio))
 
     def _build_morning_chains(self) -> List[List[TaskItem]]:
         """아침 trip chain 구축 (overnight의 아침 부분).
@@ -383,7 +379,7 @@ class CrewDutyGenerator(BaseColumnGenerator):
         cfg = self._crew_config
         if not morning_trips:
             return []
-        return self._build_chains(morning_trips, max_len=cfg.max_tasks // 2)
+        return self._build_chains(morning_trips, max_len=int(cfg.max_tasks * cfg.overnight_max_chain_ratio))
 
     def _combine_overnight_chains(
         self,
@@ -463,7 +459,7 @@ class CrewDutyGenerator(BaseColumnGenerator):
         """task subset에서 greedy forward chain 구축 (중복 시그니처 제거)"""
         cfg = self._crew_config
         if max_len is None:
-            max_len = self._crew_config.max_tasks // 2
+            max_len = int(self._crew_config.max_tasks * self._crew_config.overnight_max_chain_ratio)
 
         chains: List[List[TaskItem]] = []
         seen_signatures: set = set()
