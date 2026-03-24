@@ -35,3 +35,15 @@ block_combine_max_gap: 0         # 0=max_idle_time(params)에서 자동 도출
 block_combine_per_block: 5       # block당 최대 결합 수 (안정성 cap)
 block_combine_score_penalty: 0.7 # score의 wait penalty 계수 (순수 튜닝 — 도출 불가)
 block_combine_top_k: 0           # 0=max_columns_target*0.3에서 자동 도출
+block_combine_max_active_ratio: 0.5  # block active ≤ max_active * ratio
+block_combine_min_trips: 2       # block 결합 최소 trip 수
+
+# ── Diversity ──────────────────────────────────────────────
+min_per_diversity_bucket: 5      # beam diversity 최소 bucket 크기
+
+# ── Single Task Fallback ──────────────────────────────────
+single_task_max_windows: 1       # single task 2nd pass window 수
+fallback_include_pause: true     # fallback column에 min_pause 포함
+
+# ── 시간 상수 ─────────────────────────────────────────────
+day_minutes: 1440                # 1일 분 (26시간제 등 대비)

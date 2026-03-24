@@ -146,6 +146,19 @@ class BaseColumnConfig:
     block_combine_per_block: int = 5      # block당 최대 결합 수
     block_combine_score_penalty: float = 0.7  # score의 wait penalty 계수
     block_combine_top_k: int = 0          # 0=max_columns_target*0.3에서 자동 도출
+    block_combine_max_active_ratio: float = 0.5  # block active ≤ max_active * ratio
+    block_combine_min_trips: int = 2      # 최소 trip 수
+    block_combine_exclude_types: List = None  # 결합 제외 column_type (YAML에서 설정)
+
+    # Diversity
+    min_per_diversity_bucket: int = 5     # beam diversity 최소 bucket 크기
+
+    # Single task fallback
+    single_task_max_windows: int = 1      # single task 2nd pass에서 시도할 window 수
+    fallback_include_pause: bool = True   # fallback column에 min_pause 포함 여부
+
+    # 시간 상수
+    day_minutes: int = 1440               # 1일 = 1440분 (26시간제 등 대비)
 
     # Adaptive CG
     acg_scale: float = 1.0          # 에스컬레이션 배율
@@ -186,13 +199,9 @@ class BaseColumnConfig:
         yaml_paths = get_generator_yaml_paths(domain)
         load_yaml_into_dataclass(cfg, *yaml_paths)
 
-        # 1순위: 사용자 운영 제약 (키 이름 매핑)
-        _mapping = {
-            'max_driving_minutes': 'max_active_time',
-            'max_work_minutes': 'max_span_time',
-            'max_wait_minutes': 'max_idle_time',
-            'min_break_minutes': 'min_pause_time',
-        }
+        # 1순위: 사용자 운영 제약 (키 이름 매핑 — YAML에서 로딩)
+        from engine.config_loader import load_param_field_mapping
+        _mapping = load_param_field_mapping(domain)
         for param_key, attr in _mapping.items():
             val = params.get(param_key)
             if val is not None and isinstance(val, (int, float)):
@@ -459,8 +468,7 @@ class BaseColumnGenerator:
 
     # ── Beam diversity 유지 ──────────────────────────────────
 
-    @staticmethod
-    def _select_diverse_beam(candidates: List[_BeamState], beam_width: int) -> List[_BeamState]:
+    def _select_diverse_beam(self, candidates: List[_BeamState], beam_width: int) -> List[_BeamState]:
         """길이 bucket별 top-k로 beam diversity 유지"""
         if len(candidates) <= beam_width:
             return candidates
@@ -472,7 +480,7 @@ class BaseColumnGenerator:
             by_length[k].sort(key=lambda s: s.score, reverse=True)
 
         result: List[_BeamState] = []
-        per_bucket = max(beam_width // max(len(by_length), 1), 5)
+        per_bucket = max(beam_width // max(len(by_length), 1), self.config.min_per_diversity_bucket)
         for length in sorted(by_length.keys()):
             result.extend(by_length[length][:per_bucket])
 
@@ -641,7 +649,7 @@ class BaseColumnGenerator:
 
         span_estimate = next_task.arr_time - state.first_dep_time
         if span_estimate < 0:
-            span_estimate += 1440
+            span_estimate += cfg.day_minutes
 
         if span_estimate > cfg.max_span_time * cfg.span_estimate_multiplier:
             return None
@@ -704,10 +712,6 @@ class BaseColumnGenerator:
         """최대 활동시간. 도메인에서 override (예: overnight 1.5배)."""
         return self.config.max_active_time
 
-    def _get_morning_cutoff(self) -> int:
-        """자정 넘김 판단 기준 시각 (분). 도메인에서 override."""
-        return 480  # 기본값 08:00
-
     def _try_build_column(self, state: _BeamState, col_id: int) -> Optional[FeasibleColumn]:
         """상태에서 FeasibleColumn 생성. feasibility 실패 시 None."""
         cfg = self.config
@@ -724,7 +728,7 @@ class BaseColumnGenerator:
 
         # span (자정 넘김 보정)
         if end_time < start_time:
-            span = (end_time + 1440) - start_time
+            span = (end_time + cfg.day_minutes) - start_time
         else:
             span = end_time - start_time
 
@@ -884,7 +888,9 @@ class BaseColumnGenerator:
                         col.cost *= cfg.greedy_cost_multiplier
                         new_columns.append(col)
                         col_id += 1
-                        break
+                        windows_found = getattr(self, '_windows_found', 0) + 1
+                        if windows_found >= cfg.single_task_max_windows:
+                            break
 
         logger.info(f"Single task 2nd pass: {len(new_columns)} new columns "
                      f"from {len(single_tasks)} single tasks")
@@ -918,16 +924,17 @@ class BaseColumnGenerator:
         top_k = cfg.block_combine_top_k or int(cfg.effective_max_columns * 0.3)
 
         # 결합 대상: driving ≤ max_active/2인 짧은 block (두 block 합쳐야 max 이내)
-        half_active = cfg.max_active_time // 2
+        max_block_active = int(cfg.max_active_time * cfg.block_combine_max_active_ratio)
 
         def block_score(c: FeasibleColumn) -> float:
             return c.active_minutes - cfg.block_combine_score_penalty * c.idle_minutes
 
         # overnight column은 결합 대상 제외 (overnight끼리 결합은 무의미)
+        exclude_types = cfg.block_combine_exclude_types or []
         eligible = [c for c in columns
-                    if len(c.trips) >= 2
-                    and c.active_minutes <= half_active
-                    and c.column_type not in ("overnight",)]
+                    if len(c.trips) >= cfg.block_combine_min_trips
+                    and c.active_minutes <= max_block_active
+                    and c.column_type not in exclude_types]
         scored = [(block_score(c), c) for c in eligible]
         scored.sort(key=lambda x: x[0], reverse=True)
         top_blocks = [c for _, c in scored[:top_k]]
@@ -1032,6 +1039,7 @@ class BaseColumnGenerator:
         if len(task_ids) <= 1:
             return 0
 
+        _day_min = self.config.day_minutes
         total_gap = 0
         for i in range(len(task_ids) - 1):
             curr = self._task_map[task_ids[i]]
@@ -1040,7 +1048,7 @@ class BaseColumnGenerator:
             dep = next_t.dep_time
             # 자정 넘김: 시간 역전(dep < arr)이면 다음날로 해석
             if dep < curr.arr_time:
-                dep += 1440
+                dep += _day_min
 
             gap = dep - curr.arr_time
             if gap > 0:
@@ -1112,7 +1120,7 @@ class BaseColumnGenerator:
         cleanup = cfg.teardown_time
         start_time = task.dep_time - prep
         end_time = task.arr_time + cleanup
-        span = end_time - start_time if end_time > start_time else (end_time + 1440) - start_time
+        span = end_time - start_time if end_time > start_time else (end_time + cfg.day_minutes) - start_time
 
         return FeasibleColumn(
             id=col_id,
@@ -1125,8 +1133,8 @@ class BaseColumnGenerator:
             active_minutes=task.duration,
             span_minutes=span,
             elapsed_minutes=span,
-            idle_minutes=max(0, span - task.duration - prep - cleanup - cfg.min_pause_time),
-            pause_minutes=cfg.min_pause_time,
+            idle_minutes=max(0, span - task.duration - prep - cleanup - (cfg.min_pause_time if cfg.fallback_include_pause else 0)),
+            pause_minutes=cfg.min_pause_time if cfg.fallback_include_pause else 0,
             inactive_minutes=0,
             cost=cfg.fallback_cost,
             source="fallback",

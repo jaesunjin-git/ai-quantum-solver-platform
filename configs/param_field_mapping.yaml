@@ -1,0 +1,11 @@
+# ============================================================
+# Parameter → Config Field 매핑 (범용)
+# ============================================================
+# 사용자 파라미터 이름을 BaseColumnConfig 필드에 매핑.
+# 도메인별 override: knowledge/domains/{domain}/param_field_mapping.yaml
+
+param_field_mapping:
+  max_driving_minutes: max_active_time
+  max_work_minutes: max_span_time
+  max_wait_minutes: max_idle_time
+  min_break_minutes: min_pause_time

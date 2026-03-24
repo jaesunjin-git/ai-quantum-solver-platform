@@ -248,20 +248,6 @@ class CrewDutyGenerator(BaseColumnGenerator):
         overnight에서 완화되는 것은 span(수면 포함)이지 driving이 아님."""
         return self._crew_config.max_active_time
 
-    def _get_morning_cutoff(self) -> int:
-        """자정 넘김 판단용 cutoff (_classify_gaps, _calculate_total_gap에서 사용).
-        "이 시각 이전 출발이면 다음날로 해석" — 보수적이어야 함.
-
-        주의: morning chain 대상 선정과는 무관
-        (_build_morning_chains는 night_threshold 이전 전체 trip 대상).
-
-        1순위: params의 overnight_morning_end
-        2순위: day_start_earliest (보수적 fallback — 06:20=380)
-        """
-        cfg = self._crew_config
-        if cfg.overnight_morning_end is not None:
-            return cfg.overnight_morning_end
-        return cfg.day_start_earliest
 
     # ── depot 인접역 매칭 ─────────────────────────────────────
 
@@ -377,7 +363,7 @@ class CrewDutyGenerator(BaseColumnGenerator):
         start = first_dep - cfg.setup_time_night
         end = last_arr + cfg.teardown_time_night
 
-        eff_end = end + 1440 if end < start else end
+        eff_end = end + cfg.day_minutes if end < start else end
         span = eff_end - start
 
         # 수면 제외 실근무 span
@@ -394,7 +380,7 @@ class CrewDutyGenerator(BaseColumnGenerator):
         start = column.first_trip_dep - setup
         end = column.last_trip_arr + teardown
 
-        eff_end = end + 1440 if end < start else end
+        eff_end = end + cfg.day_minutes if end < start else end
         span = eff_end - start
 
         # 수면시간: _classify_gaps()에서 계산된 실제 inactive gap 사용
@@ -491,7 +477,7 @@ class CrewDutyGenerator(BaseColumnGenerator):
                     continue
 
                 # 수면 gap 체크 (config 기반 — 하드코딩 제거)
-                effective_mo_dep = mo_first.dep_time + 1440
+                effective_mo_dep = mo_first.dep_time + cfg.day_minutes
                 gap = effective_mo_dep - ev_last.arr_time
                 if gap < cfg.min_sleep_minutes:
                     reject_reasons["sleep_gap_too_short"] += 1
@@ -585,12 +571,12 @@ class CrewDutyGenerator(BaseColumnGenerator):
     # ── gap 분류 override: 수면 gap을 inactive로 ─────────────
 
     def _classify_gaps(self, task_ids: list) -> tuple:
-        """crew: 수면 gap(긴 gap)을 inactive로 분류"""
+        """crew: 수면 gap(긴 gap)을 inactive로 분류.
+        자정 넘김은 순수 시간 역전(dep < arr)으로 판단."""
         if len(task_ids) <= 1:
             return 0, 0
 
         cfg = self._crew_config
-        morning_cutoff = self._get_morning_cutoff()
         regular_total = 0
         inactive_total = 0
 
@@ -603,7 +589,7 @@ class CrewDutyGenerator(BaseColumnGenerator):
             # overnight duty에서는 저녁 trip → 아침 trip 순서이므로
             # dep가 arr보다 작으면 반드시 다음날
             if dep < curr.arr_time:
-                dep += 1440
+                dep += cfg.day_minutes
 
             gap = dep - curr.arr_time
             if gap <= 0:

@@ -57,3 +57,34 @@ def get_generator_yaml_paths(domain: Optional[str] = None) -> list:
     if domain:
         paths.append(f"knowledge/domains/{domain}/generator_config.yaml")
     return paths
+
+
+def load_param_field_mapping(domain: Optional[str] = None) -> dict:
+    """params 키 → config 필드 매핑을 YAML에서 로딩.
+    domain별 param_aliases.yaml 또는 generator_config.yaml의 param_field_mapping 섹션."""
+    import yaml
+
+    mapping = {}
+
+    # 범용 기본 매핑 (configs/)
+    default_path = "configs/param_field_mapping.yaml"
+    if os.path.exists(default_path):
+        try:
+            with open(default_path, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f) or {}
+            mapping.update(data.get("param_field_mapping", data))
+        except Exception as e:
+            logger.warning(f"param_field_mapping load failed: {default_path}: {e}")
+
+    # 도메인별 override
+    if domain:
+        domain_path = f"knowledge/domains/{domain}/param_field_mapping.yaml"
+        if os.path.exists(domain_path):
+            try:
+                with open(domain_path, 'r', encoding='utf-8') as f:
+                    data = yaml.safe_load(f) or {}
+                mapping.update(data.get("param_field_mapping", data))
+            except Exception as e:
+                logger.warning(f"param_field_mapping load failed: {domain_path}: {e}")
+
+    return mapping
