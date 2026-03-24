@@ -136,31 +136,50 @@ class CrewDutyConfig(BaseColumnConfig):
             if val is not None and isinstance(val, (int, float)):
                 setattr(cfg, attr, int(val))
 
-        # 주간 준비/정리 — params에 값이 있을 때만 덮어씀 (기본값은 dataclass에서)
-        if 'preparation_minutes_departure' in params:
-            cfg.setup_time_day = int(params['preparation_minutes_departure'])
-        elif 'preparation_minutes' in params:
-            cfg.setup_time_day = int(params['preparation_minutes'])
+        # 주간 준비/정리 — params에 값이 있고 None이 아닐 때만 덮어씀
+        def _safe_int(val):
+            """None/빈값 안전 변환"""
+            if val is None:
+                return None
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                return None
 
-        if 'preparation_minutes_relay' in params:
-            cfg.setup_time_relay = int(params['preparation_minutes_relay'])
+        prep_dep = _safe_int(params.get('preparation_minutes_departure'))
+        prep_gen = _safe_int(params.get('preparation_minutes'))
+        if prep_dep is not None:
+            cfg.setup_time_day = prep_dep
+        elif prep_gen is not None:
+            cfg.setup_time_day = prep_gen
 
-        if 'cleanup_minutes_arrival' in params:
-            cfg.teardown_time_day = int(params['cleanup_minutes_arrival'])
-        elif 'cleanup_minutes' in params:
-            cfg.teardown_time_day = int(params['cleanup_minutes'])
+        prep_relay = _safe_int(params.get('preparation_minutes_relay'))
+        if prep_relay is not None:
+            cfg.setup_time_relay = prep_relay
+
+        cleanup_arr = _safe_int(params.get('cleanup_minutes_arrival'))
+        cleanup_gen = _safe_int(params.get('cleanup_minutes'))
+        if cleanup_arr is not None:
+            cfg.teardown_time_day = cleanup_arr
+        elif cleanup_gen is not None:
+            cfg.teardown_time_day = cleanup_gen
 
         # 야간 준비/정리
-        if 'preparation_minutes_night' in params:
-            cfg.setup_time_night = int(params['preparation_minutes_night'])
-        if 'cleanup_minutes_night' in params:
-            cfg.teardown_time_night = int(params['cleanup_minutes_night'])
+        prep_night = _safe_int(params.get('preparation_minutes_night'))
+        if prep_night is not None:
+            cfg.setup_time_night = prep_night
+        cleanup_night = _safe_int(params.get('cleanup_minutes_night'))
+        if cleanup_night is not None:
+            cfg.teardown_time_night = cleanup_night
 
         # 야간 최대 근무 — 야간 전용 키 우선, fallback은 주간과 동일
-        cfg.max_span_time_night = int(params.get(
-            'max_work_minutes_night',
-            params.get('max_work_minutes', cfg.max_span_time_night)
-        ))
+        night_work = _safe_int(params.get('max_work_minutes_night'))
+        if night_work is not None:
+            cfg.max_span_time_night = night_work
+        else:
+            day_work = _safe_int(params.get('max_work_minutes'))
+            if day_work is not None:
+                cfg.max_span_time_night = day_work
 
         # base setup/teardown은 주간 기준 (기본값)
         cfg.setup_time = cfg.setup_time_day
