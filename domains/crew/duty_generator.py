@@ -57,7 +57,7 @@ class CrewDutyConfig(BaseColumnConfig):
     max_span_time_night: int = 660
 
     # 숙박조(overnight) 최대 실근무시간 (수면 제외)
-    overnight_max_effective_span: Optional[int] = 720  # 12시간
+    overnight_max_effective_span: Optional[int] = 900  # 15시간 (DIA 정답: 680~822분)
 
     # depot 인접역 접미사 (예: "기지" → "대저기지" ↔ "대저")
     depot_suffixes: List[str] = None  # type: ignore
@@ -184,6 +184,19 @@ class CrewDutyGenerator(BaseColumnGenerator):
         if has_evening and has_early:
             return int(cfg.max_active_time * 1.5)
         return cfg.max_active_time
+
+    def _get_max_span_time(self, state) -> int:
+        """overnight duty는 수면시간 포함으로 span이 길어짐.
+        DIA 정답지: overnight span 680~900분 (max_span_time 660 초과).
+        overnight_max_effective_span config 사용, 미설정 시 1.5배."""
+        cfg = self._crew_config
+        has_evening = any(self._task_map[tid].dep_time >= cfg.night_threshold
+                         for tid in state.trips)
+        has_early = any(self._task_map[tid].dep_time < cfg.day_start_earliest
+                        for tid in state.trips)
+        if has_evening and has_early:
+            return cfg.overnight_max_effective_span or int(cfg.max_span_time * 1.7)
+        return cfg.max_span_time
 
     def _get_morning_cutoff(self) -> int:
         """morning cutoff 통일"""

@@ -638,6 +638,10 @@ class BaseColumnGenerator:
         """최대 활동시간. 도메인에서 override (예: overnight 1.5배)."""
         return self.config.max_active_time
 
+    def _get_max_span_time(self, state: _BeamState) -> int:
+        """최대 경과시간. 도메인에서 override (예: overnight 확장)."""
+        return self.config.max_span_time
+
     def _get_morning_cutoff(self) -> int:
         """자정 넘김 판단 기준 시각 (분). 도메인에서 override."""
         return 480  # 기본값 08:00
@@ -679,7 +683,7 @@ class BaseColumnGenerator:
 
         if driving > self._get_max_active_time(state):
             return None
-        if work > cfg.max_span_time:
+        if work > self._get_max_span_time(state):
             return None
 
         # cost: full prep 기준 보정 + short column penalty + discrimination 강화
