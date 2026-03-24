@@ -565,7 +565,12 @@ class CrewDutyGenerator(BaseColumnGenerator):
             )
 
             if is_rest_gap:
-                inactive_total += gap
+                # gap = 입고정리 + 수면 + 출고준비
+                # 실제 수면 = gap - cleanup_night - prep_night
+                overhead = cfg.teardown_time_night + cfg.setup_time_night
+                actual_sleep = max(0, gap - overhead)
+                inactive_total += actual_sleep
+                regular_total += overhead  # 입출고는 근무시간
             else:
                 regular_total += gap
 
