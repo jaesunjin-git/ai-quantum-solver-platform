@@ -249,9 +249,26 @@ class CrewDutyGenerator(BaseColumnGenerator):
         return self._crew_config.max_active_time
 
     def _get_morning_cutoff(self) -> int:
-        """morning cutoff 통일"""
+        """morning cutoff: overnight 아침 trip 범위 결정.
+        1순위: params에서 명시적으로 설정된 overnight_morning_end
+        2순위: 데이터 기반 — 이른 아침 trip의 max(arr_time)
+        3순위: day_start_earliest (fallback)
+        """
         cfg = self._crew_config
-        return cfg.overnight_morning_end if cfg.overnight_morning_end is not None else cfg.day_start_earliest
+        if cfg.overnight_morning_end is not None:
+            return cfg.overnight_morning_end
+
+        # 데이터 기반: 이른 아침 trip(night_threshold 이전 + day_start 근처)의 도착 시각
+        # "이른 아침" = night_threshold 이전이면서 주간 운행 시간대의 초반
+        early_trips = [
+            t for t in self.tasks
+            if t.dep_time < cfg.night_threshold
+            and t.dep_time < cfg.day_start_earliest + cfg.max_idle_time
+        ]
+        if early_trips:
+            return max(t.arr_time for t in early_trips)
+
+        return cfg.day_start_earliest
 
     # ── depot 인접역 매칭 ─────────────────────────────────────
 
