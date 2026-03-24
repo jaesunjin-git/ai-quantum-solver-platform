@@ -1329,7 +1329,7 @@ def run(math_model: Dict,
             # set_sizes가 struct fix에서 갱신되었는지 확인
             for s in sets:
                 sid = s.get("id", "")
-                if sid in _AUTO_INJECTABLE_SETS and f"'{sid}'" in deferred_err:
+                if sid in _injectable_sets and f"'{sid}'" in deferred_err:
                     new_size = _validate_set(s, data_profile, dataframes)
                     if new_size > 0 or s.get("_overlap_pairs"):
                         # struct fix에서 주입됨 → warning으로 전환
