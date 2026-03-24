@@ -67,7 +67,7 @@ class CrewDutyConfig(BaseColumnConfig):
     rest_gap_margin_minutes: int = 30    # 수면 gap 판단 마진
 
     # 야간/overnight cost 가중치
-    overnight_active_multiplier: float = 1.5  # overnight 최대 활동시간 배율
+    # (overnight_active_multiplier 제거 — driving은 주간/야간 동일 hard constraint)
     night_idle_cost_weight: float = 0.015     # 야간 유휴 비용 계수
     night_overhead_cost_weight: float = 0.005 # 야간 오버헤드 비용 계수
     night_short_penalty_ratio: float = 0.5   # 야간 short penalty 비율 (base의 50%)
@@ -498,7 +498,11 @@ class CrewDutyGenerator(BaseColumnGenerator):
                 else:
                     reject_reasons["build_failed"] += 1
 
-        logger.info(f"Overnight: {count} duties generated from {total_combos} combos")
+        rate = count / max(total_combos, 1)
+        logger.info(
+            f"Overnight: {count} duties from {total_combos} combos "
+            f"(rate={rate:.3f})"
+        )
         if reject_reasons:
             logger.info(f"Overnight reject reasons: {dict(reject_reasons)}")
         return count
@@ -507,9 +511,10 @@ class CrewDutyGenerator(BaseColumnGenerator):
 
     def _build_chains(self, tasks_subset: List[TaskItem],
                        max_len: int = 5) -> List[List[TaskItem]]:
-        """task subset에서 greedy forward chain 구축"""
+        """task subset에서 greedy forward chain 구축 (중복 시그니처 제거)"""
         cfg = self._crew_config
         chains: List[List[TaskItem]] = []
+        seen_signatures: set = set()
 
         for start in tasks_subset:
             chain = [start]
@@ -539,7 +544,11 @@ class CrewDutyGenerator(BaseColumnGenerator):
                 else:
                     break
 
-            chains.append(chain)
+            # 중복 chain 제거
+            sig = tuple(t.id for t in chain)
+            if sig not in seen_signatures:
+                seen_signatures.add(sig)
+                chains.append(chain)
 
         return chains
 
@@ -576,12 +585,14 @@ class CrewDutyGenerator(BaseColumnGenerator):
             )
 
             if is_rest_gap:
-                # gap = 입고정리 + 수면 + 출고준비
-                # 실제 수면 = gap - cleanup_night - prep_night
+                # gap = 중간입고정리 + 수면 + 중간출고준비
+                # 이 overhead는 수면 전후의 "중간" 입출고 (duty 양 끝의 setup/teardown과 별도)
+                # _apply_night_corrections()의 setup/teardown은 duty 시작/종료 1회
+                # 여기의 overhead는 수면 구간 전후 → 이중 차감 아님
                 overhead = cfg.teardown_time_night + cfg.setup_time_night
                 actual_sleep = max(0, gap - overhead)
                 inactive_total += actual_sleep
-                regular_total += overhead  # 입출고는 근무시간
+                regular_total += overhead  # 중간 입출고는 근무시간으로 분류
             else:
                 regular_total += gap
 
@@ -589,34 +600,8 @@ class CrewDutyGenerator(BaseColumnGenerator):
 
     # ── _find_next_tasks override: 야간 연결 ─────────────────
 
-    def _find_next_tasks(self, state: _BeamState) -> List[TaskItem]:
-        """crew 전용: base + 야간 자정 넘김 연결 허용"""
-        candidates = super()._find_next_tasks(state)
-
-        cfg = self._crew_config
-        task_set = set(state.trips)
-        morning_cutoff = self._get_morning_cutoff()
-
-        if state.last_arr_time >= cfg.night_threshold - cfg.evening_margin_minutes:
-            # 중복 체크용 set (한 번만 생성)
-            candidate_ids = {c.id for c in candidates}
-            reachable = self._reachable_locations(state.last_end_location)
-            for loc in reachable:
-                for t in self._location_departures.get(loc, []):
-                    if t.id in task_set or t.id in candidate_ids:
-                        continue
-                    if t.dep_time >= morning_cutoff:
-                        continue
-
-                    effective_dep = t.dep_time + 1440
-                    gap = effective_dep - state.last_arr_time
-                    if (cfg.min_sleep_minutes <= gap
-                            <= cfg.min_sleep_minutes + cfg.max_sleep_gap_extra):
-                        if state.total_driving + t.duration <= self._get_max_active_time(state):
-                            candidates.append(t)
-                            candidate_ids.add(t.id)
-
-        return candidates
+    # _find_next_tasks: base 그대로 사용 (override 없음)
+    # overnight 연결은 _post_generate()에서 전담 — beam search에서 이중 생성 방지
 
 
 # ── 하위 호환 alias ──────────────────────────────────────────
