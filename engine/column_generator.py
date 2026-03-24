@@ -1038,7 +1038,8 @@ class BaseColumnGenerator:
             next_t = self._task_map[task_ids[i + 1]]
 
             dep = next_t.dep_time
-            if dep < curr.arr_time and dep < self._get_morning_cutoff():
+            # 자정 넘김: 시간 역전(dep < arr)이면 다음날로 해석
+            if dep < curr.arr_time:
                 dep += 1440
 
             gap = dep - curr.arr_time

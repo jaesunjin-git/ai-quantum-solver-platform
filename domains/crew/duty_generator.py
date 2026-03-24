@@ -599,19 +599,20 @@ class CrewDutyGenerator(BaseColumnGenerator):
             next_t = self._task_map[task_ids[i + 1]]
 
             dep = next_t.dep_time
-            # 자정 넘김: config 기반 (하드코딩 480 제거)
-            if dep < curr.arr_time and dep < morning_cutoff:
+            # 자정 넘김 판단: 시간 역전(dep < arr)이면 다음날로 해석
+            # overnight duty에서는 저녁 trip → 아침 trip 순서이므로
+            # dep가 arr보다 작으면 반드시 다음날
+            if dep < curr.arr_time:
                 dep += 1440
 
             gap = dep - curr.arr_time
             if gap <= 0:
                 continue
 
-            # 수면 gap 판정
+            # 수면 gap 판정: 저녁 도착 후 충분히 긴 gap이면 수면
             is_rest_gap = (
                 gap >= cfg.min_sleep_minutes + cfg.rest_gap_margin_minutes
                 and curr.arr_time >= cfg.night_threshold - cfg.evening_margin_minutes
-                and next_t.dep_time < morning_cutoff
             )
 
             if is_rest_gap:
