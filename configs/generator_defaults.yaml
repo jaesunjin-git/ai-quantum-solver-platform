@@ -1,0 +1,29 @@
+# ============================================================
+# Column Generator 튜닝 파라미터 기본값 (도메인 무관)
+# ============================================================
+# 이 파일은 코드 변경 없이 튜닝 가능한 엔진 내부 파라미터입니다.
+# 사용자 운영 제약(max_driving_minutes 등)은 parameters.csv에서 설정합니다.
+#
+# 우선순위: params(사용자) > domain YAML > 이 파일 > dataclass 기본값
+# ============================================================
+
+# ── Beam Search ──────────────────────────────────────────────
+beam_width: 50
+max_columns_target: 100000
+time_group_minutes: 120          # 시간대 그룹 너비 (분)
+span_estimate_multiplier: 1.5    # 조기 pruning 배율
+
+# ── Beam Score 가중치 ────────────────────────────────────────
+task_count_score_weight: 100     # trip 수 보너스 (score 단위)
+depth_bonus_score: 50            # min_column_depth 달성 보너스
+
+# ── Cost 가중치 ──────────────────────────────────────────────
+idle_cost_weight: 0.02           # 대기시간 비용 계수
+overhead_cost_weight: 0.01       # (span - driving) 비용 계수
+short_column_cost_weight: 0.05   # 짧은 column 페널티 계수
+depth_penalty_cost_weight: 0.3   # min_depth 미달 페널티 계수
+greedy_cost_multiplier: 1.5      # greedy fallback column 비용 배율
+fallback_cost: 10.0              # single-task fallback column 비용
+
+# ── Diversity (Adaptive CG) ──────────────────────────────────
+diversity_weight: 100.0          # pair-frequency penalty 가중치

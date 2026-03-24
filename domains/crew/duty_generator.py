@@ -79,12 +79,33 @@ class CrewDutyConfig(BaseColumnConfig):
         if self.depot_suffixes is None:
             self.depot_suffixes = ["기지"]
 
-    @classmethod
-    def from_params(cls, params: Dict) -> "CrewDutyConfig":
-        """DataBinder bound_data['parameters']에서 crew 전용 설정 로딩"""
-        cfg = cls()
+    # params에서 로딩을 허용하는 필드 (운영 제약)
+    # 튜닝 파라미터(night_idle_cost_weight 등)는 YAML에서만 설정 가능
+    _PARAMS_LOADABLE = {
+        *BaseColumnConfig._PARAMS_LOADABLE,
+        'night_threshold', 'day_start_earliest', 'day_end_latest',
+        'min_sleep_minutes', 'max_sleep_gap_extra', 'overnight_morning_end',
+        'setup_time_day', 'setup_time_relay', 'teardown_time_day',
+        'setup_time_night', 'teardown_time_night', 'max_span_time_night',
+        'min_night_rest_total', 'max_total_stay_minutes',
+        'recognized_wait_minutes', 'post_trip_training_minutes',
+    }
 
-        # base 공통 매핑
+    @classmethod
+    def from_params(cls, params: Dict, domain: str = "railway") -> "CrewDutyConfig":
+        """3계층 설정 로딩:
+        1순위: params (사용자 운영 제약)
+        2순위: YAML config (엔진 튜닝)
+        3순위: dataclass 기본값
+        """
+        cfg = cls()  # 3순위: dataclass 기본값
+
+        # 2순위: YAML config (범용 + 도메인별)
+        from engine.config_loader import load_yaml_into_dataclass, get_generator_yaml_paths
+        yaml_paths = get_generator_yaml_paths(domain)
+        load_yaml_into_dataclass(cfg, *yaml_paths)
+
+        # 1순위: 사용자 운영 제약 (키 이름 매핑)
         _base_mapping = {
             'max_driving_minutes': 'max_active_time',
             'max_work_minutes': 'max_span_time',

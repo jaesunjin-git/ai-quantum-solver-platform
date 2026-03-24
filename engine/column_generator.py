@@ -156,11 +156,30 @@ class BaseColumnConfig:
     def effective_max_columns(self) -> int:
         return int(self.max_columns_target * self.acg_scale)
 
+    # params에서 로딩을 허용하는 필드 (운영 제약)
+    # 튜닝 파라미터(idle_cost_weight 등)는 YAML에서만 설정 가능
+    _PARAMS_LOADABLE = {
+        'max_active_time', 'avg_active_target', 'max_span_time',
+        'max_idle_time', 'setup_time', 'teardown_time',
+        'min_pause_time', 'max_gap', 'max_tasks',
+        'beam_width', 'max_columns_target',
+    }
+
     @classmethod
-    def from_params(cls, params: Dict) -> "BaseColumnConfig":
-        """파라미터 dict에서 설정 로딩 (도메인 공통 키만)"""
-        cfg = cls()
-        # 도메인 파라미터 → base config 매핑 (도메인에서 override하여 확장)
+    def from_params(cls, params: Dict, domain: str = None) -> "BaseColumnConfig":
+        """3계층 설정 로딩:
+        1순위: params (사용자 운영 제약, DataBinder 경유)
+        2순위: YAML config (엔진 튜닝, 코드 변경 없이 수정 가능)
+        3순위: dataclass 기본값 (최후 fallback)
+        """
+        cfg = cls()  # 3순위: dataclass 기본값
+
+        # 2순위: YAML config (범용 + 도메인별)
+        from engine.config_loader import load_yaml_into_dataclass, get_generator_yaml_paths
+        yaml_paths = get_generator_yaml_paths(domain)
+        load_yaml_into_dataclass(cfg, *yaml_paths)
+
+        # 1순위: 사용자 운영 제약 (키 이름 매핑)
         _mapping = {
             'max_driving_minutes': 'max_active_time',
             'max_work_minutes': 'max_span_time',
@@ -172,7 +191,18 @@ class BaseColumnConfig:
             if val is not None and isinstance(val, (int, float)):
                 setattr(cfg, attr, int(val))
 
-        # setup/teardown
+        # 1순위: params 자동 매칭 (_PARAMS_LOADABLE에 있는 필드만)
+        for field_name in cls._PARAMS_LOADABLE:
+            if field_name in params:
+                val = params[field_name]
+                if val is not None:
+                    current = getattr(cfg, field_name, None)
+                    if isinstance(current, int):
+                        setattr(cfg, field_name, int(val))
+                    elif isinstance(current, float):
+                        setattr(cfg, field_name, float(val))
+
+        # setup/teardown 별칭
         setup = params.get('preparation_minutes', params.get('setup_time'))
         if setup is not None:
             cfg.setup_time = int(setup)

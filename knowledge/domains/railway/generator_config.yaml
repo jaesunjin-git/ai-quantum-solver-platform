@@ -1,0 +1,20 @@
+# ============================================================
+# Crew Scheduling 도메인 전용 Generator 튜닝 파라미터
+# ============================================================
+# configs/generator_defaults.yaml의 범용 값을 도메인에 맞게 override.
+# 사용자 운영 제약(night_threshold 등)은 parameters.csv에서 설정합니다.
+#
+# 우선순위: params(사용자) > 이 파일 > generator_defaults.yaml > dataclass 기본값
+# ============================================================
+
+# ── 야간 연결 마진 ───────────────────────────────────────────
+evening_margin_minutes: 60       # night_threshold 전 마진 (분)
+rest_gap_margin_minutes: 30      # 수면 gap 판단 마진 (분)
+
+# ── Overnight 배율 ───────────────────────────────────────────
+overnight_active_multiplier: 1.5 # overnight 최대 활동시간 배율
+
+# ── 야간 Cost 가중치 ─────────────────────────────────────────
+night_idle_cost_weight: 0.015    # 야간 유휴 비용 계수
+night_overhead_cost_weight: 0.005 # 야간 오버헤드 비용 계수
+night_short_penalty_ratio: 0.5   # 야간 short penalty 비율 (base의 50%)
