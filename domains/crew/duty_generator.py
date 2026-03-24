@@ -56,8 +56,14 @@ class CrewDutyConfig(BaseColumnConfig):
     # 야간 최대 근무시간 (수면 제외)
     max_span_time_night: int = 660
 
-    # 숙박조(overnight) 최대 실근무시간 (수면 제외)
-    overnight_max_effective_span: Optional[int] = 900  # 15시간 (DIA 정답: 680~822분)
+    # 숙박조(overnight) 최대 span (수면 포함)
+    overnight_max_effective_span: Optional[int] = None  # params에서 로딩
+
+    # 추가 파라미터 (params에서 로딩)
+    max_total_stay_minutes: Optional[int] = None  # 회사 체류시간 상한
+    min_night_rest_total: Optional[int] = None    # 야간 총 휴식 (수면+입출고 포함)
+    recognized_wait_minutes: Optional[int] = None # 인정 대기시간
+    post_trip_training_minutes: Optional[int] = None  # 강차 후 교육시간
 
     # depot 인접역 접미사 (예: "기지" → "대저기지" ↔ "대저")
     depot_suffixes: List[str] = None  # type: ignore
@@ -86,12 +92,17 @@ class CrewDutyConfig(BaseColumnConfig):
         # crew 전용 매핑
         _crew_mapping = {
             'night_threshold': 'night_threshold',
+            'night_duty_start_earliest': 'night_threshold',  # 별칭
             'day_duty_start_earliest': 'day_start_earliest',
             'day_duty_end_latest': 'day_end_latest',
             'min_night_sleep_minutes': 'min_sleep_minutes',
+            'min_night_rest_total_minutes': 'min_night_rest_total',
             'overnight_morning_end': 'overnight_morning_end',
             'overnight_max_effective_span': 'overnight_max_effective_span',
             'max_sleep_gap_extra': 'max_sleep_gap_extra',
+            'max_total_stay_minutes': 'max_total_stay_minutes',
+            'recognized_wait_minutes': 'recognized_wait_minutes',
+            'post_trip_training_minutes': 'post_trip_training_minutes',
         }
         for param_key, attr in _crew_mapping.items():
             val = params.get(param_key)
@@ -131,6 +142,19 @@ class CrewDutyConfig(BaseColumnConfig):
         # max_tasks
         if 'max_trips_per_crew' in params:
             cfg.max_tasks = int(params['max_trips_per_crew'])
+
+        # overnight_max_effective_span: params에서 로딩 우선순위
+        # 1) overnight_max_effective_span (직접 지정)
+        # 2) max_work_minutes + min_night_rest_total_minutes
+        #    (근무시간 + 야간 총 휴식 = overnight 전체 span)
+        # 3) max_span_time + min_sleep (최소 추정)
+        if cfg.overnight_max_effective_span is None:
+            rest_total = params.get('min_night_rest_total_minutes')
+            work_max = params.get('max_work_minutes', cfg.max_span_time)
+            if rest_total is not None:
+                cfg.overnight_max_effective_span = int(work_max) + int(rest_total)
+            else:
+                cfg.overnight_max_effective_span = cfg.max_span_time + (cfg.min_sleep_minutes or 0)
 
         return cfg
 
@@ -187,15 +211,14 @@ class CrewDutyGenerator(BaseColumnGenerator):
 
     def _get_max_span_time(self, state) -> int:
         """overnight duty는 수면시간 포함으로 span이 길어짐.
-        DIA 정답지: overnight span 680~900분 (max_span_time 660 초과).
-        overnight_max_effective_span config 사용, 미설정 시 1.5배."""
+        overnight_max_effective_span: params 또는 from_params()에서 자동 계산."""
         cfg = self._crew_config
         has_evening = any(self._task_map[tid].dep_time >= cfg.night_threshold
                          for tid in state.trips)
         has_early = any(self._task_map[tid].dep_time < cfg.day_start_earliest
                         for tid in state.trips)
         if has_evening and has_early:
-            return cfg.overnight_max_effective_span or int(cfg.max_span_time * 1.7)
+            return cfg.overnight_max_effective_span or cfg.max_span_time
         return cfg.max_span_time
 
     def _get_morning_cutoff(self) -> int:
