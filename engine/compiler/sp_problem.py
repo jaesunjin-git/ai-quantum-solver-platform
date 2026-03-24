@@ -31,10 +31,11 @@ class ColumnType:
     DAY = "day"
     NIGHT = "night"
     OVERNIGHT = "overnight"
+    MORNING_ONLY = "morning_only"
     DEFAULT = "default"
 
     DAY_GROUP = (DAY, DEFAULT)
-    NIGHT_GROUP = (NIGHT, OVERNIGHT)
+    NIGHT_GROUP = (NIGHT, OVERNIGHT, MORNING_ONLY)
 
 
 @dataclass

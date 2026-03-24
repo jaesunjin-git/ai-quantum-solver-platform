@@ -38,6 +38,11 @@ class CrewDutyConfig(BaseColumnConfig):
     night_threshold: int = 1020          # 17:00 이후 출발 → 야간
     day_start_earliest: int = 380        # 06:20 — 주간 최소 출고 시각
 
+    # 자정 넘김 판단 기준 (gap 분류 + morning chain)
+    # dep < 이 값 AND dep < arr → 다음날로 해석
+    # None이면 day_start_earliest 사용
+    midnight_crossing_threshold: Optional[int] = None
+
     # 숙박조
     overnight_morning_end: Optional[int] = None  # params에서 로딩, 미설정 시 미적용
     min_sleep_minutes: int = 240         # 최소 수면시간
@@ -230,10 +235,17 @@ class CrewDutyGenerator(BaseColumnGenerator):
 
     def _check_domain_feasibility(self, column: FeasibleColumn) -> bool:
         """crew scheduling 도메인 규칙 검증.
-        주의: column.column_type을 태깅함 (feasibility 실패 시에도)."""
-        cfg = self._crew_config
-        duty_type, has_early, has_evening = self._classify_duty_type(column)
+        주의: column.column_type을 태깅함 (feasibility 실패 시에도).
 
+        pre-tagged type(morning_only, evening_only)은 분류를 건너뛰고
+        해당 type에 맞는 검증만 수행."""
+        cfg = self._crew_config
+
+        # morning_only/evening_only는 _post_generate에서 pre-tagged
+        if column.column_type == "morning_only":
+            return self._check_morning_only_feasibility(column, cfg)
+
+        duty_type, has_early, has_evening = self._classify_duty_type(column)
         column.column_type = duty_type
 
         if duty_type == "overnight":
@@ -245,9 +257,15 @@ class CrewDutyGenerator(BaseColumnGenerator):
 
     def _finalize_column(self, column: FeasibleColumn) -> FeasibleColumn:
         """feasibility 통과 후 도메인별 시간 보정 + cost 재계산"""
-        if column.column_type in ("night", "overnight"):
+        if column.column_type in ("night", "overnight", "morning_only"):
             self._apply_night_corrections(column)
         return column
+
+    def _check_morning_only_feasibility(self, column, cfg) -> bool:
+        """새벽 전용 column feasibility.
+        overnight의 morning part를 독립 duty로 사용.
+        driving + span만 체크 (day_start_earliest 제한 적용 안함)."""
+        return column.active_minutes <= cfg.max_active_time
 
     def _check_day_feasibility(self, column, cfg, has_early) -> bool:
         """주간 duty feasibility (순수 검증)"""
@@ -339,23 +357,44 @@ class CrewDutyGenerator(BaseColumnGenerator):
     # ── Phase 2: Overnight duty 생성 ──────────────────────────
 
     def _post_generate(self, columns: List[FeasibleColumn], next_id: int) -> int:
-        """overnight duty 생성: 저녁 chain + 수면 + 새벽 chain"""
+        """overnight + morning-only + evening-only 생성.
+
+        overnight: 저녁+수면+새벽 결합 column
+        morning-only: 새벽 trip만 독립 column (coupling 해소)
+        evening-only: 저녁 trip만 독립 column (coupling 해소)
+
+        morning-only/evening-only가 있으면 solver가 overnight 대신
+        개별 column으로 커버 가능 → exact cover 유연성 확보."""
         cfg = self._crew_config
 
         evening_chains = self._build_evening_chains()
         morning_chains = self._build_morning_chains()
 
-        if not evening_chains or not morning_chains:
-            logger.info(f"Overnight: skipped (evening={len(evening_chains)}, "
-                         f"morning={len(morning_chains)})")
-            return 0
+        count = 0
 
-        logger.info(f"Overnight: {len(evening_chains)} evening chains "
-                     f"× {len(morning_chains)} morning chains")
+        # 1) overnight (기존)
+        if evening_chains and morning_chains:
+            logger.info(f"Overnight: {len(evening_chains)} evening chains "
+                         f"× {len(morning_chains)} morning chains")
+            count += self._combine_overnight_chains(
+                columns, evening_chains, morning_chains, next_id
+            )
 
-        return self._combine_overnight_chains(
-            columns, evening_chains, morning_chains, next_id
-        )
+        # 2) morning-only column (coupling 해소)
+        if morning_chains:
+            morning_only = self._build_morning_only_columns(
+                columns, morning_chains, next_id + count
+            )
+            count += morning_only
+
+        # 3) evening-only column (coupling 해소)
+        if evening_chains:
+            evening_only = self._build_evening_only_columns(
+                columns, evening_chains, next_id + count
+            )
+            count += evening_only
+
+        return count
 
     def _build_evening_chains(self) -> List[List[TaskItem]]:
         """저녁 trip chain 구축"""
@@ -370,10 +409,15 @@ class CrewDutyGenerator(BaseColumnGenerator):
 
     def _build_morning_chains(self) -> List[List[TaskItem]]:
         """아침 trip chain 구축 (overnight의 아침 부분).
-        별도 cutoff 없이 night_threshold 이전 전체 trip 대상.
-        feasibility(driving, span)가 _combine_overnight_chains에서 자연스럽게 제한."""
+        midnight_crossing_threshold 기준으로 새벽 trip만 대상.
+        이 범위를 넘는 trip은 day column에서 커버."""
+        mc_threshold = (
+            self._crew_config.midnight_crossing_threshold
+            or self._crew_config.overnight_morning_end
+            or self._crew_config.day_start_earliest
+        )
         morning_trips = sorted(
-            [t for t in self.tasks if t.dep_time < self._crew_config.night_threshold],
+            [t for t in self.tasks if t.dep_time < mc_threshold],
             key=lambda t: t.dep_time
         )
         cfg = self._crew_config
@@ -452,22 +496,135 @@ class CrewDutyGenerator(BaseColumnGenerator):
             logger.info(f"Overnight reject reasons: {dict(reject_reasons)}")
         return count
 
+    def _build_morning_only_columns(
+        self,
+        columns: List[FeasibleColumn],
+        morning_chains: List[List[TaskItem]],
+        next_id: int,
+    ) -> int:
+        """새벽 trip만으로 구성된 독립 column 생성.
+        overnight의 morning part를 별도 duty로 사용 가능 → coupling 해소.
+
+        _try_build_column()은 column_type을 기반으로 day feasibility를 적용하므로,
+        morning-only는 직접 구축하여 night feasibility만 적용."""
+        cfg = self._crew_config
+        count = 0
+
+        for chain in morning_chains:
+            if not chain:
+                continue
+
+            total_driving = sum(t.duration for t in chain)
+            if total_driving > cfg.max_active_time:
+                continue
+
+            first_dep = chain[0].dep_time
+            last_arr = chain[-1].arr_time
+            prep = cfg.setup_time_night
+            cleanup = cfg.teardown_time_night
+
+            start_time = first_dep - prep
+            end_time = last_arr + cleanup
+            span = end_time - start_time if end_time > start_time else (end_time + cfg.day_minutes) - start_time
+
+            # gap 분류
+            trip_ids = [t.id for t in chain]
+            regular_gap, inactive_gap = self._classify_gaps(trip_ids)
+            pause = min(regular_gap, cfg.min_pause_time)
+            idle = span - total_driving - prep - cleanup - pause - inactive_gap
+            idle = max(0, idle)
+
+            if idle > cfg.max_idle_time:
+                continue
+
+            # cost (야간 가중치)
+            tc = len(chain)
+            short_penalty = max(0, cfg.max_tasks - tc) * cfg.short_column_cost_weight
+            cost = (1.0
+                    + idle * cfg.night_idle_cost_weight
+                    + (span - total_driving) * cfg.night_overhead_cost_weight
+                    + short_penalty * cfg.night_short_penalty_ratio)
+
+            col = FeasibleColumn(
+                id=next_id + count,
+                trips=trip_ids,
+                column_type="morning_only",
+                first_trip_dep=first_dep,
+                last_trip_arr=last_arr,
+                start_time=start_time,
+                end_time=end_time,
+                active_minutes=total_driving,
+                span_minutes=span,
+                elapsed_minutes=span - inactive_gap,
+                idle_minutes=idle,
+                pause_minutes=pause,
+                inactive_minutes=inactive_gap,
+                cost=cost,
+                source="morning_only",
+            )
+            columns.append(col)
+            count += 1
+
+        logger.info(f"Morning-only: {count} columns from {len(morning_chains)} chains")
+        return count
+
+    def _build_evening_only_columns(
+        self,
+        columns: List[FeasibleColumn],
+        evening_chains: List[List[TaskItem]],
+        next_id: int,
+    ) -> int:
+        """저녁 trip만으로 구성된 독립 column 생성.
+        overnight의 evening part를 별도 duty로 사용 가능 → coupling 해소.
+
+        evening chain은 night feasibility로 검증 (night_threshold 이후 출발)."""
+        cfg = self._crew_config
+        count = 0
+
+        for chain in evening_chains:
+            if not chain:
+                continue
+
+            total_driving = sum(t.duration for t in chain)
+            if total_driving > cfg.max_active_time:
+                continue
+
+            # evening chain은 _try_build_column 통과 가능 (night로 분류됨)
+            state = _BeamState(
+                trips=[t.id for t in chain],
+                last_arr_time=chain[-1].arr_time,
+                last_end_location=chain[-1].end_location,
+                total_driving=total_driving,
+                first_dep_time=chain[0].dep_time,
+            )
+            col = self._try_build_column(state, next_id + count)
+            if col:
+                col.source = "evening_only"
+                columns.append(col)
+                count += 1
+
+        logger.info(f"Evening-only: {count} columns from {len(evening_chains)} chains")
+        return count
+
     # ── Greedy chain 구축 (overnight용) ───────────────────────
 
     def _build_chains(self, tasks_subset: List[TaskItem],
                        max_len: Optional[int] = None) -> List[List[TaskItem]]:
-        """task subset에서 greedy forward chain 구축 (중복 시그니처 제거)"""
+        """task subset에서 greedy forward chain 구축.
+
+        중복 chain을 의도적으로 유지 — 동일 chain이라도 다른 상대방
+        (evening/morning)과 조합되면 서로 다른 overnight column이 됨.
+        chain 단계에서 dedup하면 조합 다양성이 소실됨."""
         cfg = self._crew_config
         if max_len is None:
             max_len = int(self._crew_config.max_tasks * self._crew_config.overnight_max_chain_ratio)
 
         chains: List[List[TaskItem]] = []
-        seen_signatures: set = set()
 
         for start in tasks_subset:
             chain = [start]
-            current = start
             chain_ids = {start.id}
+            current = start
 
             for _ in range(max_len - 1):
                 reachable = self._reachable_locations(current.end_location)
@@ -492,11 +649,7 @@ class CrewDutyGenerator(BaseColumnGenerator):
                 else:
                     break
 
-            # 중복 chain 제거
-            sig = tuple(t.id for t in chain)
-            if sig not in seen_signatures:
-                seen_signatures.add(sig)
-                chains.append(chain)
+            chains.append(chain)
 
         return chains
 
@@ -504,11 +657,20 @@ class CrewDutyGenerator(BaseColumnGenerator):
 
     def _classify_gaps(self, task_ids: list) -> tuple:
         """crew: 수면 gap(긴 gap)을 inactive로 분류.
-        자정 넘김은 순수 시간 역전(dep < arr)으로 판단."""
+
+        자정 넘김 판단: dep < arr AND dep < midnight_crossing_threshold.
+        이 2조건 AND가 중요 — dep < arr만 사용하면 주간 duty에서
+        시간순 역전이 아닌 경우도 자정 넘김으로 오판할 수 있다."""
         if len(task_ids) <= 1:
             return 0, 0
 
         cfg = self._crew_config
+        # 자정 넘김 판단 기준: config → overnight_morning_end → day_start_earliest
+        mc_threshold = (
+            cfg.midnight_crossing_threshold
+            or cfg.overnight_morning_end
+            or cfg.day_start_earliest
+        )
         regular_total = 0
         inactive_total = 0
 
@@ -517,10 +679,9 @@ class CrewDutyGenerator(BaseColumnGenerator):
             next_t = self._task_map[task_ids[i + 1]]
 
             dep = next_t.dep_time
-            # 자정 넘김 판단: 시간 역전(dep < arr)이면 다음날로 해석
-            # overnight duty에서는 저녁 trip → 아침 trip 순서이므로
-            # dep가 arr보다 작으면 반드시 다음날
-            if dep < curr.arr_time:
+            # 자정 넘김: dep가 arr보다 작고, dep가 이른 아침 범위(< threshold)이면
+            # 다음날로 해석. 두 조건 AND로 오판 방지.
+            if dep < curr.arr_time and dep < mc_threshold:
                 dep += cfg.day_minutes
 
             gap = dep - curr.arr_time
@@ -531,17 +692,15 @@ class CrewDutyGenerator(BaseColumnGenerator):
             is_rest_gap = (
                 gap >= cfg.min_sleep_minutes + cfg.rest_gap_margin_minutes
                 and curr.arr_time >= cfg.night_threshold - cfg.evening_margin_minutes
+                and next_t.dep_time < mc_threshold
             )
 
             if is_rest_gap:
                 # gap = 중간입고정리 + 수면 + 중간출고준비
-                # 이 overhead는 수면 전후의 "중간" 입출고 (duty 양 끝의 setup/teardown과 별도)
-                # _apply_night_corrections()의 setup/teardown은 duty 시작/종료 1회
-                # 여기의 overhead는 수면 구간 전후 → 이중 차감 아님
                 overhead = cfg.teardown_time_night + cfg.setup_time_night
                 actual_sleep = max(0, gap - overhead)
                 inactive_total += actual_sleep
-                regular_total += overhead  # 중간 입출고는 근무시간으로 분류
+                regular_total += overhead
             else:
                 regular_total += gap
 
@@ -549,8 +708,44 @@ class CrewDutyGenerator(BaseColumnGenerator):
 
     # ── _find_next_tasks override: 야간 연결 ─────────────────
 
-    # _find_next_tasks: base 그대로 사용 (override 없음)
-    # overnight 연결은 _post_generate()에서 전담 — beam search에서 이중 생성 방지
+    def _find_next_tasks(self, state: _BeamState) -> List[TaskItem]:
+        """crew 전용: base + 야간 자정 넘김 연결 허용.
+
+        beam search에서 저녁 trip 이후 새벽 trip을 직접 연결하여
+        overnight column을 생성. _post_generate()의 overnight와 별도로
+        beam search의 다양한 경로를 통해 다양한 overnight 조합 확보.
+        → 이것이 Set Partitioning exact cover의 핵심 다양성 원천."""
+        candidates = super()._find_next_tasks(state)
+
+        cfg = self._crew_config
+        task_set = set(state.trips)
+        mc_threshold = (
+            cfg.midnight_crossing_threshold
+            or cfg.overnight_morning_end
+            or cfg.day_start_earliest
+        )
+
+        # 저녁 시간대에서만 자정 넘김 연결 시도
+        if state.last_arr_time >= cfg.night_threshold - cfg.evening_margin_minutes:
+            candidate_ids = {c.id for c in candidates}
+            reachable = self._reachable_locations(state.last_end_location)
+            for loc in reachable:
+                for t in self._location_departures.get(loc, []):
+                    if t.id in task_set or t.id in candidate_ids:
+                        continue
+                    if t.dep_time >= mc_threshold:
+                        continue
+
+                    # 자정 넘김: 새벽 dep + 1440 → 야간 arr 기준 gap 계산
+                    effective_dep = t.dep_time + cfg.day_minutes
+                    gap = effective_dep - state.last_arr_time
+                    if (cfg.min_sleep_minutes <= gap
+                            <= cfg.min_sleep_minutes + cfg.max_sleep_gap_extra):
+                        if state.total_driving + t.duration <= self._get_max_active_time(state):
+                            candidates.append(t)
+                            candidate_ids.add(t.id)
+
+        return candidates
 
 
 # ── 하위 호환 alias ──────────────────────────────────────────

@@ -441,7 +441,6 @@ class BaseColumnGenerator:
             f"source: {dict(_source)}, "
             f"coverage_density: {dict(sorted(_density.items()))}"
         )
-
         return all_columns
 
     # ── Beam diversity 유지 ──────────────────────────────────
