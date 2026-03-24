@@ -268,7 +268,7 @@ def _save_result_files(
     # schedule CSV
     csv_path = os.path.join(results_dir, f"duty_schedule_{solver_id}.csv")
     fieldnames = [
-        "duty_id", "crew_id", "duty_start", "duty_end",
+        "duty_id", "crew_id", "duty_type", "duty_start", "duty_end",
         "trip_id", "direction", "dep_station", "arr_station",
         "dep_time", "arr_time", "duration_min",
     ]
