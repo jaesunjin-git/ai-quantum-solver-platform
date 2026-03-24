@@ -461,10 +461,11 @@ class CrewDutyGenerator(BaseColumnGenerator):
         return self._build_chains(evening_trips, max_len=cfg.max_tasks // 2)
 
     def _build_morning_chains(self) -> List[List[TaskItem]]:
-        """새벽 trip chain 구축"""
-        morning_cutoff = self._get_morning_cutoff()
+        """아침 trip chain 구축 (overnight의 아침 부분).
+        별도 cutoff 없이 night_threshold 이전 전체 trip 대상.
+        feasibility(driving, span)가 _combine_overnight_chains에서 자연스럽게 제한."""
         morning_trips = sorted(
-            [t for t in self.tasks if t.dep_time < morning_cutoff],
+            [t for t in self.tasks if t.dep_time < self._crew_config.night_threshold],
             key=lambda t: t.dep_time
         )
         cfg = self._crew_config
