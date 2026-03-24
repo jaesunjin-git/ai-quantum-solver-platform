@@ -129,6 +129,7 @@ class BaseColumnConfig:
     # Adaptive CG
     acg_scale: float = 1.0          # 에스컬레이션 배율
     min_column_depth: int = 0       # 최소 task 수 (0=제한 없음, hint에서 설정)
+    seed_trips: List = None         # bottleneck trip seed (ACG diversity용)
 
     @property
     def effective_beam_width(self) -> int:
@@ -279,6 +280,28 @@ class BaseColumnGenerator:
         col_id += extra_count
         if extra_count > 0:
             logger.info(f"Phase 2 complete: {extra_count} extra columns")
+
+        # ═════════════════════════════════════════════════════
+        # Phase 2.5: Seed-based diversification (ACG용)
+        # ═════════════════════════════════════════════════════
+        if cfg.seed_trips:
+            seed_columns = []
+            for seed_tid in cfg.seed_trips:
+                seed_task = self._task_map.get(seed_tid)
+                if not seed_task:
+                    continue
+                # 이 trip을 시작점으로 beam search 실행
+                seed_group = [seed_task]
+                seed_cols = self._run_beam_for_group(seed_group, col_id, cfg)
+                seed_columns.extend(seed_cols)
+                col_id += len(seed_cols)
+
+            if seed_columns:
+                all_columns.extend(seed_columns)
+                logger.info(
+                    f"Phase 2.5: {len(seed_columns)} seed-diversified columns "
+                    f"from {len(cfg.seed_trips)} bottleneck trips"
+                )
 
         # ═════════════════════════════════════════════════════
         # Phase 3: Greedy fallback (미커버 task)

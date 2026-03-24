@@ -57,14 +57,19 @@ class GenerationHint:
     prefer_longer: bool = False           # 더 긴 column 우선 생성
     capacity_gap: int = 0                 # 추가로 커버해야 하는 task 수
     column_type_deficits: Dict[str, int] = field(default_factory=dict)
+    seed_trips: Optional[List[int]] = None  # bottleneck trip seeds (diversity용)
 
     @classmethod
-    def from_diagnostics(cls, diag: CoverageDiagnostics) -> "GenerationHint":
+    def from_diagnostics(
+        cls, diag: CoverageDiagnostics,
+        bottleneck_trips: Optional[List[int]] = None,
+    ) -> "GenerationHint":
         return cls(
             min_tasks_per_column=diag.required_avg,
             prefer_longer=(diag.current_avg < diag.required_avg),
             capacity_gap=max(0, diag.capacity_gap),
             column_type_deficits=diag.type_deficits,
+            seed_trips=bottleneck_trips,
         )
 
 
@@ -126,14 +131,16 @@ class SetPartitioningProblem:
         """SP coverage capacity 진단 — solver 호출 전 수학적 feasibility 검증.
         도메인 지식 불필요, 순수 수학.
 
-        Type 제약이 있으면 type별로 개별 진단:
-        - 해당 type에만 존재하는 task (type-exclusive) 수 파악
-        - type별 required_avg = type_exclusive_tasks / type_columns
-        - type별 avg_tasks < type별 required_avg이면 infeasible
+        핵심 원리: trip에는 type이 없고 column(duty)에만 type이 있다.
+        trip의 type 친화도(affinity)는 column pool에서 파생되는 통계이다.
+
+        Three-bucket 분석:
+          1. type_A_only: type A column에만 존재하는 task → A가 반드시 커버
+          2. type_B_only: type B column에만 존재하는 task → B가 반드시 커버
+          3. flexible: 양쪽 모두 가능 → 잔여 용량으로 배분
         """
         total_tasks = len(self.task_ids)
 
-        # partition 수 제약 탐색 (total_columns == K)
         total_con = next(
             (c for c in self.extra_constraints if c.name == "total_columns"),
             None,
@@ -144,96 +151,122 @@ class SetPartitioningProblem:
         max_columns = total_con.rhs
         required_avg = total_tasks / max(max_columns, 1)
 
-        # column 크기 분포 (전체)
         col_sizes = sorted(
             (len(c.trips) for c in self.columns), reverse=True
         )
         current_avg = sum(col_sizes) / max(len(col_sizes), 1)
 
-        # ── Type 제약 분석 ──
+        # ── Type 제약 분석 (Column-Type Affinity 기반) ──
         type_constraints = [
             c for c in self.extra_constraints
             if c.name in ("day_columns", "night_columns") and c.operator == "=="
         ]
 
         type_deficits = {}
-        all_type_feasible = True
 
         if type_constraints:
-            # task별 커버 가능 type 분석
-            task_types: Dict[int, set] = {tid: set() for tid in self.task_ids}
+            # task별 affinity: 어떤 column type에 포함되는지
+            task_affinity: Dict[int, Dict[str, int]] = {
+                tid: {"day": 0, "night": 0} for tid in self.task_ids
+            }
             for col in self.columns:
                 if col.column_type in ColumnType.DAY_GROUP:
                     t_label = "day"
                 elif col.column_type in ColumnType.NIGHT_GROUP:
                     t_label = "night"
                 else:
-                    t_label = "other"
+                    continue
                 for tid in col.trips:
-                    if tid in task_types:
-                        task_types[tid].add(t_label)
+                    if tid in task_affinity:
+                        task_affinity[tid][t_label] += 1
 
-            # type-exclusive task 계산
-            day_exclusive = sum(1 for ts in task_types.values() if ts == {"day"})
-            night_exclusive = sum(1 for ts in task_types.values() if ts == {"night"})
-            both_types = sum(1 for ts in task_types.values() if "day" in ts and "night" in ts)
+            # Three-bucket 분류
+            day_only_tasks = sum(
+                1 for a in task_affinity.values()
+                if a["day"] > 0 and a["night"] == 0
+            )
+            night_only_tasks = sum(
+                1 for a in task_affinity.values()
+                if a["night"] > 0 and a["day"] == 0
+            )
+            flexible_tasks = sum(
+                1 for a in task_affinity.values()
+                if a["day"] > 0 and a["night"] > 0
+            )
 
+            # type별 용량 계산
             for con in type_constraints:
                 type_name = "day" if con.name == "day_columns" else "night"
-                type_group = ColumnType.DAY_GROUP if type_name == "day" else ColumnType.NIGHT_GROUP
-                type_cols = [c for c in self.columns if c.column_type in type_group]
-                type_sizes = sorted((len(c.trips) for c in type_cols), reverse=True)
-                type_avg = sum(type_sizes) / max(len(type_sizes), 1)
-                type_top_k = sum(type_sizes[:con.rhs])
+                type_group = (
+                    ColumnType.DAY_GROUP if type_name == "day"
+                    else ColumnType.NIGHT_GROUP
+                )
+                type_cols = [
+                    c for c in self.columns if c.column_type in type_group
+                ]
+                type_sizes = sorted(
+                    (len(c.trips) for c in type_cols), reverse=True
+                )
+                type_avg = (
+                    sum(type_sizes) / len(type_sizes) if type_sizes else 0
+                )
+                type_top_k = sum(type_sizes[: con.rhs])
 
-                # type-exclusive tasks: 이 type의 column에만 존재하는 task 수
-                exclusive_count = day_exclusive if type_name == "day" else night_exclusive
-                # 이 type이 커버해야 하는 최소 task = exclusive + shared의 일부
-                # shared 배분: 각 type의 남은 용량 비율로 배분 (보수적 추정)
-                type_required_avg = exclusive_count / max(con.rhs, 1)
-                # type-exclusive만으로도 용량 부족하면 확실히 infeasible
-                type_feasible = (type_avg >= type_required_avg)
-
-                # 추가: shared tasks까지 고려한 전체 부담 추정
-                # day가 커버해야 하는 총 task ≈ day_exclusive + (both × day_share)
-                # 보수적: day_share = day_columns / total_columns
-                share_ratio = con.rhs / max(max_columns, 1)
-                estimated_total_tasks = exclusive_count + int(both_types * share_ratio)
-                full_required_avg = estimated_total_tasks / max(con.rhs, 1)
-
-                if type_avg < full_required_avg:
-                    type_feasible = False
-
-                if not type_feasible:
-                    all_type_feasible = False
+                # guaranteed load: 이 type만 커버 가능한 task
+                guaranteed = (
+                    day_only_tasks if type_name == "day" else night_only_tasks
+                )
+                # 이 type의 총 용량
+                capacity = con.rhs * type_avg
+                # 잔여 용량 (flexible task 배분 가능)
+                remaining_for_flexible = max(0, capacity - guaranteed)
 
                 type_deficits[type_name] = {
                     "required": con.rhs,
                     "available_columns": len(type_cols),
                     "avg_tasks": round(type_avg, 1),
                     "top_k_capacity": type_top_k,
-                    "exclusive_tasks": exclusive_count,
-                    "estimated_total_tasks": estimated_total_tasks,
-                    "required_avg": round(full_required_avg, 1),
-                    "feasible": type_feasible,
+                    "guaranteed_load": guaranteed,
+                    "capacity": round(capacity, 0),
+                    "remaining_for_flexible": round(remaining_for_flexible, 0),
                 }
 
+            # flexible gap: flexible tasks를 양쪽 잔여 용량으로 커버 가능?
+            total_remaining = sum(
+                td["remaining_for_flexible"] for td in type_deficits.values()
+            )
+            flexible_gap = max(0, flexible_tasks - int(total_remaining))
+            all_feasible = (flexible_gap == 0)
+
+            # type_deficits에 three-bucket 요약 추가
+            type_deficits["_summary"] = {
+                "day_only_tasks": day_only_tasks,
+                "night_only_tasks": night_only_tasks,
+                "flexible_tasks": flexible_tasks,
+                "total_remaining_for_flexible": round(total_remaining, 0),
+                "flexible_gap": flexible_gap,
+            }
+
             top_k_capacity = sum(
-                td["top_k_capacity"] for td in type_deficits.values()
+                td["top_k_capacity"]
+                for k, td in type_deficits.items()
+                if k != "_summary"
             )
         else:
             top_k_capacity = sum(col_sizes[:max_columns])
+            flexible_gap = 0
+            all_feasible = True
 
         capacity_gap = max(0, total_tasks - top_k_capacity)
 
         return CoverageDiagnostics(
-            feasible=(capacity_gap == 0 and all_type_feasible),
+            feasible=(capacity_gap == 0 and all_feasible),
             total_tasks=total_tasks,
             max_columns=max_columns,
             required_avg=required_avg,
             current_avg=current_avg,
             top_k_capacity=top_k_capacity,
-            capacity_gap=capacity_gap,
+            capacity_gap=max(capacity_gap, flexible_gap),
             type_deficits=type_deficits,
         )
 

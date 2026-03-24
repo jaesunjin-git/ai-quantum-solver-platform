@@ -524,15 +524,22 @@ class SolverPipeline:
                 gen = BaseColumnGenerator(tasks, config)
             gen.config.acg_scale = acg_scale
 
-            # Layer 2: hint → min_column_depth 설정
-            if hint and hint.prefer_longer:
-                gen.config.min_column_depth = max(
-                    gen.config.min_column_depth,
-                    int(hint.min_tasks_per_column * 0.8),  # 80%는 확보
-                )
+            # Layer 2: hint 적용
+            if hint:
+                if hint.prefer_longer:
+                    gen.config.min_column_depth = max(
+                        gen.config.min_column_depth,
+                        int(hint.min_tasks_per_column * 0.8),
+                    )
+
+                # Seed-based diversification: bottleneck trip을 seed로 전달
+                if hint.seed_trips:
+                    gen.config.seed_trips = hint.seed_trips
+
                 logger.info(
-                    f"ACG hint applied: min_column_depth={gen.config.min_column_depth} "
-                    f"(required_avg={hint.min_tasks_per_column:.1f})"
+                    f"ACG hint applied: min_depth={gen.config.min_column_depth}, "
+                    f"seed_trips={len(hint.seed_trips) if hint.seed_trips else 0}, "
+                    f"prefer_longer={hint.prefer_longer}"
                 )
 
             new_columns = gen.generate()
@@ -570,11 +577,24 @@ class SolverPipeline:
 
             # Pre-solve: 재생성이 의미있는 경우만 계속
             if sp_problem.should_regenerate(params) and attempt < max_attempts:
+                # Bottleneck trip 식별: coverage density가 낮은 trip
+                bottleneck = []
+                if sp_problem.task_to_columns:
+                    for tid in sp_problem.task_ids:
+                        col_count = len(sp_problem.task_to_columns.get(tid, []))
+                        if col_count <= 3:
+                            bottleneck.append(tid)
+                    # 너무 많으면 상위 50개만
+                    bottleneck = bottleneck[:50]
+
                 # Layer 2: 진단 → 힌트 생성 (다음 attempt에서 사용)
-                hint = GenerationHint.from_diagnostics(cov_diag)
+                hint = GenerationHint.from_diagnostics(
+                    cov_diag, bottleneck_trips=bottleneck if bottleneck else None
+                )
                 logger.warning(
                     f"ACG attempt {attempt}: pool 부족 → 재생성 "
-                    f"(gap={cov_diag.capacity_gap}, hint: prefer_longer={hint.prefer_longer}, "
+                    f"(gap={cov_diag.capacity_gap}, bottleneck_trips={len(bottleneck)}, "
+                    f"hint: prefer_longer={hint.prefer_longer}, "
                     f"min_tasks={hint.min_tasks_per_column:.1f})"
                 )
                 continue
