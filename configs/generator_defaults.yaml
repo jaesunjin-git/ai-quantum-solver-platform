@@ -40,6 +40,7 @@ block_combine_min_trips: 2       # block 결합 최소 trip 수
 
 # ── Diversity ──────────────────────────────────────────────
 min_per_diversity_bucket: 5      # beam diversity 최소 bucket 크기
+min_task_coverage: 10            # diversity cap 후 최소 task coverage 보장
 
 # ── Single Task Fallback ──────────────────────────────────
 single_task_max_windows: 1       # single task 2nd pass window 수

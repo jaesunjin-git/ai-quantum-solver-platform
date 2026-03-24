@@ -152,6 +152,7 @@ class BaseColumnConfig:
 
     # Diversity
     min_per_diversity_bucket: int = 5     # beam diversity 최소 bucket 크기
+    min_task_coverage: int = 10           # diversity cap 후 최소 task coverage 보장
 
     # Single task fallback
     single_task_max_windows: int = 1      # single task 2nd pass에서 시도할 window 수
@@ -498,7 +499,39 @@ class BaseColumnGenerator:
             result.extend(remaining[:target - len(result)])
 
         logger.info(f"Diversity cap: {len(columns)} → {len(result)} ({len(buckets)} buckets)")
-        return result[:target]
+
+        # ── coverage 보호: under-covered task의 column을 추가 보장 ──
+        result_ids = {c.id for c in result}
+        task_cov = Counter()
+        for c in result:
+            for tid in c.trips:
+                task_cov[tid] += 1
+
+        all_tids = {t.id for t in self.tasks}
+        min_cov = getattr(self.config, 'min_task_coverage', 10)
+        under = {tid for tid in all_tids if task_cov.get(tid, 0) < min_cov}
+
+        if under:
+            candidates = [c for c in columns if c.id not in result_ids]
+            added = 0
+            while under and candidates:
+                best = max(candidates, key=lambda c: sum(1 for tid in c.trips if tid in under))
+                if sum(1 for tid in best.trips if tid in under) == 0:
+                    break
+                result.append(best)
+                result_ids.add(best.id)
+                for tid in best.trips:
+                    task_cov[tid] += 1
+                    if task_cov[tid] >= min_cov:
+                        under.discard(tid)
+                candidates.remove(best)
+                added += 1
+
+            if added > 0:
+                logger.info(f"Coverage repair: +{added} columns, "
+                             f"remaining under-covered: {len(under)}")
+
+        return result
 
     # ── 시간대별 그룹 분할 ────────────────────────────────────
 
