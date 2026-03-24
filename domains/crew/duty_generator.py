@@ -77,7 +77,7 @@ class CrewDutyConfig(BaseColumnConfig):
 
     def __post_init__(self):
         if self.depot_suffixes is None:
-            self.depot_suffixes = ["기지"]
+            self.depot_suffixes = []  # YAML에서 설정, 미설정 시 매칭 비활성화
 
     # params에서 로딩을 허용하는 필드 (운영 제약)
     # 튜닝 파라미터(night_idle_cost_weight 등)는 YAML에서만 설정 가능
@@ -94,100 +94,33 @@ class CrewDutyConfig(BaseColumnConfig):
     @classmethod
     def from_params(cls, params: Dict, domain: str = "railway") -> "CrewDutyConfig":
         """3계층 설정 로딩:
-        1순위: params (사용자 운영 제약)
+        1순위: params (사용자 운영 제약) — YAML param_field_mapping 기반 자동 매핑
         2순위: YAML config (엔진 튜닝)
         3순위: dataclass 기본값
         """
+        from engine.config_loader import (
+            load_yaml_into_dataclass, get_generator_yaml_paths, apply_param_mapping
+        )
+
         cfg = cls()  # 3순위: dataclass 기본값
 
         # 2순위: YAML config (범용 + 도메인별)
-        from engine.config_loader import load_yaml_into_dataclass, get_generator_yaml_paths
         yaml_paths = get_generator_yaml_paths(domain)
         load_yaml_into_dataclass(cfg, *yaml_paths)
 
-        # 1순위: 사용자 운영 제약 (키 이름 매핑)
-        _base_mapping = {
-            'max_driving_minutes': 'max_active_time',
-            'max_work_minutes': 'max_span_time',
-            'max_wait_minutes': 'max_idle_time',
-            'min_break_minutes': 'min_pause_time',
-        }
-        for param_key, attr in _base_mapping.items():
-            val = params.get(param_key)
-            if val is not None and isinstance(val, (int, float)):
-                setattr(cfg, attr, int(val))
+        # 1순위: params → config 자동 매핑 (YAML param_field_mapping 기반)
+        applied = apply_param_mapping(cfg, params, domain)
+        logger.info(f"CrewDutyConfig: {applied} params applied from mapping")
 
-        # crew 전용 매핑
-        _crew_mapping = {
-            'night_threshold': 'night_threshold',
-            'night_duty_start_earliest': 'night_threshold',  # 별칭
-            'day_duty_start_earliest': 'day_start_earliest',
-            'day_duty_end_latest': 'day_end_latest',
-            'min_night_sleep_minutes': 'min_sleep_minutes',
-            'min_night_rest_total_minutes': 'min_night_rest_total',
-            'overnight_morning_end': 'overnight_morning_end',
-            'max_sleep_gap_extra': 'max_sleep_gap_extra',
-            'max_total_stay_minutes': 'max_total_stay_minutes',
-            'recognized_wait_minutes': 'recognized_wait_minutes',
-            'post_trip_training_minutes': 'post_trip_training_minutes',
-        }
-        for param_key, attr in _crew_mapping.items():
-            val = params.get(param_key)
-            if val is not None and isinstance(val, (int, float)):
-                setattr(cfg, attr, int(val))
-
-        # 주간 준비/정리 — params에 값이 있고 None이 아닐 때만 덮어씀
-        def _safe_int(val):
-            """None/빈값 안전 변환"""
-            if val is None:
-                return None
-            try:
-                return int(val)
-            except (ValueError, TypeError):
-                return None
-
-        prep_dep = _safe_int(params.get('preparation_minutes_departure'))
-        prep_gen = _safe_int(params.get('preparation_minutes'))
-        if prep_dep is not None:
-            cfg.setup_time_day = prep_dep
-        elif prep_gen is not None:
-            cfg.setup_time_day = prep_gen
-
-        prep_relay = _safe_int(params.get('preparation_minutes_relay'))
-        if prep_relay is not None:
-            cfg.setup_time_relay = prep_relay
-
-        cleanup_arr = _safe_int(params.get('cleanup_minutes_arrival'))
-        cleanup_gen = _safe_int(params.get('cleanup_minutes'))
-        if cleanup_arr is not None:
-            cfg.teardown_time_day = cleanup_arr
-        elif cleanup_gen is not None:
-            cfg.teardown_time_day = cleanup_gen
-
-        # 야간 준비/정리
-        prep_night = _safe_int(params.get('preparation_minutes_night'))
-        if prep_night is not None:
-            cfg.setup_time_night = prep_night
-        cleanup_night = _safe_int(params.get('cleanup_minutes_night'))
-        if cleanup_night is not None:
-            cfg.teardown_time_night = cleanup_night
-
-        # 야간 최대 근무 — 야간 전용 키 우선, fallback은 주간과 동일
-        night_work = _safe_int(params.get('max_work_minutes_night'))
-        if night_work is not None:
-            cfg.max_span_time_night = night_work
-        else:
-            day_work = _safe_int(params.get('max_work_minutes'))
-            if day_work is not None:
-                cfg.max_span_time_night = day_work
-
-        # base setup/teardown은 주간 기준 (기본값)
+        # base setup/teardown은 주간 기준
         cfg.setup_time = cfg.setup_time_day
         cfg.teardown_time = cfg.teardown_time_day
 
-        # max_tasks
-        if 'max_trips_per_crew' in params:
-            cfg.max_tasks = int(params['max_trips_per_crew'])
+        # block_combine derive
+        if cfg.block_combine_max_gap == 0:
+            cfg.block_combine_max_gap = cfg.max_idle_time
+        if cfg.block_combine_top_k == 0:
+            cfg.block_combine_top_k = int(cfg.max_columns_target * 0.3)
 
         return cfg
 
@@ -432,7 +365,7 @@ class CrewDutyGenerator(BaseColumnGenerator):
         """저녁 trip chain 구축"""
         cfg = self._crew_config
         evening_trips = sorted(
-            [t for t in self.tasks if t.dep_time >= cfg.night_threshold - 120],
+            [t for t in self.tasks if t.dep_time >= cfg.night_threshold - cfg.evening_margin_minutes * 2],
             key=lambda t: t.dep_time
         )
         if not evening_trips:
@@ -526,9 +459,12 @@ class CrewDutyGenerator(BaseColumnGenerator):
     # ── Greedy chain 구축 (overnight용) ───────────────────────
 
     def _build_chains(self, tasks_subset: List[TaskItem],
-                       max_len: int = 5) -> List[List[TaskItem]]:
+                       max_len: Optional[int] = None) -> List[List[TaskItem]]:
         """task subset에서 greedy forward chain 구축 (중복 시그니처 제거)"""
         cfg = self._crew_config
+        if max_len is None:
+            max_len = self._crew_config.max_tasks // 2
+
         chains: List[List[TaskItem]] = []
         seen_signatures: set = set()
 

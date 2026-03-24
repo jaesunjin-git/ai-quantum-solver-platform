@@ -7,6 +7,10 @@
 # 우선순위: params(사용자) > 이 파일 > generator_defaults.yaml > dataclass 기본값
 # ============================================================
 
+# ── Depot 인접역 ─────────────────────────────────────────────
+depot_suffixes:
+  - "기지"
+
 # ── 야간 연결 마진 ───────────────────────────────────────────
 evening_margin_minutes: 60       # night_threshold 전 마진 (분)
 rest_gap_margin_minutes: 30      # 수면 gap 판단 마진 (분)

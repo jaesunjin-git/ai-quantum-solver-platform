@@ -1,0 +1,56 @@
+# ============================================================
+# Railway Crew Scheduling — Parameter → Config Field 매핑
+# ============================================================
+# params(사용자) 키 → BaseColumnConfig/CrewDutyConfig 필드 매핑.
+# priority: 여러 params 키 중 먼저 발견되는 값을 사용.
+
+param_field_mapping:
+  # ── Base fields ──
+  max_active_time:
+    priority: [max_driving_minutes]
+  max_span_time:
+    priority: [max_work_minutes]
+  max_idle_time:
+    priority: [max_wait_minutes]
+  min_pause_time:
+    priority: [min_break_minutes]
+
+  # ── Crew fields ──
+  night_threshold:
+    priority: [night_threshold, night_duty_start_earliest]
+  day_start_earliest:
+    priority: [day_duty_start_earliest]
+  day_end_latest:
+    priority: [day_duty_end_latest]
+  min_sleep_minutes:
+    priority: [min_night_sleep_minutes]
+  min_night_rest_total:
+    priority: [min_night_rest_total_minutes]
+  overnight_morning_end:
+    priority: [overnight_morning_end]
+  max_sleep_gap_extra:
+    priority: [max_sleep_gap_extra]
+  max_total_stay_minutes:
+    priority: [max_total_stay_minutes]
+  recognized_wait_minutes:
+    priority: [recognized_wait_minutes]
+  post_trip_training_minutes:
+    priority: [post_trip_training_minutes]
+  max_tasks:
+    priority: [max_trips_per_crew]
+
+  # ── Prep/Cleanup (fallback 우선순위) ──
+  setup_time_day:
+    priority: [preparation_minutes_departure, preparation_minutes]
+  setup_time_relay:
+    priority: [preparation_minutes_relay]
+  teardown_time_day:
+    priority: [cleanup_minutes_arrival, cleanup_minutes]
+  setup_time_night:
+    priority: [preparation_minutes_night]
+  teardown_time_night:
+    priority: [cleanup_minutes_night]
+
+  # ── Night work ──
+  max_span_time_night:
+    priority: [max_work_minutes_night, max_work_minutes]

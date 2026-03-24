@@ -199,34 +199,11 @@ class BaseColumnConfig:
         yaml_paths = get_generator_yaml_paths(domain)
         load_yaml_into_dataclass(cfg, *yaml_paths)
 
-        # 1순위: 사용자 운영 제약 (키 이름 매핑 — YAML에서 로딩)
-        from engine.config_loader import load_param_field_mapping
-        _mapping = load_param_field_mapping(domain)
-        for param_key, attr in _mapping.items():
-            val = params.get(param_key)
-            if val is not None and isinstance(val, (int, float)):
-                setattr(cfg, attr, int(val))
+        # 1순위: params → config 자동 매핑 (YAML param_field_mapping 기반)
+        from engine.config_loader import apply_param_mapping
+        apply_param_mapping(cfg, params, domain)
 
-        # 1순위: params 자동 매칭 (_PARAMS_LOADABLE에 있는 필드만)
-        for field_name in cls._PARAMS_LOADABLE:
-            if field_name in params:
-                val = params[field_name]
-                if val is not None:
-                    current = getattr(cfg, field_name, None)
-                    if isinstance(current, int):
-                        setattr(cfg, field_name, int(val))
-                    elif isinstance(current, float):
-                        setattr(cfg, field_name, float(val))
-
-        # setup/teardown 별칭
-        setup = params.get('preparation_minutes', params.get('setup_time'))
-        if setup is not None:
-            cfg.setup_time = int(setup)
-        teardown = params.get('cleanup_minutes', params.get('teardown_time'))
-        if teardown is not None:
-            cfg.teardown_time = int(teardown)
-
-        # block_combine derive: 0이면 max_idle_time에서 자동 도출
+        # block_combine derive: 0이면 기존 params에서 자동 도출
         if cfg.block_combine_max_gap == 0:
             cfg.block_combine_max_gap = cfg.max_idle_time
         if cfg.block_combine_top_k == 0:
