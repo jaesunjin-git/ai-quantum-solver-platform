@@ -56,8 +56,8 @@ class CrewDutyConfig(BaseColumnConfig):
     # 야간 최대 근무시간 (수면 제외)
     max_span_time_night: int = 660
 
-    # 숙박조(overnight) 최대 span (수면 포함)
-    overnight_max_effective_span: Optional[int] = None  # params에서 로딩
+    # (overnight span 체크는 base의 effective_work = span - inactive로 처리
+    #  별도 overnight_max_effective_span 불필요)
 
     # 추가 파라미터 (params에서 로딩)
     max_total_stay_minutes: Optional[int] = None  # 회사 체류시간 상한
@@ -98,7 +98,6 @@ class CrewDutyConfig(BaseColumnConfig):
             'min_night_sleep_minutes': 'min_sleep_minutes',
             'min_night_rest_total_minutes': 'min_night_rest_total',
             'overnight_morning_end': 'overnight_morning_end',
-            'overnight_max_effective_span': 'overnight_max_effective_span',
             'max_sleep_gap_extra': 'max_sleep_gap_extra',
             'max_total_stay_minutes': 'max_total_stay_minutes',
             'recognized_wait_minutes': 'recognized_wait_minutes',
@@ -142,19 +141,6 @@ class CrewDutyConfig(BaseColumnConfig):
         # max_tasks
         if 'max_trips_per_crew' in params:
             cfg.max_tasks = int(params['max_trips_per_crew'])
-
-        # overnight_max_effective_span: params에서 로딩 우선순위
-        # 1) overnight_max_effective_span (직접 지정)
-        # 2) max_work_minutes + min_night_rest_total_minutes
-        #    (근무시간 + 야간 총 휴식 = overnight 전체 span)
-        # 3) max_span_time + min_sleep (최소 추정)
-        if cfg.overnight_max_effective_span is None:
-            rest_total = params.get('min_night_rest_total_minutes')
-            work_max = params.get('max_work_minutes', cfg.max_span_time)
-            if rest_total is not None:
-                cfg.overnight_max_effective_span = int(work_max) + int(rest_total)
-            else:
-                cfg.overnight_max_effective_span = cfg.max_span_time + (cfg.min_sleep_minutes or 0)
 
         return cfg
 
@@ -208,18 +194,6 @@ class CrewDutyGenerator(BaseColumnGenerator):
         if has_evening and has_early:
             return int(cfg.max_active_time * 1.5)
         return cfg.max_active_time
-
-    def _get_max_span_time(self, state) -> int:
-        """overnight duty는 수면시간 포함으로 span이 길어짐.
-        overnight_max_effective_span: params 또는 from_params()에서 자동 계산."""
-        cfg = self._crew_config
-        has_evening = any(self._task_map[tid].dep_time >= cfg.night_threshold
-                         for tid in state.trips)
-        has_early = any(self._task_map[tid].dep_time < cfg.day_start_earliest
-                        for tid in state.trips)
-        if has_evening and has_early:
-            return cfg.overnight_max_effective_span or cfg.max_span_time
-        return cfg.max_span_time
 
     def _get_morning_cutoff(self) -> int:
         """morning cutoff 통일"""
@@ -328,14 +302,12 @@ class CrewDutyGenerator(BaseColumnGenerator):
             if morning_arrs and max(morning_arrs) > cfg.overnight_morning_end:
                 return False
 
-        max_span = (cfg.overnight_max_effective_span
-                     if cfg.overnight_max_effective_span is not None
-                     else cfg.max_span_time_night)
-        return self._check_night_time_feasibility(column, cfg, max_effective_span=max_span)
+        # overnight span 체크: span - sleep ≤ max_span_time_night
+        # (수면 제외 실근무시간이 제한 이내인지)
+        return self._check_night_time_feasibility(column, cfg)
 
-    def _check_night_time_feasibility(self, column, cfg,
-                                       max_effective_span: Optional[int] = None) -> bool:
-        """야간/overnight 공통: 실근무시간 feasibility만 판정 (column 수정 없음)"""
+    def _check_night_time_feasibility(self, column, cfg) -> bool:
+        """야간/overnight 공통: 수면 제외 실근무 span ≤ max_span_time_night (column 수정 없음)"""
         first_dep = column.first_trip_dep
         last_arr = column.last_trip_arr
 
@@ -344,10 +316,10 @@ class CrewDutyGenerator(BaseColumnGenerator):
 
         eff_end = end + 1440 if end < start else end
         span = eff_end - start
-        work = span - cfg.min_sleep_minutes
 
-        limit = max_effective_span if max_effective_span is not None else cfg.max_span_time_night
-        return work <= limit
+        # 수면 제외 실근무 span
+        effective_work = span - (column.inactive_minutes or cfg.min_sleep_minutes)
+        return effective_work <= cfg.max_span_time_night
 
     def _apply_night_corrections(self, column) -> None:
         """야간/overnight column 시간 보정 + cost 재계산 (_finalize_column에서 호출)"""
