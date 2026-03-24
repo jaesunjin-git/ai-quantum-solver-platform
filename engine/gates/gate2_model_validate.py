@@ -402,6 +402,10 @@ def run(math_model: Dict,
     metadata = math_model.get("metadata", {})
 
     # ── 1. Set 검증 ──
+    # struct fix에서 자동 주입 가능한 set (overlap_pairs 등)은 deferred check
+    _AUTO_INJECTABLE_SETS = {"overlap_pairs", "sequential_pairs"}
+    _deferred_set_errors = []
+
     set_ids = set()
     for s in sets:
         sid = s.get("id", "")
@@ -410,12 +414,21 @@ def run(math_model: Dict,
         set_sizes[sid] = size
 
         if size == 0:
-            errors.append(
-                f"Set '{sid}': 크기를 결정할 수 없음 "
-                f"(source_file={s.get('source_file')}, "
-                f"source_column={s.get('source_column')}, "
-                f"source_type={s.get('source_type')})"
-            )
+            if sid in _AUTO_INJECTABLE_SETS:
+                # struct fix에서 주입될 수 있으므로 error 대신 deferred
+                _deferred_set_errors.append(
+                    f"Set '{sid}': 크기를 결정할 수 없음 "
+                    f"(source_file={s.get('source_file')}, "
+                    f"source_column={s.get('source_column')}, "
+                    f"source_type={s.get('source_type', 'explicit')})"
+                )
+            else:
+                errors.append(
+                    f"Set '{sid}': 크기를 결정할 수 없음 "
+                    f"(source_file={s.get('source_file')}, "
+                    f"source_column={s.get('source_column')}, "
+                    f"source_type={s.get('source_type')})"
+                )
         elif size < 0:
             errors.append(f"Set '{sid}': 유효하지 않은 크기 ({size})")
 
@@ -1266,6 +1279,22 @@ def run(math_model: Dict,
         struct_fixes = _fix_constraint_structure(math_model, corrections, warnings, set_sizes=set_sizes, project_id=_struct_project_id)
     if struct_fixes > 0:
         corrections['structural_fixes'] = struct_fixes
+
+    # struct fix 후 deferred set error 재검증
+    # struct fix에서 overlap_pairs 등이 주입되었으면 error 해소
+    if _deferred_set_errors:
+        for deferred_err in _deferred_set_errors:
+            # set_sizes가 struct fix에서 갱신되었는지 확인
+            for s in sets:
+                sid = s.get("id", "")
+                if sid in _AUTO_INJECTABLE_SETS and f"'{sid}'" in deferred_err:
+                    new_size = _validate_set(s, data_profile, dataframes)
+                    if new_size > 0 or s.get("_overlap_pairs"):
+                        # struct fix에서 주입됨 → warning으로 전환
+                        warnings.append(deferred_err.replace("크기를 결정할 수 없음", "struct fix로 주입됨"))
+                    else:
+                        # 여전히 미해결 → error 유지
+                        errors.append(deferred_err)
 
     result = {
         "valid": is_valid,
