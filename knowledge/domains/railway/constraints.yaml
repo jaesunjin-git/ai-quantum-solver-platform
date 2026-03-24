@@ -974,10 +974,18 @@ constraints:
 
   # ── 승무원 인원 고정 제약 ──
   fixed_day_crew_count:
-    description: 주간 근무 승무원 수 고정
+    description: 주간 근무 승무원 수
     expression_template: "sum(y[j] * (1 - is_night[j]) for j in J) == day_crew_count"
-    # 주간 승무원 수가 실제로 제공된 경우에만 활성화
     activation_condition: "params.get('day_crew_count', {}).get('value') is not None"
+    applicable_objectives: all
+    objective_operator_override:
+      minimize_duties: "<="
+      minimize_duties_with_penalties: "<="
+      maximize_efficiency: "<="
+      balance_workload: "=="
+    rhs_source:
+      minimize_duties: auto_or_param
+      balance_workload: param_required
     structured:
       lhs: {sum: "y[j] * (1 - is_night[j])", for_each: "j in J"}
       operator: "=="
@@ -1011,10 +1019,18 @@ constraints:
     category: hard
 
   fixed_night_crew_count:
-    description: 야간 근무 승무원 수 고정
+    description: 야간 근무 승무원 수
     expression_template: "sum(y[j] * is_night[j] for j in J) == night_crew_count"
-    # 야간 승무원 수가 실제로 제공된 경우에만 활성화
     activation_condition: "params.get('night_crew_count', {}).get('value') is not None"
+    applicable_objectives: all
+    objective_operator_override:
+      minimize_duties: "<="
+      minimize_duties_with_penalties: "<="
+      maximize_efficiency: "<="
+      balance_workload: "=="
+    rhs_source:
+      minimize_duties: auto_or_param
+      balance_workload: param_required
     structured:
       lhs: {sum: "y[j] * is_night[j]", for_each: "j in J"}
       operator: "=="
@@ -1048,10 +1064,18 @@ constraints:
     category: hard
 
   fixed_total_duties:
-    description: 총 사업(duty) 수 고정
+    description: 총 사업(duty) 수
     expression_template: "sum(y[j] for j in J) == total_duties"
-    # 총 사업 수가 실제로 제공된 경우에만 활성화
     activation_condition: "params.get('total_duties', {}).get('value') is not None"
+    applicable_objectives: all
+    objective_operator_override:
+      minimize_duties: "<="
+      minimize_duties_with_penalties: "<="
+      maximize_efficiency: "<="
+      balance_workload: "=="
+    rhs_source:
+      minimize_duties: auto_or_param
+      balance_workload: param_required
     structured:
       lhs: {sum: "y[j]", for_each: "j in J"}
       operator: "=="
@@ -1085,6 +1109,7 @@ objectives:
     description: 총 승무원(근무) 수 최소화
     description_ko: 승무원 수 최소화
     keywords: [최소화, 최소, 줄이, 줄여, 적게, 인원, 인력, minimize, minimum, fewer, reduce]
+    crew_count_mode: upper_bound  # crew count → 상한(<=)
     required_constraints:
     - trip_coverage
     - crew_activation_linking
@@ -1136,9 +1161,10 @@ objectives:
   balance_workload:
     type: minimize
     expression: sum(y[j] for j in J)
-    description: 승무원 수 최소화 (workload_balance hard 제약으로 균형 보장)
+    description: 승무원 수 고정 + 업무량 균형 최적화
     description_ko: 업무량 균형 최적화
     keywords: [균형, 공평, 배분, 균등, 골고루, 형평, 나눠, 나누, balance, fair, distribute, equitable, equal]
+    crew_count_mode: exact  # crew count → 등호(==)
     required_constraints:
     - trip_coverage
     - crew_activation_linking
@@ -1148,5 +1174,8 @@ objectives:
     - max_work_time
     promote_to_hard:
     - workload_balance
+    - fixed_day_crew_count
+    - fixed_night_crew_count
+    - fixed_total_duties
     recommended_soft:
     - avg_driving_time_target

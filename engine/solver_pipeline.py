@@ -496,13 +496,17 @@ class SolverPipeline:
 
         params = bound_data.get("parameters", {})
 
+        # objective_type 추출 (제약 연산자 결정에 사용)
+        from engine.compiler.objective_builder import extract_objective_type
+        objective_type = extract_objective_type(math_model)
+
         # ACG 설정 (feature flag)
         enable_acg = os.environ.get("ENABLE_ADAPTIVE_CG", "true").lower() == "true"
         max_attempts = int(os.environ.get("ACG_MAX_ATTEMPTS", "3")) if enable_acg else 1
 
-        # params 전달 확인 로그 (50 duties 버그 추적용)
         logger.info(
-            f"SP params: total_duties={params.get('total_duties')}, "
+            f"SP: objective={objective_type}, "
+            f"total_duties={params.get('total_duties')}, "
             f"day_crew_count={params.get('day_crew_count')}, "
             f"night_crew_count={params.get('night_crew_count')}"
         )
@@ -575,7 +579,7 @@ class SolverPipeline:
                 all_columns = gen._remove_dominated(all_columns)
 
             # SP Problem 구축
-            sp_problem = build_sp_problem(all_columns, params, all_task_ids)
+            sp_problem = build_sp_problem(all_columns, params, all_task_ids, objective_type)
 
             # Layer 1: Coverage capacity 진단
             cov_diag = sp_problem.diagnose_coverage()
@@ -659,7 +663,7 @@ class SolverPipeline:
 
                 # 완화된 params로 SP problem 재구축 + 재진단 + 재컴파일
                 relaxed_problem = build_sp_problem(
-                    all_columns, relaxed_params, all_task_ids
+                    all_columns, relaxed_params, all_task_ids, objective_type
                 )
                 # 완화 후 재진단 (night column이 충분한지)
                 relaxed_diag = relaxed_problem.diagnose_coverage()

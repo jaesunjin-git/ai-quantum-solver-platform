@@ -343,6 +343,7 @@ def build_sp_problem(
     columns: List[FeasibleColumn],
     params: Optional[Dict[str, Any]] = None,
     all_task_ids: Optional[set] = None,
+    objective_type: str = "minimize_duties",
 ) -> SetPartitioningProblem:
     """
     Column 목록에서 SetPartitioningProblem 구축.
@@ -351,6 +352,7 @@ def build_sp_problem(
         columns: Generator 출력
         params: bound_data["parameters"] — 추가 제약용 (crew count 등)
         all_task_ids: 전체 task id set (없으면 columns에서 추출)
+        objective_type: 목적함수 유형 — 제약 연산자 결정에 사용
 
     Returns:
         SetPartitioningProblem
@@ -390,7 +392,7 @@ def build_sp_problem(
     degree_1 = [tid for tid, cids in task_to_columns.items() if len(cids) == 1]
 
     # ── 추가 제약 생성 (params 기반) ──
-    extra = _build_extra_constraints(columns, params)
+    extra = _build_extra_constraints(columns, params, objective_type)
 
     # ── 제약 검증 → infeasibility_reasons 수집 ──
     infeasibility_reasons = _validate_constraints(extra, columns, params)
@@ -429,25 +431,104 @@ def build_sp_problem(
     return problem
 
 
+def _estimate_duty_upper_bound(columns: List[FeasibleColumn], params: Dict) -> int:
+    """데이터 기반 duty 수 상한 자동 추정 (사용자 값 없을 때).
+    범용: trip duration과 max_active_time만 사용."""
+    import math
+
+    total_driving = sum(
+        max((c.active_minutes for c in columns if len(c.trips) == 1), default=0)
+        for _ in [1]
+    )
+    # 전체 unique task의 총 driving time
+    task_driving: Dict[int, int] = {}
+    for c in columns:
+        for i, tid in enumerate(c.trips):
+            if tid not in task_driving:
+                task_driving[tid] = 0
+    # 간접 추정: column pool의 평균 active * 평균 task 수 → 전체 driving 추정
+    if columns:
+        avg_active = sum(c.active_minutes for c in columns) / len(columns)
+        avg_tasks = sum(len(c.trips) for c in columns) / len(columns)
+        task_count = len(task_driving) if task_driving else len(set(
+            tid for c in columns for tid in c.trips
+        ))
+        estimated_total_driving = task_count * (avg_active / max(avg_tasks, 1))
+    else:
+        estimated_total_driving = 0
+        task_count = 0
+
+    max_active = int(params.get("max_driving_minutes", params.get("max_active_time", 360)))
+
+    # 이론적 하한
+    lower_bound = math.ceil(estimated_total_driving / max(max_active, 1))
+
+    # 상한: 하한의 1.4배 (YAML 외부화 가능)
+    upper_bound = max(math.ceil(lower_bound * 1.4), lower_bound + 5)
+
+    logger.info(
+        f"Auto-estimated duty bounds: lower={lower_bound}, upper={upper_bound} "
+        f"(tasks={task_count}, est_driving={estimated_total_driving:.0f}, "
+        f"max_active={max_active})"
+    )
+    return upper_bound
+
+
 def _build_extra_constraints(
     columns: List[FeasibleColumn],
     params: Dict[str, Any],
+    objective_type: str = "minimize_duties",
 ) -> List[SPConstraint]:
-    """params에서 추가 제약 생성 (crew count 등). 생성만 담당."""
+    """params + objective_type에서 추가 제약 생성.
+
+    objective별 연산자 분기:
+      balance_workload: == (등호 — 정확한 crew count 강제)
+      minimize_duties:  <= (상한 — solver가 더 적은 duty 탐색 가능)
+      기타:             <= (상한)
+    """
     constraints = []
 
-    # 총 column 수 고정
+    # objective별 연산자 결정
+    if objective_type == "balance_workload":
+        total_op, day_op, night_op = "==", "==", "=="
+    else:
+        total_op, day_op, night_op = "<=", "<=", "<="
+
+    logger.info(
+        f"SP extra constraints: objective={objective_type}, "
+        f"operators: total={total_op}, day={day_op}, night={night_op}"
+    )
+
+    # 총 column 수
     total = params.get("total_duties")
     if total is not None:
         constraints.append(SPConstraint(
             name="total_columns",
             column_ids=[c.id for c in columns],
-            operator="==",
+            operator=total_op,
             rhs=int(total),
-            label=f"총 column 수 = {int(total)}",
+            label=f"총 column 수 {total_op} {int(total)}",
+        ))
+    elif objective_type != "balance_workload" and (
+        params.get("day_crew_count") is not None
+        or params.get("night_crew_count") is not None
+    ):
+        # 사용자가 day/night count는 제공했지만 total은 안 준 경우 → 합산
+        day_val = params.get("day_crew_count")
+        night_val = params.get("night_crew_count")
+        if day_val is not None and night_val is not None:
+            auto_total = int(day_val) + int(night_val)
+        else:
+            auto_total = _estimate_duty_upper_bound(columns, params)
+        constraints.append(SPConstraint(
+            name="total_columns",
+            column_ids=[c.id for c in columns],
+            operator="<=",
+            rhs=auto_total,
+            label=f"총 column 수 <= {auto_total} (auto)",
         ))
 
-    # column_type별 수 고정 (day/night)
+    # day column 수 (ColumnType.DAY_GROUP: day + default)
     day_count = params.get("day_crew_count")
     if day_count is not None:
         day_ids = [c.id for c in columns
@@ -455,11 +536,12 @@ def _build_extra_constraints(
         constraints.append(SPConstraint(
             name="day_columns",
             column_ids=day_ids,
-            operator="==",
+            operator=day_op,
             rhs=int(day_count),
-            label=f"day columns = {int(day_count)}",
+            label=f"day columns {day_op} {int(day_count)}",
         ))
 
+    # night column 수 (ColumnType.NIGHT_GROUP: night + overnight)
     night_count = params.get("night_crew_count")
     if night_count is not None:
         night_ids = [c.id for c in columns
@@ -467,9 +549,9 @@ def _build_extra_constraints(
         constraints.append(SPConstraint(
             name="night_columns",
             column_ids=night_ids,
-            operator="==",
+            operator=night_op,
             rhs=int(night_count),
-            label=f"night columns = {int(night_count)}",
+            label=f"night columns {night_op} {int(night_count)}",
         ))
 
     return constraints
