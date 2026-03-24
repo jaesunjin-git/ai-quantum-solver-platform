@@ -131,7 +131,8 @@ class BaseColumnConfig:
     min_column_depth: int = 0       # 최소 task 수 (0=제한 없음, hint에서 설정)
     seed_trips: List = None         # bottleneck trip seed (ACG diversity용)
     pair_frequency: Dict = None     # trip-pair 빈도 (diversity penalty용)
-    diversity_weight: float = 0.5   # pair-frequency penalty 가중치
+    pair_frequency_max: int = 1     # 정규화용 최대 빈도
+    diversity_weight: float = 30.0  # 정규화 후 penalty 가중치 (trip bonus 100의 30%)
 
     @property
     def effective_beam_width(self) -> int:
@@ -588,17 +589,22 @@ class BaseColumnGenerator:
             depth_bonus = 50
 
         # Pair-frequency penalty: 기존 pool에서 흔한 trip 조합에 감점
-        # → 기존과 다른 trip 조합을 가진 column 우선 탐색
+        # 정규화: raw count를 max frequency로 나눠 0~1 범위로 만든 후 weight 적용
+        # → trip 추가 보너스(100)와 균형 유지, column 길이를 줄이지 않음
         pair_penalty = 0
         if cfg.pair_frequency:
             pf = cfg.pair_frequency
+            pf_max = max(cfg.pair_frequency_max, 1)
             w = cfg.diversity_weight
-            # 새로 추가되는 trip과 기존 trip들 간의 pair 빈도 합산
+            raw_penalty = 0
             for existing_tid in state.trips:
                 pair_key = (min(existing_tid, next_task.id),
                             max(existing_tid, next_task.id))
-                pair_penalty += pf.get(pair_key, 0)
-            pair_penalty = w * pair_penalty
+                raw_penalty += pf.get(pair_key, 0)
+            # 정규화: trip 수로 나눠 평균 penalty, max로 나눠 0~1
+            if state.trips:
+                normalized = (raw_penalty / len(state.trips)) / pf_max
+                pair_penalty = w * normalized  # 0 ~ diversity_weight
 
         return _BeamState(
             trips=new_tasks,

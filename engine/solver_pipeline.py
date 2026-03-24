@@ -553,9 +553,11 @@ class SolverPipeline:
                         for j in range(i + 1, len(trips)):
                             pf[(trips[i], trips[j])] += 1
                 gen.config.pair_frequency = dict(pf)
+                gen.config.pair_frequency_max = max(pf.values()) if pf else 1
                 pf_elapsed = time.time() - pf_start
                 logger.info(
-                    f"ACG pair-frequency: {len(pf)} unique pairs "
+                    f"ACG pair-frequency: {len(pf)} unique pairs, "
+                    f"max_freq={gen.config.pair_frequency_max}, "
                     f"from {len(all_columns)} columns ({pf_elapsed:.2f}s)"
                 )
 
@@ -594,15 +596,17 @@ class SolverPipeline:
 
             # Pre-solve: 재생성이 의미있는 경우만 계속
             if sp_problem.should_regenerate(params) and attempt < max_attempts:
-                # Bottleneck trip 식별: coverage density가 낮은 trip
+                # Bottleneck trip 식별: coverage가 하위 10%인 trip
                 bottleneck = []
                 if sp_problem.task_to_columns:
-                    for tid in sp_problem.task_ids:
-                        col_count = len(sp_problem.task_to_columns.get(tid, []))
-                        if col_count <= 3:
-                            bottleneck.append(tid)
-                    # 너무 많으면 상위 50개만
-                    bottleneck = bottleneck[:50]
+                    trip_coverage = [
+                        (tid, len(sp_problem.task_to_columns.get(tid, [])))
+                        for tid in sp_problem.task_ids
+                    ]
+                    trip_coverage.sort(key=lambda x: x[1])
+                    # 하위 10% (최소 10개, 최대 50개)
+                    cutoff_idx = max(10, len(trip_coverage) // 10)
+                    bottleneck = [tid for tid, _ in trip_coverage[:min(cutoff_idx, 50)]]
 
                 # Layer 2: 진단 → 힌트 생성 (다음 attempt에서 사용)
                 hint = GenerationHint.from_diagnostics(
