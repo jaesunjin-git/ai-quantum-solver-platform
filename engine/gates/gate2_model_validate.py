@@ -401,6 +401,29 @@ def run(math_model: Dict,
     parameters = math_model.get("parameters", [])
     metadata = math_model.get("metadata", {})
 
+    # ── project_id 추출 (set 검증 + struct fix 양쪽에서 사용) ──
+    _struct_project_id = None
+    if dataframes:
+        import re as _re_early
+        for _df_key in dataframes:
+            _m = _re_early.search(r'uploads[/\\](\d+)', str(_df_key))
+            if _m:
+                _struct_project_id = _m.group(1)
+                break
+    if _struct_project_id is None:
+        import os as _os_early
+        for _s in math_model.get("sets", []):
+            _sf = _s.get("source_file", "")
+            if "normalized/" in _sf:
+                try:
+                    for _d in sorted(_os_early.listdir("uploads"), key=lambda x: -int(x) if x.isdigit() else 0):
+                        if _d.isdigit() and _os_early.path.exists(f"uploads/{_d}/normalized"):
+                            _struct_project_id = _d
+                            break
+                except FileNotFoundError:
+                    pass
+                break
+
     # ── 1. Set 검증 ──
     # struct fix에서 자동 주입 가능한 set은 deferred check
     # 판단 기준: normalized 디렉토리에 해당 set의 데이터 파일이 존재

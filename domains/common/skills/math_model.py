@@ -918,7 +918,7 @@ async def skill_math_model(model, session: CrewSession, project_id: str, message
 
     except Exception as e:
         logger.error(f"MathModelSkill failed: {e}", exc_info=True)
-        return error_response("수학 모델 생성 중 오류가 발생했습니다.", "수학 모델 생성해줘")
+        return error_response("수학 모델 생성 중 오류가 발생했습니다.")
 
 
 async def skill_show_math_model(session: CrewSession, project_id: str, message: str, params: Dict
