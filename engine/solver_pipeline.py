@@ -467,7 +467,10 @@ class SolverPipeline:
         self, math_model, bound_data, project_id, solver_id, **kwargs
     ):
         """
-        Set Partitioning 컴파일: DutyGenerator → SPCompiler.
+        Set Partitioning 컴파일 (Adaptive Column Generation 지원).
+
+        ENABLE_ADAPTIVE_CG=true일 때: 최대 N회 반복하며 column pool 확장.
+        ENABLE_ADAPTIVE_CG=false일 때: 기존 단일 실행.
 
         Returns:
             (CompileResult, compile_time_sec)
@@ -485,31 +488,103 @@ class SolverPipeline:
 
         from engine.column_generator import load_tasks_from_csv, BaseColumnGenerator, BaseColumnConfig
         from engine.compiler.compiler_registry import get_sp_compiler
+        from engine.compiler.sp_problem import build_sp_problem
 
         tasks = load_tasks_from_csv(trips_path)
         logger.info(f"SP: loaded {len(tasks)} tasks from {trips_path}")
+        all_task_ids = {t.id for t in tasks}
 
-        # Generator: 주입된 factory 사용, 없으면 base fallback
         params = bound_data.get("parameters", {})
-        if self._generator_factory:
-            gen = self._generator_factory(tasks, params)
-        else:
-            config = BaseColumnConfig.from_params(params)
-            gen = BaseColumnGenerator(tasks, config)
-        duties = gen.generate()
-        logger.info(f"SP: {len(duties)} feasible duties generated")
 
-        # SP 컴파일 — compiler registry로 solver별 자동 선택
-        compiler = get_sp_compiler(solver_id)
-        compile_result = compiler.compile(math_model, bound_data, duties=duties)
+        # ACG 설정 (feature flag)
+        enable_acg = os.environ.get("ENABLE_ADAPTIVE_CG", "true").lower() == "true"
+        max_attempts = int(os.environ.get("ACG_MAX_ATTEMPTS", "3")) if enable_acg else 1
+
+        # params 전달 확인 로그 (50 duties 버그 추적용)
+        logger.info(
+            f"SP params: total_duties={params.get('total_duties')}, "
+            f"day_crew_count={params.get('day_crew_count')}, "
+            f"night_crew_count={params.get('night_crew_count')}"
+        )
+
+        all_columns = []
+        best_compile = None
+
+        for attempt in range(1, max_attempts + 1):
+            acg_scale = 1.0 + (attempt - 1) * 0.5  # 1.0 → 1.5 → 2.0
+
+            # Generator (에스컬레이션된 config)
+            if self._generator_factory:
+                gen = self._generator_factory(tasks, params)
+            else:
+                config = BaseColumnConfig.from_params(params)
+                gen = BaseColumnGenerator(tasks, config)
+            gen.config.acg_scale = acg_scale
+
+            new_columns = gen.generate()
+
+            # Column pool 누적 (이전 attempt 결과 보존)
+            if attempt == 1:
+                all_columns = new_columns
+            else:
+                # 기존 pool에 새 column 추가 (id 충돌 방지)
+                max_id = max((c.id for c in all_columns), default=0)
+                for c in new_columns:
+                    max_id += 1
+                    c.id = max_id
+                    all_columns.append(c)
+
+                # dominance 제거로 중복/열등 column 정리
+                all_columns = gen._remove_dominated(all_columns)
+
+            # SP Problem 구축
+            sp_problem = build_sp_problem(all_columns, params, all_task_ids)
+
+            # column_type 분포 로그
+            type_dist = sp_problem.diagnostics.get("column_type_distribution", {})
+            logger.info(
+                f"ACG attempt {attempt}/{max_attempts}: "
+                f"scale={acg_scale}, generated={len(new_columns)}, "
+                f"total_pool={len(all_columns)}, "
+                f"types={type_dist}, "
+                f"uncovered={len(sp_problem.uncovered_tasks)}, "
+                f"degree_1={len(sp_problem.degree_1_tasks)}"
+            )
+
+            # Pre-solve: 재생성이 의미있는 경우만 계속
+            if sp_problem.should_regenerate(params) and attempt < max_attempts:
+                logger.warning(
+                    f"ACG attempt {attempt}: pool 부족, 재생성 필요 "
+                    f"(uncovered={len(sp_problem.uncovered_tasks)}, "
+                    f"types={type_dist})"
+                )
+                continue
+
+            # SP 컴파일
+            compiler = get_sp_compiler(solver_id)
+            compile_result = compiler.compile(
+                math_model, bound_data, sp_problem=sp_problem
+            )
+
+            if compile_result.success:
+                best_compile = compile_result
+                break
+            else:
+                # 컴파일 실패도 저장 (마지막 attempt 결과 반환용)
+                best_compile = compile_result
+                if attempt < max_attempts:
+                    logger.warning(f"ACG attempt {attempt}: compile failed, retrying")
+                    continue
+                break
+
         compile_time = time.time() - compile_start
 
-        # column_map을 pipeline에서 참조할 수 있도록 저장
-        if compile_result.success:
-            self._sp_duties = duties
-            self._sp_duty_map = {d.id: d for d in duties}
+        # column_map 저장
+        if best_compile and best_compile.success:
+            self._sp_duties = all_columns
+            self._sp_duty_map = {d.id: d for d in all_columns}
 
-        return compile_result, round(compile_time, 3)
+        return best_compile or compile_result, round(compile_time, 3)
 
     def _build_summary(
         self,

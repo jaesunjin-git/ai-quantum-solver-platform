@@ -91,6 +91,40 @@ class SetPartitioningProblem:
         """사전 감지된 INFEASIBLE 원인이 있는지"""
         return len(self.infeasibility_reasons) > 0
 
+    def should_regenerate(self, params: Optional[Dict] = None) -> bool:
+        """ACG: column pool 재생성이 필요한지 판단.
+        "재생성으로 풀릴 문제만" 감지 — constraint 충돌은 재생성 무의미."""
+        d = self.diagnostics or {}
+        params = params or {}
+
+        # 절대 재생성: uncovered task 존재
+        if self.uncovered_tasks:
+            return True
+
+        # 야간 column 부족
+        night_needed = params.get("night_crew_count")
+        if night_needed is not None:
+            night_count = d.get("column_type_distribution", {}).get("night", 0)
+            overnight_count = d.get("column_type_distribution", {}).get("overnight", 0)
+            if (night_count + overnight_count) < int(night_needed):
+                return True
+
+        # 주간 column 부족
+        day_needed = params.get("day_crew_count")
+        if day_needed is not None:
+            day_count = d.get("column_type_distribution", {}).get("day", 0)
+            default_count = d.get("column_type_distribution", {}).get("default", 0)
+            if (day_count + default_count) < int(day_needed):
+                return True
+
+        # singleton 비율 과다 (15% 이상이면 diversity 부족)
+        if self.degree_1_tasks and self.task_ids:
+            singleton_ratio = len(self.degree_1_tasks) / len(self.task_ids)
+            if singleton_ratio > 0.15:
+                return True
+
+        return False
+
     def validate(self) -> Tuple[bool, List[str], List[str]]:
         """
         문제 유효성 검증. (valid, errors, warnings) 반환.

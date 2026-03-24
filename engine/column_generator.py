@@ -126,6 +126,17 @@ class BaseColumnConfig:
     beam_width: int = 50
     max_columns_target: int = 100000
 
+    # Adaptive CG 에스컬레이션 배율 (solver_pipeline에서 설정)
+    acg_scale: float = 1.0
+
+    @property
+    def effective_beam_width(self) -> int:
+        return int(self.beam_width * self.acg_scale)
+
+    @property
+    def effective_max_columns(self) -> int:
+        return int(self.max_columns_target * self.acg_scale)
+
     @classmethod
     def from_params(cls, params: Dict) -> "BaseColumnConfig":
         """파라미터 dict에서 설정 로딩 (도메인 공통 키만)"""
@@ -327,8 +338,9 @@ class BaseColumnGenerator:
         # ═════════════════════════════════════════════════════
         # Diversity-aware cap
         # ═════════════════════════════════════════════════════
-        if len(all_columns) > cfg.max_columns_target:
-            all_columns = self._diversity_cap(all_columns, cfg.max_columns_target)
+        _max_cap = cfg.effective_max_columns
+        if len(all_columns) > _max_cap:
+            all_columns = self._diversity_cap(all_columns, _max_cap)
 
         elapsed = time.time() - t0
 
@@ -479,7 +491,7 @@ class BaseColumnGenerator:
                         next_beam.append(new_state)
 
                 next_beam.sort(key=lambda s: s.score, reverse=True)
-                beam = next_beam[:cfg.beam_width]
+                beam = next_beam[:cfg.effective_beam_width]
 
         return columns
 
