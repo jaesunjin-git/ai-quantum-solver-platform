@@ -125,6 +125,20 @@ class BaseColumnConfig:
     # Beam Search
     beam_width: int = 50
     max_columns_target: int = 100000
+    time_group_minutes: int = 120   # 시간대 그룹 너비
+    span_estimate_multiplier: float = 1.5  # 조기 pruning 배율
+
+    # Beam Score 가중치
+    task_count_score_weight: int = 100   # trip 수 보너스 (score 단위)
+    depth_bonus_score: int = 50          # min_column_depth 달성 보너스
+
+    # Cost 가중치
+    idle_cost_weight: float = 0.02       # 대기시간 비용 계수
+    overhead_cost_weight: float = 0.01   # (span - driving) 비용 계수
+    short_column_cost_weight: float = 0.05  # 짧은 column 페널티 계수
+    depth_penalty_cost_weight: float = 0.3  # min_depth 미달 페널티 계수
+    greedy_cost_multiplier: float = 1.5  # greedy fallback column 비용 배율
+    fallback_cost: float = 10.0          # single-task fallback column 비용
 
     # Adaptive CG
     acg_scale: float = 1.0          # 에스컬레이션 배율
@@ -132,7 +146,7 @@ class BaseColumnConfig:
     seed_trips: List = None         # bottleneck trip seed (ACG diversity용)
     pair_frequency: Dict = None     # trip-pair 빈도 (diversity penalty용)
     pair_frequency_max: int = 1     # 정규화용 최대 빈도
-    diversity_weight: float = 100.0 # 정규화 후 penalty 가중치 (score ~650의 15%)
+    diversity_weight: float = 100.0 # 정규화 후 penalty 가중치
 
     @property
     def effective_beam_width(self) -> int:
@@ -264,7 +278,7 @@ class BaseColumnGenerator:
         # Phase 1: Beam search (시간대별 그룹)
         # ═════════════════════════════════════════════════════
         eligible = self._eligible_tasks()
-        time_groups = self._split_by_time_group(eligible)
+        time_groups = self._split_by_time_group(eligible, cfg.time_group_minutes)
         logger.info(f"Phase 1: {len(time_groups)} time groups "
                      f"({len(eligible)}/{len(self.tasks)} eligible tasks)")
 
@@ -420,16 +434,15 @@ class BaseColumnGenerator:
 
     # ── Diversity-aware cap ───────────────────────────────────
 
-    @staticmethod
-    def _diversity_cap(columns: List[FeasibleColumn], target: int) -> List[FeasibleColumn]:
+    def _diversity_cap(self, columns: List[FeasibleColumn], target: int) -> List[FeasibleColumn]:
         """시간대 × task 수 × column_type bucket별 균등 추출"""
         if len(columns) <= target:
             return columns
 
         buckets: Dict[tuple, List[FeasibleColumn]] = {}
         for c in columns:
-            hour = c.first_trip_dep // 120
-            tcount = min(len(c.trips), 10)
+            hour = c.first_trip_dep // self.config.time_group_minutes
+            tcount = min(len(c.trips), self.config.max_tasks)
             key = (hour, tcount, c.column_type)
             buckets.setdefault(key, []).append(c)
 
@@ -577,7 +590,7 @@ class BaseColumnGenerator:
         if span_estimate < 0:
             span_estimate += 1440
 
-        if span_estimate > cfg.max_span_time * 1.5:
+        if span_estimate > cfg.max_span_time * cfg.span_estimate_multiplier:
             return None
 
         # beam score = objective proxy (#1: ObjectiveBuilder와 동일 방향)
@@ -586,7 +599,7 @@ class BaseColumnGenerator:
         # ACG hint: 더 긴 column에 보너스
         depth_bonus = 0
         if cfg.min_column_depth > 0 and len(new_tasks) >= cfg.min_column_depth:
-            depth_bonus = 50
+            depth_bonus = cfg.depth_bonus_score
 
         # Pair-frequency penalty: 기존 pool에서 흔한 trip 조합에 감점
         # 정규화: raw count를 max frequency로 나눠 0~1 범위로 만든 후 weight 적용
@@ -612,7 +625,7 @@ class BaseColumnGenerator:
             last_end_location=next_task.end_location,
             total_driving=new_driving,
             first_dep_time=state.first_dep_time,
-            score=100 * len(new_tasks) - idle_est + depth_bonus - pair_penalty,
+            score=cfg.task_count_score_weight * len(new_tasks) - idle_est + depth_bonus - pair_penalty,
         )
 
     # ── Column 생성 + feasibility 검증 (override 가능) ────────
@@ -689,16 +702,16 @@ class BaseColumnGenerator:
         full_prep = self._get_full_prep()
         span_for_cost = span + (full_prep - prep)
         tc = len(state.trips)
-        short_penalty = max(0, cfg.max_tasks - tc) * 0.05  # 짧을수록 비용 증가
+        short_penalty = max(0, cfg.max_tasks - tc) * cfg.short_column_cost_weight
 
         # ACG hint: min_column_depth 미만이면 추가 페널티 (reject 대신 — coverage 보호)
         depth_penalty = 0.0
         if cfg.min_column_depth > 0 and tc < cfg.min_column_depth:
-            depth_penalty = (cfg.min_column_depth - tc) * 0.3
+            depth_penalty = (cfg.min_column_depth - tc) * cfg.depth_penalty_cost_weight
 
         cost = (1.0
-                + wait * 0.02
-                + (span_for_cost - driving) * 0.01
+                + wait * cfg.idle_cost_weight
+                + (span_for_cost - driving) * cfg.overhead_cost_weight
                 + short_penalty
                 + depth_penalty)
 
@@ -812,7 +825,7 @@ class BaseColumnGenerator:
                     col = self._try_build_column(state, col_id)
                     if col:
                         col.source = "greedy"
-                        col.cost *= 1.5
+                        col.cost *= cfg.greedy_cost_multiplier
                         new_columns.append(col)
                         col_id += 1
                         break
@@ -936,7 +949,7 @@ class BaseColumnGenerator:
             idle_minutes=max(0, span - task.duration - prep - cleanup - cfg.min_pause_time),
             pause_minutes=cfg.min_pause_time,
             inactive_minutes=0,
-            cost=10.0,
+            cost=cfg.fallback_cost,
             source="fallback",
         )
 

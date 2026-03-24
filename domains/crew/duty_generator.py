@@ -39,7 +39,7 @@ class CrewDutyConfig(BaseColumnConfig):
     day_start_earliest: int = 380        # 06:20 — 주간 최소 출고 시각
 
     # 숙박조
-    overnight_morning_end: int = 480     # 08:00 — 숙박조 새벽 운행 최대 시각
+    overnight_morning_end: Optional[int] = None  # params에서 로딩, 미설정 시 미적용
     min_sleep_minutes: int = 240         # 최소 수면시간
     max_sleep_gap_extra: int = 360       # min_sleep + 이 값까지 수면 gap 허용
 
@@ -56,14 +56,21 @@ class CrewDutyConfig(BaseColumnConfig):
     # 야간 최대 근무시간 (수면 제외)
     max_span_time_night: int = 660
 
-    # (overnight span 체크는 base의 effective_work = span - inactive로 처리
-    #  별도 overnight_max_effective_span 불필요)
-
     # 추가 파라미터 (params에서 로딩)
     max_total_stay_minutes: Optional[int] = None  # 회사 체류시간 상한
     min_night_rest_total: Optional[int] = None    # 야간 총 휴식 (수면+입출고 포함)
     recognized_wait_minutes: Optional[int] = None # 인정 대기시간
     post_trip_training_minutes: Optional[int] = None  # 강차 후 교육시간
+
+    # 야간 연결 마진
+    evening_margin_minutes: int = 60     # night_threshold 전 마진
+    rest_gap_margin_minutes: int = 30    # 수면 gap 판단 마진
+
+    # 야간/overnight cost 가중치
+    overnight_active_multiplier: float = 1.5  # overnight 최대 활동시간 배율
+    night_idle_cost_weight: float = 0.015     # 야간 유휴 비용 계수
+    night_overhead_cost_weight: float = 0.005 # 야간 오버헤드 비용 계수
+    night_short_penalty_ratio: float = 0.5   # 야간 short penalty 비율 (base의 50%)
 
     # depot 인접역 접미사 (예: "기지" → "대저기지" ↔ "대저")
     depot_suffixes: List[str] = None  # type: ignore
@@ -192,7 +199,7 @@ class CrewDutyGenerator(BaseColumnGenerator):
         has_early = any(self._task_map[tid].dep_time < cfg.day_start_earliest
                         for tid in state.trips)
         if has_evening and has_early:
-            return int(cfg.max_active_time * 1.5)
+            return int(cfg.max_active_time * cfg.overnight_active_multiplier)
         return cfg.max_active_time
 
     def _get_morning_cutoff(self) -> int:
@@ -327,13 +334,17 @@ class CrewDutyGenerator(BaseColumnGenerator):
 
         setup = cfg.setup_time_night
         teardown = cfg.teardown_time_night
-        sleep = cfg.min_sleep_minutes
 
         start = column.first_trip_dep - setup
         end = column.last_trip_arr + teardown
 
         eff_end = end + 1440 if end < start else end
         span = eff_end - start
+
+        # 수면시간: _classify_gaps()에서 계산된 실제 inactive gap 사용
+        # (min_sleep_minutes는 최솟값 fallback)
+        _, actual_sleep = self._classify_gaps(column.trips)
+        sleep = max(actual_sleep, cfg.min_sleep_minutes) if actual_sleep > 0 else 0
         work = span - sleep
 
         column.start_time = start
@@ -346,13 +357,13 @@ class CrewDutyGenerator(BaseColumnGenerator):
         idle = span - column.active_minutes - setup - teardown - pause - sleep
         column.idle_minutes = max(0, idle)
 
-        # cost: 야간 가중치 (idle/overhead를 주간의 75%로)
+        # cost: 야간 가중치
         tc = len(column.trips)
-        short_penalty = max(0, cfg.max_tasks - tc) * 0.05
+        short_penalty = max(0, cfg.max_tasks - tc) * cfg.short_column_cost_weight
         column.cost = (1.0
-                       + column.idle_minutes * 0.015
-                       + (span - column.active_minutes) * 0.005
-                       + short_penalty * 0.5)
+                       + column.idle_minutes * cfg.night_idle_cost_weight
+                       + (span - column.active_minutes) * cfg.night_overhead_cost_weight
+                       + short_penalty * cfg.night_short_penalty_ratio)
 
     # ── Phase 2: Overnight duty 생성 ──────────────────────────
 
@@ -440,7 +451,7 @@ class CrewDutyGenerator(BaseColumnGenerator):
 
                 total_active = sum(t.duration for t in ev_chain) + \
                                sum(t.duration for t in mo_chain)
-                overnight_active_limit = int(cfg.max_active_time * 1.5)
+                overnight_active_limit = int(cfg.max_active_time * cfg.overnight_active_multiplier)
                 if total_active > overnight_active_limit:
                     reject_reasons["max_active_exceeded"] += 1
                     continue
@@ -532,8 +543,8 @@ class CrewDutyGenerator(BaseColumnGenerator):
 
             # 수면 gap 판정
             is_rest_gap = (
-                gap >= cfg.min_sleep_minutes + 30
-                and curr.arr_time >= cfg.night_threshold - 60
+                gap >= cfg.min_sleep_minutes + cfg.rest_gap_margin_minutes
+                and curr.arr_time >= cfg.night_threshold - cfg.evening_margin_minutes
                 and next_t.dep_time < morning_cutoff
             )
 
@@ -554,7 +565,7 @@ class CrewDutyGenerator(BaseColumnGenerator):
         task_set = set(state.trips)
         morning_cutoff = self._get_morning_cutoff()
 
-        if state.last_arr_time >= cfg.night_threshold - 60:
+        if state.last_arr_time >= cfg.night_threshold - cfg.evening_margin_minutes:
             # 중복 체크용 set (한 번만 생성)
             candidate_ids = {c.id for c in candidates}
             reachable = self._reachable_locations(state.last_end_location)
