@@ -576,6 +576,10 @@ class BaseColumnGenerator:
         """최대 활동시간. 도메인에서 override (예: overnight 1.5배)."""
         return self.config.max_active_time
 
+    def _get_morning_cutoff(self) -> int:
+        """자정 넘김 판단 기준 시각 (분). 도메인에서 override."""
+        return 480  # 기본값 08:00
+
     def _try_build_column(self, state: _BeamState, col_id: int) -> Optional[FeasibleColumn]:
         """상태에서 FeasibleColumn 생성. feasibility 실패 시 None."""
         cfg = self.config
@@ -771,7 +775,7 @@ class BaseColumnGenerator:
             next_t = self._task_map[task_ids[i + 1]]
 
             dep = next_t.dep_time
-            if dep < curr.arr_time and dep < 480:
+            if dep < curr.arr_time and dep < self._get_morning_cutoff():
                 dep += 1440
 
             gap = dep - curr.arr_time
@@ -782,12 +786,37 @@ class BaseColumnGenerator:
 
     # ── Dominance 제거 (Pareto) ───────────────────────────────
 
+    @staticmethod
+    def _dominates(a: FeasibleColumn, b: FeasibleColumn) -> bool:
+        """a가 b를 Pareto 지배하는지 (4차원: elapsed, idle, active, cost)"""
+        return (a.elapsed_minutes <= b.elapsed_minutes and
+                a.idle_minutes <= b.idle_minutes and
+                a.active_minutes >= b.active_minutes and
+                a.cost <= b.cost and
+                (a.elapsed_minutes < b.elapsed_minutes or
+                 a.idle_minutes < b.idle_minutes or
+                 a.active_minutes > b.active_minutes or
+                 a.cost < b.cost))
+
     def _remove_dominated(self, columns: List[FeasibleColumn]) -> List[FeasibleColumn]:
-        """Pareto dominance: 같은 task set에서 모든 metrics가 나쁜 column 제거"""
+        """Pareto dominance: 같은 task set에서 모든 metrics가 나쁜 column 제거.
+        cost 순 정렬 + frontier sweep으로 O(n·k) (k=frontier 크기, 보통 작음)."""
+        t0 = time.time()
         by_tasks: Dict[Tuple[int, ...], List[FeasibleColumn]] = {}
         for c in columns:
             key = tuple(sorted(c.trips))
             by_tasks.setdefault(key, []).append(c)
+
+        # 프로파일링
+        group_sizes = [len(g) for g in by_tasks.values()]
+        group_sizes.sort()
+        p95_idx = min(len(group_sizes) - 1, int(len(group_sizes) * 0.95))
+        logger.info(
+            f"dominance: cols={len(columns)} groups={len(by_tasks)} "
+            f"max_group={max(group_sizes)} "
+            f"avg_group={sum(group_sizes) / max(len(group_sizes), 1):.2f} "
+            f"p95_group={group_sizes[p95_idx] if group_sizes else 0}"
+        )
 
         result = []
         for key, group in by_tasks.items():
@@ -795,26 +824,18 @@ class BaseColumnGenerator:
                 result.append(group[0])
                 continue
 
-            non_dominated = []
-            for c in group:
-                dominated = False
-                for other in group:
-                    if other is c:
-                        continue
-                    if (other.elapsed_minutes <= c.elapsed_minutes and
-                        other.idle_minutes <= c.idle_minutes and
-                        other.active_minutes >= c.active_minutes and
-                        other.cost <= c.cost and
-                        (other.elapsed_minutes < c.elapsed_minutes or
-                         other.idle_minutes < c.idle_minutes or
-                         other.active_minutes > c.active_minutes or
-                         other.cost < c.cost)):
-                        dominated = True
-                        break
-                if not dominated:
-                    non_dominated.append(c)
+            # cost 순 정렬 → cost 최소 column이 dominated될 확률 가장 낮음
+            group.sort(key=lambda c: (c.cost, c.id))
+            frontier = [group[0]]  # cost 최소는 항상 non-dominated
 
-            result.extend(non_dominated)
+            for c in group[1:]:
+                if not any(self._dominates(f, c) for f in frontier):
+                    frontier.append(c)
+
+            result.extend(frontier)
+
+        elapsed = time.time() - t0
+        logger.info(f"dominance: {len(columns)} → {len(result)} columns ({elapsed:.3f}s)")
 
         return result
 
