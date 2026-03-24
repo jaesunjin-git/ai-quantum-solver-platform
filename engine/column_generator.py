@@ -368,11 +368,11 @@ class BaseColumnGenerator:
         uncovered = all_task_ids - covered
 
         # 2차 패스: single coverage task → multi-task column
-        single_tasks = {
-            tid for tid, cnt in
-            {t: sum(1 for c in all_columns if t in c.trips) for t in all_task_ids}.items()
-            if cnt <= 1
-        }
+        _task_cov = Counter()
+        for c in all_columns:
+            for tid in c.trips:
+                _task_cov[tid] += 1
+        single_tasks = {tid for tid, cnt in _task_cov.items() if cnt <= 1}
         if single_tasks:
             extra = self._build_columns_for_single_tasks(single_tasks, all_columns, col_id)
             col_id += len(extra)
@@ -845,6 +845,7 @@ class BaseColumnGenerator:
             # chain에서 target task를 포함하는 윈도우 생성
             if len(chain) >= 2:
                 target_idx = next(i for i, t in enumerate(chain) if t.id == tid)
+                _win_count = 0
                 for win_start in range(max(0, target_idx - cfg.max_tasks + 1),
                                        min(len(chain), target_idx + 1)):
                     win_end = min(win_start + cfg.max_tasks, len(chain))
@@ -865,8 +866,8 @@ class BaseColumnGenerator:
                         col.cost *= cfg.greedy_cost_multiplier
                         new_columns.append(col)
                         col_id += 1
-                        windows_found = getattr(self, '_windows_found', 0) + 1
-                        if windows_found >= cfg.single_task_max_windows:
+                        _win_count += 1
+                        if _win_count >= cfg.single_task_max_windows:
                             break
 
         logger.info(f"Single task 2nd pass: {len(new_columns)} new columns "
