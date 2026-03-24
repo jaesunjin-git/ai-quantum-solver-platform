@@ -545,6 +545,7 @@ class SolverPipeline:
             # Pair-frequency penalty: 기존 pool에서 trip-pair 빈도 계산
             if all_columns and attempt > 1:
                 from collections import Counter as _Counter
+                pf_start = time.time()
                 pf = _Counter()
                 for col in all_columns:
                     trips = sorted(col.trips)
@@ -552,8 +553,10 @@ class SolverPipeline:
                         for j in range(i + 1, len(trips)):
                             pf[(trips[i], trips[j])] += 1
                 gen.config.pair_frequency = dict(pf)
+                pf_elapsed = time.time() - pf_start
                 logger.info(
-                    f"ACG pair-frequency: {len(pf)} unique pairs from {len(all_columns)} columns"
+                    f"ACG pair-frequency: {len(pf)} unique pairs "
+                    f"from {len(all_columns)} columns ({pf_elapsed:.2f}s)"
                 )
 
             new_columns = gen.generate()
@@ -650,23 +653,31 @@ class SolverPipeline:
                         f"night={relaxed_params['night_crew_count']}"
                     )
 
-                # 완화된 params로 SP problem 재구축 + 재컴파일
+                # 완화된 params로 SP problem 재구축 + 재진단 + 재컴파일
                 relaxed_problem = build_sp_problem(
                     all_columns, relaxed_params, all_task_ids
                 )
-                compile_result = compiler.compile(
-                    math_model,
-                    {**bound_data, "parameters": relaxed_params},
-                    sp_problem=relaxed_problem,
-                )
-                if compile_result.success:
-                    compile_result.warnings = compile_result.warnings or []
-                    compile_result.warnings.append(
-                        f"partition_count_relaxed: exact {cov_diag.max_columns} infeasible, "
-                        f"relaxed to {suggested_total}"
+                # 완화 후 재진단 (night column이 충분한지)
+                relaxed_diag = relaxed_problem.diagnose_coverage()
+                if not relaxed_diag.feasible:
+                    logger.warning(
+                        f"ACG: relaxation도 infeasible "
+                        f"(gap={relaxed_diag.capacity_gap}), 추가 완화 필요"
                     )
-                    best_compile = compile_result
-                    break
+                else:
+                    compile_result = compiler.compile(
+                        math_model,
+                        {**bound_data, "parameters": relaxed_params},
+                        sp_problem=relaxed_problem,
+                    )
+                    if compile_result.success:
+                        compile_result.warnings = compile_result.warnings or []
+                        compile_result.warnings.append(
+                            f"partition_count_relaxed: exact {cov_diag.max_columns} infeasible, "
+                            f"relaxed to {suggested_total}"
+                        )
+                        best_compile = compile_result
+                        break
 
             best_compile = compile_result
             if attempt < max_attempts:
