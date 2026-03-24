@@ -140,6 +140,13 @@ class BaseColumnConfig:
     greedy_cost_multiplier: float = 1.5  # greedy fallback column 비용 배율
     fallback_cost: float = 10.0          # single-task fallback column 비용
 
+    # Block Combine (block-gap-block 구조)
+    block_combine_enabled: bool = False   # YAML에서 활성화
+    block_combine_max_gap: int = 0        # 0=max_idle_time에서 자동 도출
+    block_combine_per_block: int = 5      # block당 최대 결합 수
+    block_combine_score_penalty: float = 0.7  # score의 wait penalty 계수
+    block_combine_top_k: int = 0          # 0=max_columns_target*0.3에서 자동 도출
+
     # Adaptive CG
     acg_scale: float = 1.0          # 에스컬레이션 배율
     min_column_depth: int = 0       # 최소 task 수 (0=제한 없음, hint에서 설정)
@@ -327,6 +334,15 @@ class BaseColumnGenerator:
         col_id += extra_count
         if extra_count > 0:
             logger.info(f"Phase 2 complete: {extra_count} extra columns")
+
+        # ═════════════════════════════════════════════════════
+        # Phase B: Block Combine (block-gap-block 구조)
+        # ═════════════════════════════════════════════════════
+        if cfg.block_combine_enabled:
+            combine_count = self._combine_blocks(all_columns, col_id)
+            col_id += combine_count
+            if combine_count > 0:
+                logger.info(f"Phase B complete: {combine_count} block-combined columns")
 
         # ═════════════════════════════════════════════════════
         # Phase 2.5: Seed-based diversification (ACG용)
@@ -863,6 +879,128 @@ class BaseColumnGenerator:
         logger.info(f"Single task 2nd pass: {len(new_columns)} new columns "
                      f"from {len(single_tasks)} single tasks")
         return new_columns
+
+    # ── Block Combine (block-gap-block) ─────────────────────
+
+    def _can_combine(self, block_a: FeasibleColumn, block_b: FeasibleColumn,
+                     gap: int) -> bool:
+        """block 결합 가능 여부 — 시간 기반 기본 검증만. 도메인에서 override 가능."""
+        cfg = self.config
+        max_block_gap = cfg.block_combine_max_gap or cfg.max_idle_time
+        if gap <= cfg.max_gap or gap > max_block_gap:
+            return False
+        if block_a.active_minutes + block_b.active_minutes > cfg.max_active_time:
+            return False
+        return True
+
+    def _combine_blocks(self, columns: List[FeasibleColumn],
+                        next_id: int) -> int:
+        """기존 column(block)들을 대기시간 허용하여 결합 → block-gap-block column 생성.
+
+        bisect 캐싱 + score 기반 필터 + per-block cap + early stop.
+        결합 대상: driving ≤ max_active_time/2인 짧은 block끼리."""
+        import bisect
+        cfg = self.config
+        t0 = time.time()
+
+        # config derive: 0이면 기존 params에서 자동 도출
+        max_block_gap = cfg.block_combine_max_gap or cfg.max_idle_time
+        top_k = cfg.block_combine_top_k or int(cfg.effective_max_columns * 0.3)
+
+        # 결합 대상: driving ≤ max_active/2인 짧은 block (두 block 합쳐야 max 이내)
+        half_active = cfg.max_active_time // 2
+
+        def block_score(c: FeasibleColumn) -> float:
+            return c.active_minutes - cfg.block_combine_score_penalty * c.idle_minutes
+
+        eligible = [c for c in columns
+                    if len(c.trips) >= 2 and c.active_minutes <= half_active]
+        scored = [(block_score(c), c) for c in eligible]
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top_blocks = [c for _, c in scored[:top_k]]
+
+        if not top_blocks:
+            return 0
+
+        # 시간순 정렬 (first_trip_dep 기준) — bisect 탐색용
+        top_blocks.sort(key=lambda c: c.first_trip_dep)
+        dep_times = [c.first_trip_dep for c in top_blocks]
+
+        count = 0
+        attempts = 0
+        seen: set = set()
+
+        for i, block_a in enumerate(top_blocks):
+            combines_for_a = 0
+
+            # bisect: block_a 종료 + max_gap 이후부터 탐색
+            min_dep = block_a.last_trip_arr + cfg.max_gap
+            max_dep = block_a.last_trip_arr + max_block_gap
+            lo = bisect.bisect_left(dep_times, min_dep)
+            hi = bisect.bisect_right(dep_times, max_dep)
+
+            for j in range(lo, hi):
+                block_b = top_blocks[j]
+
+                # 시간 역전 방지
+                if block_a.last_trip_arr >= block_b.first_trip_dep:
+                    continue
+
+                # 중복 방지
+                sig = (block_a.id, block_b.id)
+                if sig in seen:
+                    continue
+                seen.add(sig)
+
+                gap = block_b.first_trip_dep - block_a.last_trip_arr
+                attempts += 1
+
+                # trip 겹침 방지
+                if set(block_a.trips) & set(block_b.trips):
+                    continue
+
+                # 도메인별 결합 가능 여부 (base: 시간만, crew: 위치 추가)
+                if not self._can_combine(block_a, block_b, gap):
+                    continue
+
+                # wait 초과 → early stop (시간 정렬이므로 이후 gap은 더 큼)
+                combined_driving = block_a.active_minutes + block_b.active_minutes
+                estimated_wait = gap  # block 간 gap ≈ wait
+                if estimated_wait > cfg.max_idle_time:
+                    break
+
+                # 결합 state 구축
+                combined_trips = block_a.trips + block_b.trips
+                state = _BeamState(
+                    trips=combined_trips,
+                    last_arr_time=block_b.last_trip_arr,
+                    last_end_location=block_b.end_time,  # _try_build_column에서 사용하지 않음
+                    total_driving=combined_driving,
+                    first_dep_time=block_a.first_trip_dep,
+                )
+                # last_end_location은 block_b의 마지막 trip 종료 위치
+                if block_b.trips:
+                    last_task = self._task_map.get(block_b.trips[-1])
+                    if last_task:
+                        state.last_end_location = last_task.end_location
+
+                col = self._try_build_column(state, next_id + count)
+                if col:
+                    col.source = "block_combine"
+                    columns.append(col)
+                    count += 1
+                    combines_for_a += 1
+
+                if combines_for_a >= cfg.block_combine_per_block:
+                    break
+
+        elapsed = time.time() - t0
+        rate = count / max(attempts, 1)
+        logger.info(
+            f"[BLOCK COMBINE] attempts={attempts}, success={count}, "
+            f"rate={rate:.3f}, elapsed={elapsed:.2f}s"
+        )
+        return count
 
     # ── Gap 기반 break 계산 ───────────────────────────────────
 

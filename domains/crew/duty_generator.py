@@ -212,6 +212,17 @@ class CrewDutyGenerator(BaseColumnGenerator):
         """cost 보정용 depot prep(60)"""
         return self._crew_config.setup_time_day
 
+    def _can_combine(self, block_a, block_b, gap) -> bool:
+        """crew: 위치 매칭 추가 — block_a 종료역 = block_b 시작역"""
+        if not super()._can_combine(block_a, block_b, gap):
+            return False
+        # block_a의 마지막 trip 도착역 → block_b의 첫 trip 출발역
+        last_task_a = self._task_map.get(block_a.trips[-1]) if block_a.trips else None
+        first_task_b = self._task_map.get(block_b.trips[0]) if block_b.trips else None
+        if not last_task_a or not first_task_b:
+            return False
+        return self._can_connect(last_task_a.end_location, first_task_b.start_location)
+
     def _get_max_active_time(self, state) -> int:
         """최대 활동시간(driving)은 주간/야간/overnight 구분 없이 동일.
         max_driving_minutes=360은 hard constraint — overnight에서도 완화 불가.

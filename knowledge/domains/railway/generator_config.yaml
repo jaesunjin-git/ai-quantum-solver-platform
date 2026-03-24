@@ -18,3 +18,8 @@ overnight_active_multiplier: 1.5 # overnight 최대 활동시간 배율
 night_idle_cost_weight: 0.015    # 야간 유휴 비용 계수
 night_overhead_cost_weight: 0.005 # 야간 오버헤드 비용 계수
 night_short_penalty_ratio: 0.5   # 야간 short penalty 비율 (base의 50%)
+
+# ── Block Combine (DIA 정답: 주간 block-gap-block 구조) ─────
+block_combine_enabled: true      # 철도: block 결합 활성화
+# max_gap: 0 → max_idle_time(params)에서 자동 도출 (DIA: 1~5시간)
+# top_k: 0 → max_columns_target*0.3에서 자동 도출

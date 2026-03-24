@@ -27,3 +27,11 @@ fallback_cost: 10.0              # single-task fallback column 비용
 
 # ── Diversity (Adaptive CG) ──────────────────────────────────
 diversity_weight: 100.0          # pair-frequency penalty 가중치
+
+# ── Block Combine (block-gap-block 구조) ────────────────────
+# 기본: 비활성화. 도메인별 config에서 enabled: true로 override.
+block_combine_enabled: false     # block 결합 활성화 여부
+block_combine_max_gap: 0         # 0=max_idle_time(params)에서 자동 도출
+block_combine_per_block: 5       # block당 최대 결합 수 (안정성 cap)
+block_combine_score_penalty: 0.7 # score의 wait penalty 계수 (순수 튜닝 — 도출 불가)
+block_combine_top_k: 0           # 0=max_columns_target*0.3에서 자동 도출
