@@ -402,8 +402,26 @@ def run(math_model: Dict,
     metadata = math_model.get("metadata", {})
 
     # ── 1. Set 검증 ──
-    # struct fix에서 자동 주입 가능한 set (overlap_pairs 등)은 deferred check
-    _AUTO_INJECTABLE_SETS = {"overlap_pairs", "sequential_pairs"}
+    # struct fix에서 자동 주입 가능한 set은 deferred check
+    # 판단 기준: normalized 디렉토리에 해당 set의 데이터 파일이 존재
+    import os as _os_gate2
+    _injectable_sets = set()
+    if _struct_project_id:
+        _norm_dirs = [
+            f"uploads/{_struct_project_id}/normalized",
+            f"uploads/{_struct_project_id}/phase1",
+        ]
+        for s in sets:
+            sid = s.get("id", "")
+            source_type = s.get("source_type", "")
+            # source가 explicit이거나 미정의인데, normalized에 파일 존재
+            if source_type in ("explicit", "") or not s.get("source_file"):
+                for _nd in _norm_dirs:
+                    for ext in (".json", ".csv"):
+                        if _os_gate2.path.exists(_os_gate2.path.join(_nd, f"{sid}{ext}")):
+                            _injectable_sets.add(sid)
+                            break
+
     _deferred_set_errors = []
 
     set_ids = set()
@@ -414,8 +432,9 @@ def run(math_model: Dict,
         set_sizes[sid] = size
 
         if size == 0:
-            if sid in _AUTO_INJECTABLE_SETS:
+            if sid in _injectable_sets:
                 # struct fix에서 주입될 수 있으므로 error 대신 deferred
+                logger.info(f"Set '{sid}': deferred to struct fix (file found in normalized)")
                 _deferred_set_errors.append(
                     f"Set '{sid}': 크기를 결정할 수 없음 "
                     f"(source_file={s.get('source_file')}, "
