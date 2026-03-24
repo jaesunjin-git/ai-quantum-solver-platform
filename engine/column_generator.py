@@ -132,7 +132,7 @@ class BaseColumnConfig:
     seed_trips: List = None         # bottleneck trip seed (ACG diversity용)
     pair_frequency: Dict = None     # trip-pair 빈도 (diversity penalty용)
     pair_frequency_max: int = 1     # 정규화용 최대 빈도
-    diversity_weight: float = 30.0  # 정규화 후 penalty 가중치 (trip bonus 100의 30%)
+    diversity_weight: float = 100.0 # 정규화 후 penalty 가중치 (score ~650의 15%)
 
     @property
     def effective_beam_width(self) -> int:
