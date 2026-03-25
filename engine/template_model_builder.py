@@ -187,6 +187,22 @@ def build_model_from_template(
                     else:
                         constraint["operator"] = "<="  # 기본값
 
+                # objective_operator_override 적용 (ConstraintOperatorResolver)
+                from engine.compiler.operator_resolver import ConstraintOperatorResolver
+                resolver = ConstraintOperatorResolver(objective_name=obj_target)
+                resolved_op = resolver.resolve(cid, tc)
+                original_op = constraint.get("operator", "==")
+                if resolved_op != original_op:
+                    constraint["operator"] = resolved_op
+                    # expression_template의 연산자도 교체 (컴파일러가 expression에서 파싱)
+                    expr = constraint.get("expression", "")
+                    if original_op in expr:
+                        constraint["expression"] = expr.replace(original_op, resolved_op, 1)
+                    logger.info(
+                        f"Constraint '{cid}': operator '{original_op}' → '{resolved_op}' "
+                        f"(objective: {obj_target})"
+                    )
+
                 # soft 제약의 penalty 정보
                 if category == "soft":
                     if tc.get("penalty_var"):
