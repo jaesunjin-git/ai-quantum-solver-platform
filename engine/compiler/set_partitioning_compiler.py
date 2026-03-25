@@ -16,56 +16,24 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from engine.compiler.base import BaseCompiler, CompileResult
+from engine.compiler.base import BaseSPCompiler, CompileResult
 from engine.column_generator import FeasibleColumn
 from engine.compiler.sp_problem import SetPartitioningProblem, build_sp_problem
 
 logger = logging.getLogger(__name__)
 
 
-class SetPartitioningCompiler(BaseCompiler):
+class SetPartitioningCompiler(BaseSPCompiler):
     """CP-SAT 기반 Set Partitioning 컴파일러"""
 
-    def compile(self, math_model: Dict, bound_data: Dict, **kwargs) -> CompileResult:
-        """
-        Set Partitioning 모델 컴파일.
-
-        kwargs:
-          duties: List[FeasibleColumn] — ColumnGenerator 출력
-          sp_problem: SetPartitioningProblem — 직접 제공 시 (duties 대신)
-        """
-        # SP problem 구축 (또는 직접 제공)
-        sp_problem = kwargs.pop("sp_problem", None)
-        if sp_problem is None:
-            columns: List[FeasibleColumn] = kwargs.pop("duties", [])
-            if not columns:
-                return CompileResult(
-                    success=False,
-                    error="No columns provided. Run ColumnGenerator first.",
-                )
-            params = bound_data.get("parameters", {})
-            sp_problem = build_sp_problem(columns, params)
-
-        # 유효성 검증 (infeasibility_reasons 포함)
-        valid, errors, warnings = sp_problem.validate()
-        for w in warnings:
-            logger.warning(f"SP: {w}")
-        if not valid:
-            return CompileResult(
-                success=False,
-                error=f"SP problem invalid: {'; '.join(errors)}",
-                metadata={"sp_diagnostics": sp_problem.diagnostics},
-            )
-
-        try:
-            return self._compile_cpsat(
-                sp_problem,
-                math_model=math_model,
-                params=bound_data.get("parameters", {}),
-            )
-        except Exception as e:
-            logger.error(f"SP compilation failed: {e}", exc_info=True)
-            return CompileResult(success=False, error=str(e))
+    def _compile_backend(self, sp_problem, math_model: Dict,
+                          bound_data: Dict, **kwargs) -> CompileResult:
+        """BaseSPCompiler → CP-SAT 변환"""
+        return self._compile_cpsat(
+            sp_problem,
+            math_model=math_model,
+            params=bound_data.get("parameters", {}),
+        )
 
     def _compile_cpsat(self, problem: SetPartitioningProblem,
                        math_model: Dict, params: Dict) -> CompileResult:

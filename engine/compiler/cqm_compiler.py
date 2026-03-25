@@ -14,51 +14,20 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from engine.compiler.base import BaseCompiler, CompileResult
+from engine.compiler.base import BaseSPCompiler, CompileResult
 from engine.compiler.sp_problem import SetPartitioningProblem, build_sp_problem
 from engine.column_generator import FeasibleColumn
 
 logger = logging.getLogger(__name__)
 
 
-class CQMCompiler(BaseCompiler):
+class CQMCompiler(BaseSPCompiler):
     """D-Wave CQM 기반 Set Partitioning 컴파일러"""
 
-    def compile(self, math_model: Dict, bound_data: Dict, **kwargs) -> CompileResult:
-        """SetPartitioningProblem → D-Wave CQM 변환."""
-        sp_problem = kwargs.pop("sp_problem", None)
-        if sp_problem is None:
-            columns: List[FeasibleColumn] = kwargs.pop("duties", [])
-            if not columns:
-                return CompileResult(
-                    success=False,
-                    error="No columns provided. Run ColumnGenerator first.",
-                )
-            params = bound_data.get("parameters", {})
-            sp_problem = build_sp_problem(columns, params)
-
-        valid, errors, warnings = sp_problem.validate()
-        for w in warnings:
-            logger.warning(f"CQM: {w}")
-        if not valid:
-            return CompileResult(
-                success=False,
-                error=f"SP problem invalid: {'; '.join(errors)}",
-                metadata={"sp_diagnostics": sp_problem.diagnostics},
-            )
-
-        try:
-            return self._compile_cqm(sp_problem, math_model=math_model, **kwargs)
-        except ImportError as e:
-            logger.error(f"D-Wave SDK not installed: {e}")
-            return CompileResult(
-                success=False,
-                error=f"D-Wave SDK not available: {e}. "
-                      f"Install: pip install dwave-ocean-sdk",
-            )
-        except Exception as e:
-            logger.error(f"CQM compilation failed: {e}", exc_info=True)
-            return CompileResult(success=False, error=str(e))
+    def _compile_backend(self, sp_problem, math_model: Dict,
+                          bound_data: Dict, **kwargs) -> CompileResult:
+        """BaseSPCompiler → D-Wave CQM 변환"""
+        return self._compile_cqm(sp_problem, math_model=math_model, **kwargs)
 
     # CQM용 column cap (100K는 compile에 263초 소요)
     import os as _os
