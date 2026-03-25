@@ -32,9 +32,16 @@ class CQMExecutor:
         self,
         compile_result: CompileResult,
         time_limit_sec: Optional[int] = None,
+        skip_repair: bool = False,
         **kwargs,
     ) -> Dict[str, Any]:
-        """CQM 모델을 D-Wave에서 실행."""
+        """CQM 모델을 D-Wave에서 실행.
+
+        Args:
+            skip_repair: True면 post-solve repair를 건너뜀.
+                Hybrid 모드에서 CP-SAT이 exact partition을 보장하므로
+                CQM raw solution을 hint로 사용할 때 활성화.
+        """
         from dwave.system import LeapHybridCQMSampler
 
         cqm = compile_result.solver_model
@@ -112,6 +119,27 @@ class CQMExecutor:
         selected_count = sum(1 for v in solution["z"].values() if v > 0)
 
         # ── Post-solve: validate → repair (반복) → re-validate ──
+        # Hybrid 모드(skip_repair=True)에서는 repair 건너뜀
+        # → CP-SAT이 hard coverage(==1)로 exact partition 보장
+        if skip_repair:
+            logger.info(f"CQM: skip_repair=True, returning raw solution "
+                        f"(selected={selected_count})")
+            return ExecuteResult(
+                success=True,
+                solver_type="dwave_cqm",
+                status="FEASIBLE_RAW",
+                objective_value=objective_value,
+                solution=solution,
+                execution_time_sec=round(wall_time, 3),
+                solver_info={
+                    "sample_count": len(sampleset),
+                    "feasible_count": feasible_count,
+                    "selected_columns": selected_count,
+                    "wall_time": wall_time,
+                    "skip_repair": True,
+                },
+            )
+
         violations_before = self._validate_coverage(solution, compile_result)
         repaired = False
 
