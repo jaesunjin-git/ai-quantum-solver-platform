@@ -196,14 +196,16 @@ class CQMCompiler(BaseSPCompiler):
         cqm.set_objective(quicksum(obj_terms))
 
         # objective_scale: weight 자동 결정의 기준
-        # 정규화된 objective 범위는 0~1이므로, scale=1 기준
-        objective_scale = 1.0
+        # CQM objective는 정규화(0~1)되므로, 45개 column 선택 시 총 objective ≈ 45
+        # weight가 총 objective보다 충분히 커야 CQM이 제약 위반보다 objective 개선을 포기
+        num_columns = len(columns)
+        objective_total_estimate = num_columns  # 최악 case: 모든 column 선택
+        objective_scale = max(objective_total_estimate, max_score)
 
         # ── 3. Coverage 제약: constraint_class 기반 weight 자동 결정 ──
-        # hard_structural (coverage, linking) → objective_scale × 1000 (사실상 hard)
-        # hard_regulatory (법규) → objective_scale × 100
-        # soft → YAML penalty_weight 사용
-        structural_weight = objective_scale * 1000
+        # hard_structural (coverage, crew count) → objective 총합보다 충분히 큰 weight
+        # → 제약 1건 위반 penalty > 전체 objective 개선 가능량
+        structural_weight = objective_scale * 10
         coverage_count = 0
         for tid in problem.task_ids:
             col_ids = task_to_columns.get(tid, [])
@@ -217,9 +219,10 @@ class CQMCompiler(BaseSPCompiler):
             )
             coverage_count += 1
 
-        # ── 4. 추가 제약: weight 계층화 ──
-        # crew count 등 운영 제약 → objective_scale × 100
-        operational_weight = objective_scale * 100
+        # ── 4. 추가 제약: SP 제약은 structural과 동일 weight ──
+        # crew count(==45, ==32, ==13)도 SP의 핵심 제약
+        # coverage와 동등한 weight 부여 → CQM이 위반 불가
+        operational_weight = structural_weight
         extra_count = 0
         for constraint in problem.extra_constraints:
             col_vars = [z[cid] for cid in constraint.column_ids if cid in z]
