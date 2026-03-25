@@ -33,7 +33,7 @@ class CQMCompiler(BaseSPCompiler):
     # 단독: 탐색 공간 축소 (2,000) → feasible 확률 향상
     # Hybrid: 넓은 탐색 (20,000) → hint 품질 우선
     import os as _os
-    CQM_MAX_COLUMNS_STANDALONE = int(_os.environ.get("CQM_MAX_COLUMNS_STANDALONE", 2000))
+    CQM_MAX_COLUMNS_STANDALONE = int(_os.environ.get("CQM_MAX_COLUMNS_STANDALONE", 20000))
     CQM_MAX_COLUMNS_HYBRID = int(_os.environ.get("CQM_MAX_COLUMNS_HYBRID", 20000))
 
     @staticmethod
@@ -205,51 +205,53 @@ class CQMCompiler(BaseSPCompiler):
         num_columns = len(columns)
         objective_scale = max(num_columns, max_score)
 
-        # ── 3. Coverage 제약: 단독/Hybrid weight 분리 ──
-        # 단독: feasibility 최우선 → objective를 압도하는 극한 weight
-        # Hybrid: hint 품질 우선 → objective와 균형 잡힌 weight
+        # ── 3. Coverage 제약: 단독/Hybrid 전략 분리 ──
+        # 단독: HARD constraint (weight 없음) → D-Wave가 feasible = exact partition 보장
+        # Hybrid: soft weight → hint 품질 우선, exact partition 불필요
         if is_hybrid:
-            structural_weight = objective_scale * 10   # 적당 → 좋은 방향 hint
+            structural_weight = objective_scale * 10
         else:
-            structural_weight = objective_scale * 1000  # 극한 → exact partition 강제
+            structural_weight = None  # None = hard constraint (D-Wave CQM 네이티브)
+
         coverage_count = 0
         for tid in problem.task_ids:
             col_ids = task_to_columns.get(tid, [])
             if not col_ids:
                 logger.error(f"CQM: task {tid} has no covering column!")
                 continue
+            constraint_kwargs = {"label": f"cover_{tid}"}
+            if structural_weight is not None:
+                constraint_kwargs["weight"] = structural_weight
             cqm.add_constraint(
                 quicksum(z[cid] for cid in col_ids) == 1,
-                label=f"cover_{tid}",
-                weight=structural_weight,
+                **constraint_kwargs,
             )
             coverage_count += 1
 
-        # ── 4. 추가 제약: SP 제약은 structural과 동일 weight ──
-        # crew count(==45, ==32, ==13)도 SP의 핵심 제약
-        # coverage와 동등한 weight 부여 → CQM이 위반 불가
-        operational_weight = structural_weight
+        # ── 4. 추가 제약: 단독=hard, Hybrid=soft ──
         extra_count = 0
         for constraint in problem.extra_constraints:
             col_vars = [z[cid] for cid in constraint.column_ids if cid in z]
             if not col_vars:
                 continue
             expr = quicksum(col_vars)
+            con_kwargs = {"label": constraint.name}
+            if structural_weight is not None:
+                con_kwargs["weight"] = structural_weight
+
             if constraint.operator == "==":
-                cqm.add_constraint(expr == constraint.rhs, label=constraint.name,
-                                   weight=operational_weight)
+                cqm.add_constraint(expr == constraint.rhs, **con_kwargs)
             elif constraint.operator == "<=":
-                cqm.add_constraint(expr <= constraint.rhs, label=constraint.name,
-                                   weight=operational_weight)
+                cqm.add_constraint(expr <= constraint.rhs, **con_kwargs)
             elif constraint.operator == ">=":
-                cqm.add_constraint(expr >= constraint.rhs, label=constraint.name,
-                                   weight=operational_weight)
+                cqm.add_constraint(expr >= constraint.rhs, **con_kwargs)
             extra_count += 1
             logger.info(f"CQM: {constraint.label}")
 
+        mode_str = "hybrid(soft)" if is_hybrid else "standalone(hard)"
         logger.info(
-            f"CQM weights: structural={structural_weight}, "
-            f"operational={operational_weight}, "
+            f"CQM constraints: mode={mode_str}, "
+            f"coverage={coverage_count}, extra={extra_count}, "
             f"objective_scale={objective_scale}"
         )
 
