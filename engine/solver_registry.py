@@ -993,7 +993,7 @@ def recommend_solvers(
             "warnings": result["warnings"],
             "total_score": round(total, 1),
             "suitability": _classify_suitability(total),
-            "time_limit_sec": solver.get("time_profile", {}).get("max_time_seconds", 120),
+            "time_limit_sec": _get_effective_time_limit(solver.get("solver_id", "")),
         })
 
     # 3. 점수 순 정렬
@@ -1038,6 +1038,22 @@ def _get_dynamic_weights(priority: str, profile: Dict) -> Dict[str, float]:
 # ============================================================
 # 기존 유틸리티 (변경 없음)
 # ============================================================
+
+def _get_effective_time_limit(solver_id: str) -> int:
+    """솔버 추천 표시용 time_limit (DB 우선, YAML fallback).
+    DB 세션을 내부에서 생성하여 조회."""
+    try:
+        from core.database import SessionLocal
+        db = SessionLocal()
+        try:
+            result = get_solver_time_limit(solver_id, db)
+            return result
+        finally:
+            db.close()
+    except Exception:
+        # DB 불가 시 YAML fallback
+        return get_solver_time_limit(solver_id, None)
+
 
 def get_solver_time_limit(solver_id: str, db=None) -> int:
     """
