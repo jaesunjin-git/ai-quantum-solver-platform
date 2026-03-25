@@ -110,7 +110,7 @@ export function ConstraintCheckTab({
         <div className="bg-slate-800/30 rounded-xl border border-slate-700 p-4">
           <h3 className="text-[12px] font-bold text-slate-400 mb-2 flex items-center gap-2">
             <AlertTriangle size={13} className="text-yellow-500" />
-            소프트 제약 ({interpreted.soft_constraint_status.length}개) — 현재 최적화 미반영
+            소프트 제약 ({interpreted.soft_constraint_status.length}개) — 목적함수에 간접 반영
           </h3>
           <div className="grid grid-cols-2 gap-1.5">
             {interpreted.soft_constraint_status.map((sc, i) => (

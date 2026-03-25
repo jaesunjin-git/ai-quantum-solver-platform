@@ -269,9 +269,10 @@ def _build_crew_constraint_status(
             "constraint_type": "structural",
         })
 
-    # 야간 수면시간 — 실제 검증
-    if night_cols:
-        sleeps = [c.inactive_minutes for c in night_cols]
+    # 야간 수면시간 — overnight column만 대상 (morning_only는 수면 없음)
+    overnight_cols = [c for c in night_cols if c.column_type in ("overnight",)]
+    if overnight_cols:
+        sleeps = [c.inactive_minutes for c in overnight_cols]
         min_sleep = min(sleeps) if sleeps else 0
         sleep_violations = sum(1 for s in sleeps if s < min_sleep_limit)
         status.append({
