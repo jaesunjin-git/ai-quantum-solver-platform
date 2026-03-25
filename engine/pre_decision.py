@@ -142,7 +142,11 @@ def _get_set_size(set_def: Dict) -> int:
     values = set_def.get("values", [])
     if values:
         return len(values)
-    # 4. 크기를 결정할 수 없음
+    # 4. default_size (YAML에서 range source의 기본 크기)
+    default_size = set_def.get("default_size", 0)
+    if default_size > 0:
+        return int(default_size)
+    # 5. 크기를 결정할 수 없음
     return 0
 
 
@@ -198,6 +202,9 @@ def _analyze_math_model(math_model: Dict) -> Dict:
     var_count = calculated_var_count if calculated_var_count > 0 else llm_estimate
     if calculated_var_count > 0 and llm_estimate > 0 and abs(calculated_var_count - llm_estimate) > llm_estimate * 0.5:
         logger.warning(f"Variable count mismatch: calculated={calculated_var_count}, LLM_estimate={llm_estimate}. Using calculated.")
+    # SP(Set Partitioning) 문제의 실제 변수 수는 컬럼 생성 후 결정됨
+    # 여기서의 추정은 수학 모델 기반이며, SP 컴파일 후 실제 값과 다를 수 있음
+    logger.info(f"Problem profile: vars={var_count} (pre-SP estimate, actual may differ after column generation)")
 
     constraint_count = metadata.get("estimated_constraint_count", len(constraints))
 

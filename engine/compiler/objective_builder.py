@@ -101,6 +101,9 @@ class ObjectiveBuilder:
             logger.warning(f"Unknown objective '{objective_type}', using minimize_duties")
             scores = self._minimize_duties(params)
 
+        # soft penalty 적용 (정규화 전 — raw score에 반영)
+        scores = self._apply_soft_penalties(scores, params)
+
         # 정수 스케일링: 정규화 후 1~100000 범위 (CP-SAT int64 호환)
         # 넓은 범위로 score 차이를 최대한 보존
         SCALE = 100000
@@ -240,6 +243,57 @@ class ObjectiveBuilder:
         scores = {}
         for col in self.columns:
             scores[col.id] = max(col.cost, 0.1)
+        return scores
+
+    # ── Soft Penalty 적용 (정규화 전) ────────────────────────
+
+    def _apply_soft_penalties(self, scores: Dict[int, float],
+                              params: Dict) -> Dict[int, float]:
+        """soft constraint의 per-column penalty를 raw score에 반영.
+
+        SP에서 의미 있는 soft penalty = column 생성 시 반영 안 된 것만:
+        - night_duty_start_preferred: night column의 시작시각이 선호시각 미달 시
+        - (향후 추가 가능: post_arrival_rest 등)
+
+        column 생성에서 이미 hard reject/score로 반영된 것은 제외 (이중 반영 방지):
+        - avg_driving_target → column gen hard reject(360) + idle cost
+        - avg_wait_target → column gen hard reject(300) + idle cost
+        - max_total_stay → column gen hard reject(660 span)
+        """
+        from engine.compiler.sp_problem import ColumnType
+
+        # 야간 선호 출고시각 penalty
+        night_start_preferred = params.get("night_duty_start_preferred")
+        if night_start_preferred is not None:
+            night_start_preferred = int(night_start_preferred)
+            # penalty 스케일: 기존 score의 전체 범위 대비 의미 있는 수준
+            # score range의 중위값을 기준으로 위반 분당 비례 penalty
+            score_vals = sorted(scores.values())
+            if score_vals:
+                median_score = score_vals[len(score_vals) // 2]
+            else:
+                median_score = 1.0
+
+            # 위반 분당 penalty: median_score의 0.5% per minute
+            # 60분 위반(17:00 시작) → 30% penalty — 유의미하지만 지배적이지 않음
+            penalty_per_minute = median_score * 0.005
+
+            applied = 0
+            for col in self.columns:
+                if col.column_type in ColumnType.NIGHT_GROUP:
+                    violation = max(0, night_start_preferred - col.start_time)
+                    if violation > 0:
+                        scores[col.id] = scores.get(col.id, 0) + penalty_per_minute * violation
+                        applied += 1
+
+            if applied > 0:
+                logger.info(
+                    f"Soft penalty 'night_duty_start_preferred': "
+                    f"{applied} night columns penalized "
+                    f"(preferred={night_start_preferred}, "
+                    f"penalty={penalty_per_minute:.3f}/min)"
+                )
+
         return scores
 
 

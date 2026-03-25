@@ -412,6 +412,12 @@ def build_model_from_template(
         est_vars = 0
         i_size = set_sizes.get("I", phase1_summary.get("timetable_trips", 320) if phase1_summary else 320)
         j_size = set_sizes.get("J", 96)
+        # total_duties가 확정되면 J 크기를 반영 (J의 default_size보다 실제 duty 수가 정확)
+        total_duties = confirmed_problem.get("total_duties")
+        if total_duties is not None:
+            td = int(total_duties.get("value", 0) if isinstance(total_duties, dict) else total_duties)
+            if 0 < td < j_size:
+                j_size = td
         for v in model_variables:
             indices = v.get("indices", [])
             if len(indices) == 2:
