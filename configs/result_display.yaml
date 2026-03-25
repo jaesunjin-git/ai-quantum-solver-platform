@@ -1,0 +1,79 @@
+# ============================================================
+# 솔버 결과 상태 표시 설정
+# ============================================================
+# 솔버 유형별로 사용자에게 보여줄 상태 메시지를 정의합니다.
+# exact solver(CP-SAT): OPTIMAL 가능 (수학적 증명)
+# heuristic solver(CQM): FEASIBLE이 최선 (탐색 기반)
+# hybrid: 양쪽 결합
+# ============================================================
+
+version: "1.0"
+
+solver_status_display:
+  exact_solver:    # CP-SAT, Gurobi 등
+    OPTIMAL:
+      label_ko: "최적해 달성"
+      badge: "success"
+      description_ko: "수학적으로 증명된 최적해입니다."
+    FEASIBLE:
+      label_ko: "해 탐색 완료"
+      badge: "warning"
+      description_ko: "실행 가능한 해를 찾았으나, 시간 내 최적성이 증명되지 않았습니다. 시간을 늘리면 개선될 수 있습니다."
+    INFEASIBLE:
+      label_ko: "해 탐색 실패"
+      badge: "error"
+      description_ko: "제약 조건을 만족하는 해를 찾지 못했습니다."
+    TIMEOUT:
+      label_ko: "시간 초과"
+      badge: "warning"
+      description_ko: "제한 시간 내에 해를 찾지 못했습니다."
+
+  heuristic_solver:  # D-Wave CQM, SA, GA 등
+    FEASIBLE:
+      label_ko: "최적해 탐색 완료"
+      badge: "success"
+      description_ko: "양자 하이브리드 솔버가 탐색한 최선의 해입니다."
+    FEASIBLE_RAW:
+      label_ko: "최적해 탐색 완료"
+      badge: "success"
+      description_ko: "양자 하이브리드 솔버가 탐색한 해입니다."
+    FEASIBLE_REPAIRED:
+      label_ko: "최적해 탐색 완료 (보정됨)"
+      badge: "success"
+      description_ko: "양자 하이브리드 솔버의 해를 후처리로 보정했습니다."
+    INFEASIBLE:
+      label_ko: "해 탐색 실패"
+      badge: "error"
+      description_ko: "제약 조건을 만족하는 해를 찾지 못했습니다."
+    INFEASIBLE_POST:
+      label_ko: "해 탐색 실패 (보정 실패)"
+      badge: "error"
+      description_ko: "양자 솔버의 해를 보정했으나 일부 제약이 미충족입니다."
+
+  hybrid:  # CQM → CP-SAT
+    OPTIMAL:
+      label_ko: "최적해 달성"
+      badge: "success"
+      description_ko: "D-Wave가 탐색한 초기해를 기반으로 CP-SAT이 최적해를 증명했습니다."
+    FEASIBLE:
+      label_ko: "해 탐색 완료"
+      badge: "warning"
+      description_ko: "실행 가능한 해를 찾았습니다. 시간을 늘리면 개선될 수 있습니다."
+    INFEASIBLE:
+      label_ko: "해 탐색 실패"
+      badge: "error"
+      description_ko: "제약 조건을 만족하는 해를 찾지 못했습니다."
+
+# 솔버 유형 분류 (solver_id → 유형)
+solver_type_classification:
+  exact_solver:
+    - classical_cpu
+    - nvidia_cuopt
+  heuristic_solver:
+    - dwave_hybrid_cqm
+    - dwave_hybrid_bqm
+    - dwave_nl
+    - dwave_advantage_qpu
+    - dwave_advantage2_qpu
+  hybrid:
+    - hybrid_cqm_cpsat

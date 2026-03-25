@@ -176,40 +176,7 @@ class CQMCompiler(BaseSPCompiler):
         # ── 1. 변수: z[k] (binary) — 한번에 생성 ──
         z = {col.id: Binary(f"z_{col.id}") for col in columns}
 
-        # ── 2. Coverage 제약: soft ==1 (#1) ──
-        # CQM은 hard ==1에서 feasible 못 찾을 수 있으므로
-        # soft constraint(weight=1000)로 설정 → solver가 trade-off
-        # repair는 여전히 보험으로 유지
-        coverage_count = 0
-        for tid in problem.task_ids:
-            col_ids = task_to_columns.get(tid, [])
-            if not col_ids:
-                logger.error(f"CQM: task {tid} has no covering column!")
-                continue
-            cqm.add_constraint(
-                quicksum(z[cid] for cid in col_ids) == 1,
-                label=f"cover_{tid}",
-                weight=1000,  # soft: 위반 시 penalty
-            )
-            coverage_count += 1
-
-        # ── 3. 추가 제약: quicksum 사용 ──
-        extra_count = 0
-        for constraint in problem.extra_constraints:
-            col_vars = [z[cid] for cid in constraint.column_ids if cid in z]
-            if not col_vars:
-                continue
-            expr = quicksum(col_vars)
-            if constraint.operator == "==":
-                cqm.add_constraint(expr == constraint.rhs, label=constraint.name)
-            elif constraint.operator == "<=":
-                cqm.add_constraint(expr <= constraint.rhs, label=constraint.name)
-            elif constraint.operator == ">=":
-                cqm.add_constraint(expr >= constraint.rhs, label=constraint.name)
-            extra_count += 1
-            logger.info(f"CQM: {constraint.label}")
-
-        # ── 4. 목적함수: ObjectiveBuilder + quicksum ──
+        # ── 2. 목적함수 먼저 구축 (objective_scale → weight 결정에 사용) ──
         from engine.compiler.objective_builder import ObjectiveBuilder, ObjectiveConfig, extract_objective_type
 
         math_model = kwargs.get("math_model", {})
@@ -219,13 +186,63 @@ class CQMCompiler(BaseSPCompiler):
         builder = ObjectiveBuilder(columns, obj_config)
         scores = builder.build(objective_type, kwargs.get("params", {}))
 
-        # quicksum으로 objective 구축 (#3: 정규화 스케일링)
         max_score = max(scores.values(), default=1000)
+
+        # quicksum으로 objective 구축 (정규화 스케일링)
         obj_terms = [
             (scores.get(col.id, max_score) / max(max_score, 1)) * z[col.id]
             for col in columns
         ]
         cqm.set_objective(quicksum(obj_terms))
+
+        # objective_scale: weight 자동 결정의 기준
+        # 정규화된 objective 범위는 0~1이므로, scale=1 기준
+        objective_scale = 1.0
+
+        # ── 3. Coverage 제약: constraint_class 기반 weight 자동 결정 ──
+        # hard_structural (coverage, linking) → objective_scale × 1000 (사실상 hard)
+        # hard_regulatory (법규) → objective_scale × 100
+        # soft → YAML penalty_weight 사용
+        structural_weight = objective_scale * 1000
+        coverage_count = 0
+        for tid in problem.task_ids:
+            col_ids = task_to_columns.get(tid, [])
+            if not col_ids:
+                logger.error(f"CQM: task {tid} has no covering column!")
+                continue
+            cqm.add_constraint(
+                quicksum(z[cid] for cid in col_ids) == 1,
+                label=f"cover_{tid}",
+                weight=structural_weight,
+            )
+            coverage_count += 1
+
+        # ── 4. 추가 제약: weight 계층화 ──
+        # crew count 등 운영 제약 → objective_scale × 100
+        operational_weight = objective_scale * 100
+        extra_count = 0
+        for constraint in problem.extra_constraints:
+            col_vars = [z[cid] for cid in constraint.column_ids if cid in z]
+            if not col_vars:
+                continue
+            expr = quicksum(col_vars)
+            if constraint.operator == "==":
+                cqm.add_constraint(expr == constraint.rhs, label=constraint.name,
+                                   weight=operational_weight)
+            elif constraint.operator == "<=":
+                cqm.add_constraint(expr <= constraint.rhs, label=constraint.name,
+                                   weight=operational_weight)
+            elif constraint.operator == ">=":
+                cqm.add_constraint(expr >= constraint.rhs, label=constraint.name,
+                                   weight=operational_weight)
+            extra_count += 1
+            logger.info(f"CQM: {constraint.label}")
+
+        logger.info(
+            f"CQM weights: structural={structural_weight}, "
+            f"operational={operational_weight}, "
+            f"objective_scale={objective_scale}"
+        )
 
         compile_time = time.time() - t0
         total_constraints = coverage_count + extra_count
