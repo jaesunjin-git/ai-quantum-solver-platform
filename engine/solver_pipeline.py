@@ -283,16 +283,26 @@ class SolverPipeline:
                 decision = presolve_result.decision
 
                 if decision == FidelityDecision.HARD_BLOCK:
-                    logger.error(
-                        f"Presolve HARD_BLOCK: {presolve_result.decision_message}"
-                    )
-                    return PipelineResult(
-                        success=False, phase="presolve", solver_id=solver_id,
-                        compile_result=compile_result,
-                        compile_time_sec=round(compile_time, 3),
-                        error=presolve_result.decision_message,
-                        summary={"presolve": presolve_result.to_dict()},
-                    )
+                    # heuristic solver(CQM 등)는 soft constraint 처리 → presolve hard 검증 부적합
+                    # exact solver만 차단, heuristic은 경고로 다운그레이드
+                    from engine.compiler.compiler_registry import supports_set_partitioning
+                    is_heuristic = not supports_set_partitioning(solver_id)
+                    if is_heuristic:
+                        logger.warning(
+                            f"Presolve HARD_BLOCK downgraded to WARNING for heuristic solver '{solver_id}': "
+                            f"{presolve_result.decision_message}"
+                        )
+                    else:
+                        logger.error(
+                            f"Presolve HARD_BLOCK: {presolve_result.decision_message}"
+                        )
+                        return PipelineResult(
+                            success=False, phase="presolve", solver_id=solver_id,
+                            compile_result=compile_result,
+                            compile_time_sec=round(compile_time, 3),
+                            error=presolve_result.decision_message,
+                            summary={"presolve": presolve_result.to_dict()},
+                        )
 
                 # CONDITIONAL_BLOCK / USER_CONFIRMATION → 경고 로그 (차단은 프론트엔드에서)
                 if decision in (
