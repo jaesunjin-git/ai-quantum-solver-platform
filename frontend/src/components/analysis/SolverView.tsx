@@ -167,7 +167,7 @@ export function SolverView({
           variable_count: profile.variable_count || '-',
           constraint_count: profile.constraint_count || '-',
           variable_types: profile.variable_types?.join(', ') || '-',
-          time_limit_sec: solver?.time_limit_sec || 300,
+          time_limit_sec: solver?.time_limit_sec || 720,
         });
       }, 1000);
       return;
@@ -319,7 +319,7 @@ export function SolverView({
   };
 
   const selectedSolverData = solvers[selectedSolver];
-  const timeLimitSec = selectedSolverData?.time_limit_sec || 300;
+  const timeLimitSec = selectedSolverData?.time_limit_sec || 720;
   const estimatedTime = selectedSolverData?.estimated_time;
 
   // Compare mode results for CompareResultsPanel

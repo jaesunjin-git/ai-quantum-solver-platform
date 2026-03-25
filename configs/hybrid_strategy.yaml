@@ -16,7 +16,7 @@ quantum_warmstart:
   default_mode: "cqm_then_cpsat"
 
   # ── 시간 예산 배분 ──
-  cqm_time_fraction: 0.3        # 총 예산 중 CQM에 할당 (30%)
+  cqm_time_fraction: 0.1        # 총 예산 중 CQM에 할당 (10% — CQM은 5초 내 완료)
   cqm_min_time_sec: 60          # CQM 최소 시간 (D-Wave min_time_limit 이상)
   cpsat_min_time_sec: 120       # CP-SAT 최소 시간 (이 미만이면 hybrid 포기)
   total_default_time_sec: 720   # 기본 총 시간 예산
