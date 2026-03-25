@@ -150,6 +150,10 @@ def build_model_from_template(
         model["variables"] = model_variables
 
         # ─── 3. Constraints 조립 ───
+        # obj_target을 먼저 추출 (objective_operator_override 적용에 필요)
+        cp_objective = confirmed_problem.get("objective", {})
+        obj_target = cp_objective.get("target", "minimize_duties")
+
         template_constraints = template.get("constraints", {})
         model_constraints = []
         all_parameter_ids = set()
