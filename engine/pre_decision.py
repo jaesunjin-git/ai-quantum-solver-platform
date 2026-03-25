@@ -591,6 +591,64 @@ def _generate_execution_strategies(
             })
 
     #
+    # Strategy E: Quantum Warmstart (CQM → CP-SAT Hybrid)
+    #   - 조건: SP 문제 + classical + CQM hybrid 모두 존재
+    #   - CQM이 빠르게 FEASIBLE 해를 찾아 CP-SAT에 warm start hint 제공
+    #
+    if modeling_pattern == "set_partitioning" and classical_solvers and hybrid_solvers:
+        top_classical = classical_solvers[0]
+        top_hybrid = hybrid_solvers[0]
+        strategies.append({
+            "strategy_id": "quantum_warmstart",
+            "strategy_type": "quantum_warmstart",
+            "name": f"양자 Warm Start: {top_hybrid['solver_name']} → {top_classical['solver_name']}",
+            "description": (
+                f"1단계: {top_hybrid['solver_name']}이 넓은 탐색 공간에서 초기 해를 빠르게 탐색합니다. "
+                f"2단계: {top_classical['solver_name']}이 초기 해를 warm start로 받아 정밀 최적화합니다. "
+                "양자 하이브리드의 글로벌 탐색 + 고전 솔버의 정밀 최적화를 결합합니다."
+            ),
+            "pros": [
+                "양자 하이브리드의 빠른 글로벌 탐색",
+                "CP-SAT warm start로 탐색 시간 대폭 단축",
+                "단일 솔버보다 안정적인 OPTIMAL 도달",
+            ],
+            "cons": [
+                "D-Wave API 비용 발생 (CQM phase)",
+                "CQM 해 품질이 낮으면 hint 효과 제한적",
+            ],
+            "estimated_time": [30.0, 300.0],
+            "estimated_cost": [0.01, 0.05],
+            "confidence": round(
+                (top_classical["total_score"] + top_hybrid["total_score"]) / 2 * 1.05,
+                1
+            ),
+            "steps": [
+                {
+                    "step_id": "step_1_cqm",
+                    "step_order": 1,
+                    "solver_id": top_hybrid["solver_id"],
+                    "solver_name": top_hybrid["solver_name"],
+                    "provider": top_hybrid["provider"],
+                    "role": "warmstart_provider",
+                    "input_type": "set_partitioning",
+                    "description": f"{top_hybrid['solver_name']}으로 초기 해 탐색 (30% 시간)",
+                    "parallel_group": None,
+                },
+                {
+                    "step_id": "step_2_cpsat",
+                    "step_order": 2,
+                    "solver_id": top_classical["solver_id"],
+                    "solver_name": top_classical["solver_name"],
+                    "provider": top_classical["provider"],
+                    "role": "main_solver",
+                    "input_type": "warmstart_hint",
+                    "description": f"{top_classical['solver_name']}으로 warm start 정밀 최적화 (70% 시간)",
+                    "parallel_group": None,
+                },
+            ],
+        })
+
+    #
     # 중복 제거 + 정렬 + 상위 5개
     #
     seen_ids = set()
