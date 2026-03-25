@@ -559,7 +559,7 @@ export function SolverView({
                 </div>
                 <div className="text-[13px] text-cyan-400 font-mono">
                   {jobPoll.result.summary?.interpreted_result?.objective_display_value
-                    || jobPoll.result.summary?.objective_value ?? '-'}
+                    || (jobPoll.result.summary?.objective_value ?? '-')}
                 </div>
               </div>
               <div>
