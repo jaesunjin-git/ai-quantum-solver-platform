@@ -2449,7 +2449,7 @@ Soft 제약조건:
         objective_id = ""
         if state.problem_definition:
             obj = state.problem_definition.get("objective", {})
-            objective_id = obj.get("id", obj.get("name", ""))
+            objective_id = obj.get("target", obj.get("id", obj.get("name", "")))
 
         questions = detector.detect(
             parameters=parameters,
