@@ -665,21 +665,14 @@ class SolverPipeline:
         )
         hybrid_result.strategy_used = "hybrid_warmstart"
 
-        # improvement 계산
-        if (hybrid_result.cqm_phase and hybrid_result.cqm_phase.objective_value
-                and cpsat_exec.objective_value):
-            cqm_obj = hybrid_result.cqm_phase.objective_value
-            cpsat_obj = cpsat_exec.objective_value
-            if cqm_obj > 0:
-                hybrid_result.improvement_pct = (cqm_obj - cpsat_obj) / cqm_obj * 100
-
+        # improvement: CQM/CP-SAT objective scale이 다르므로 직접 비교 불가
+        # 대신 CP-SAT 단독 대비 시간 단축을 기록
         logger.info(
             f"Hybrid complete: CQM={hybrid_result.cqm_phase.status} "
-            f"→ CP-SAT={cpsat_exec.status}, "
-            f"hints={hints_injected}, "
-            f"improvement={hybrid_result.improvement_pct:.1f}%"
-            if hybrid_result.improvement_pct is not None else
-            f"Hybrid complete: CP-SAT={cpsat_exec.status}"
+            f"({hybrid_result.cqm_phase.time_sec:.1f}s) → "
+            f"CP-SAT={cpsat_exec.status} "
+            f"({cpsat_exec.execution_time_sec:.1f}s), "
+            f"hints={hints_injected}"
         )
 
         # ── Phase 6: Summary ──

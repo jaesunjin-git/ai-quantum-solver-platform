@@ -147,17 +147,20 @@ def inject_warmstart_hints(
                 f"= {quality:.2f} < {config.min_hint_quality}"
             )
 
-    # Hint 주입: CQM의 z값을 CP-SAT 변수에 매핑
+    # Hint 주입: CQM이 선택한 column(z=1)만 hint
+    # 미선택 변수는 hint 없이 CP-SAT이 자유 탐색
+    # (전체에 AddHint(0)을 넣으면 탐색이 왜곡됨)
+    cqm_selected = {k for k, v in z_values.items() if int(v) > 0}
     count = 0
     for col_id, var in cpsat_z_map.items():
-        # CQM executor는 string key로 반환 → str(col_id)로 조회
-        cqm_val = z_values.get(str(col_id), 0)
-        cpsat_model.AddHint(var, int(cqm_val))
-        count += 1
+        if str(col_id) in cqm_selected:
+            cpsat_model.AddHint(var, 1)
+            count += 1
 
     logger.info(
         f"Hybrid hint: {count} hints injected "
-        f"(CQM selected {selected_count} columns)"
+        f"(CQM selected {selected_count} columns, "
+        f"remaining {len(cpsat_z_map) - count} vars free)"
     )
     return count, ""
 
