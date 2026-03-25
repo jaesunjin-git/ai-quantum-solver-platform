@@ -1,6 +1,15 @@
-version: '3.0'
+version: '3.1'
 domain: railway
 description: 철도 승무원 스케줄링 제약조건 (범용 설계, 자동 분류 + 사용자 확인)
+# ── v3.1 변경 (2026-03-25) ──
+# 신규 선언 필드 3종 추가 (YAML만, 소비 코드는 후속):
+#   resolution_priority: int (1-10) — INFEASIBLE 시 완화 순서. 낮을수록 먼저 완화.
+#     원칙: 안전(9) > 법규(7-8) > 운영(5-6) > 사용자지정(4) > 효율/목표(1-2)
+#     fixed_category=true인 구조적 제약은 null (완화 불가).
+#   linking: {group, requires, conflicts_with} — 제약간 의존성 선언.
+#   big_m_strategy: "none" | "indicator" | "horizon" — big-M 처리 전략.
+#     indicator: CP-SAT OnlyEnforceIf로 변환 가능 (is_night 패턴).
+#     horizon: time_axis 기반 동적 계산 (period × horizon_days).
 category_rules:
   hard_keywords:
   - 이내
@@ -132,6 +141,9 @@ constraints:
     parameters: []
     default_category: hard
     fixed_category: true
+    resolution_priority: null
+    linking: {group: structural, requires: [], conflicts_with: []}
+    big_m_strategy: none
     structured:
       lhs:
         type: sum
@@ -157,6 +169,9 @@ constraints:
     parameters: []
     default_category: hard
     fixed_category: true
+    resolution_priority: null
+    linking: {group: structural, requires: [trip_coverage], conflicts_with: []}
+    big_m_strategy: none
     structured:
       lhs:
         type: variable
@@ -182,6 +197,9 @@ constraints:
     parameters: []
     default_category: hard
     fixed_category: true
+    resolution_priority: null
+    linking: {group: structural, requires: [], conflicts_with: []}
+    big_m_strategy: none
     structured:
       lhs:
         type: sum
@@ -242,6 +260,9 @@ constraints:
     - 핸들타임
     - handle time
     - 최대 운전
+    resolution_priority: 7
+    linking: {group: driving_time, requires: [crew_activation_linking], conflicts_with: []}
+    big_m_strategy: none
     category: hard
     context_must:
     - 이내
@@ -268,6 +289,9 @@ constraints:
     - 평균 핸들
     - 운전시간 평균
     - 사업 평균 운전
+    resolution_priority: 2
+    linking: {group: driving_time, requires: [max_driving_time], conflicts_with: []}
+    big_m_strategy: none
     category: soft
     context_must:
     - 평균
@@ -312,6 +336,9 @@ constraints:
     - 구속시간
     - duty time
     - 근무시간 이내
+    resolution_priority: 8
+    linking: {group: work_time, requires: [crew_activation_linking], conflicts_with: [overnight_work_time_excluding_sleep]}
+    big_m_strategy: indicator
     category: hard
     context_must:
     - 근무
@@ -359,6 +386,9 @@ constraints:
     typical_range:
     - 180
     - 360
+    resolution_priority: 5
+    linking: {group: wait_time, requires: [crew_activation_linking], conflicts_with: []}
+    big_m_strategy: indicator
     note: "주간(is_night=0) 적용. 순수 대기 = span - 운전 - 출고준비(60) - 입고정리(40) - 휴식(30)"
 
   max_wait_time_night:
@@ -394,6 +424,9 @@ constraints:
     typical_range:
     - 180
     - 360
+    resolution_priority: 5
+    linking: {group: wait_time, requires: [day_night_classification], conflicts_with: []}
+    big_m_strategy: indicator
     note: "야간(is_night=1) 적용. 순수 대기 = span - 운전 - 익일출고준비(50) - 당일입고정리(30) - 휴식(30) - 수면(240)"
   avg_wait_time_target:
     description: 사업평균 대기시간 목표 (순수 유휴시간 기준)
@@ -448,6 +481,9 @@ constraints:
     - 평균
     - avg
     - 인정
+    resolution_priority: 2
+    linking: {group: wait_time, requires: [], conflicts_with: []}
+    big_m_strategy: none
     note: "순수 대기 = span - 운전 - 준비(주간값) - 정리(주간값) - 휴식 - 수면(야간 자동차감). soft이므로 주간 prep/cleanup 기준(보수적)."
   max_total_stay_time:
     description: 1사업 최대 체재시간
@@ -475,6 +511,9 @@ constraints:
     - 총 체재
     - total stay
     - 회사 내 체류
+    resolution_priority: 3
+    linking: {group: stay_time, requires: [crew_activation_linking], conflicts_with: []}
+    big_m_strategy: none
     category: hard
     context_must:
     - 체류
@@ -517,6 +556,9 @@ constraints:
     detection_hints: [출근, 준비시간, preparation, 사전점검, 출근점호]
     category: hard
     typical_range: [20, 60]
+    resolution_priority: null
+    linking: {group: duty_boundary, requires: [], conflicts_with: []}
+    big_m_strategy: none
     note: "duty_start = first_trip_dep - prep (등식). 컴파일러가 first_trip_dep 링킹 자동 생성."
 
   cleanup_time:
@@ -547,6 +589,9 @@ constraints:
     detection_hints: [정리시간, cleanup, 퇴근점호]
     category: hard
     typical_range: [20, 60]
+    resolution_priority: null
+    linking: {group: duty_boundary, requires: [], conflicts_with: []}
+    big_m_strategy: none
     note: "duty_end = last_trip_arr + cleanup (등식). 컴파일러가 last_trip_arr 링킹 자동 생성."
   mandatory_break:
     description: 필수 휴식시간
@@ -594,6 +639,9 @@ constraints:
     - 식사시간
     - 쉬는 시간
     - rest
+    resolution_priority: 6
+    linking: {group: rest, requires: [crew_activation_linking], conflicts_with: []}
+    big_m_strategy: none
     category: hard
     context_exclude:
     - 식사
@@ -616,6 +664,9 @@ constraints:
     - 식사시간 보장
     - 점심
     - 식사 휴식
+    resolution_priority: 5
+    linking: {group: rest, requires: [], conflicts_with: []}
+    big_m_strategy: none
     category: hard
     context_must:
     - 식사
@@ -642,6 +693,9 @@ constraints:
     context_exclude:
     - 야간
     - night
+    resolution_priority: 6
+    linking: {group: duty_boundary, requires: [], conflicts_with: []}
+    big_m_strategy: none
     typical_range:
     - 360
     - 420
@@ -669,6 +723,9 @@ constraints:
     context_exclude:
     - 야간
     - night
+    resolution_priority: 6
+    linking: {group: duty_boundary, requires: [], conflicts_with: []}
+    big_m_strategy: indicator
     typical_range:
     - 1320
     - 1440
@@ -712,6 +769,9 @@ constraints:
     - 권장
     - 취침
     - 수면
+    resolution_priority: 7
+    linking: {group: night_ops, requires: [day_night_classification], conflicts_with: []}
+    big_m_strategy: none
     typical_range:
     - 960
     - 1140
@@ -752,6 +812,9 @@ constraints:
     - 가급적
     - 권장
     - preferred
+    resolution_priority: 2
+    linking: {group: night_ops, requires: [night_duty_start], conflicts_with: []}
+    big_m_strategy: none
     typical_range:
     - 1020
     - 1140
@@ -769,6 +832,9 @@ constraints:
     - 숙박 구분
     - 주야 분리
     - 근무 구분
+    resolution_priority: 7
+    linking: {group: night_ops, requires: [], conflicts_with: []}
+    big_m_strategy: none
     category: hard
   night_sleep_guarantee:
     description: 야간 수면시간 보장
@@ -797,6 +863,9 @@ constraints:
     - 취침
     - 수면
     - sleep
+    resolution_priority: 9
+    linking: {group: night_ops, requires: [day_night_classification], conflicts_with: []}
+    big_m_strategy: indicator
     typical_range:
     - 180
     - 300
@@ -856,6 +925,9 @@ constraints:
     - 출고
     - 숙박
     - 야간 휴식
+    resolution_priority: 8
+    linking: {group: night_ops, requires: [day_night_classification], conflicts_with: []}
+    big_m_strategy: none
     typical_range:
     - 280
     - 400
@@ -884,6 +956,9 @@ constraints:
     context_must:
     - 숙박
     - 수면 제외
+    resolution_priority: 8
+    linking: {group: work_time, requires: [day_night_classification], conflicts_with: [max_work_time]}
+    big_m_strategy: indicator
     typical_range:
     - 540
     - 720
@@ -916,6 +991,9 @@ constraints:
     context_exclude:
     - 교육
     - training
+    resolution_priority: 3
+    linking: {group: rest, requires: [], conflicts_with: []}
+    big_m_strategy: horizon
     typical_range:
     - 60
     - 240
@@ -951,6 +1029,9 @@ constraints:
     context_must:
     - 교육
     - training
+    resolution_priority: 1
+    linking: {group: rest, requires: [], conflicts_with: []}
+    big_m_strategy: none
     typical_range:
     - 60
     - 180
@@ -970,6 +1051,9 @@ constraints:
     - balance
     - 공평
     - 편차
+    resolution_priority: 1
+    linking: {group: balance, requires: [], conflicts_with: []}
+    big_m_strategy: none
     category: soft
 
   # ── 승무원 인원 고정 제약 ──
@@ -1016,6 +1100,9 @@ constraints:
     - day crew count
     context_must:
     - 주간
+    resolution_priority: 4
+    linking: {group: crew_count, requires: [crew_activation_linking], conflicts_with: []}
+    big_m_strategy: none
     category: hard
 
   fixed_night_crew_count:
@@ -1061,6 +1148,9 @@ constraints:
     - night crew count
     context_must:
     - 야간
+    resolution_priority: 4
+    linking: {group: crew_count, requires: [crew_activation_linking, day_night_classification], conflicts_with: []}
+    big_m_strategy: none
     category: hard
 
   fixed_total_duties:
@@ -1100,6 +1190,9 @@ constraints:
     - 총 사업
     - 사업수
     - total duties
+    resolution_priority: 4
+    linking: {group: crew_count, requires: [crew_activation_linking], conflicts_with: []}
+    big_m_strategy: none
     category: hard
 
 objectives:
