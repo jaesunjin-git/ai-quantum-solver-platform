@@ -202,16 +202,16 @@ class CQMCompiler(BaseSPCompiler):
         cqm.set_objective(quicksum(obj_terms))
 
         # objective_scale: weight 자동 결정의 기준
-        # CQM objective는 정규화(0~1)되므로, 45개 column 선택 시 총 objective ≈ 45
-        # weight가 총 objective보다 충분히 커야 CQM이 제약 위반보다 objective 개선을 포기
         num_columns = len(columns)
-        objective_total_estimate = num_columns  # 최악 case: 모든 column 선택
-        objective_scale = max(objective_total_estimate, max_score)
+        objective_scale = max(num_columns, max_score)
 
-        # ── 3. Coverage 제약: constraint_class 기반 weight 자동 결정 ──
-        # hard_structural (coverage, crew count) → objective 총합보다 충분히 큰 weight
-        # → 제약 1건 위반 penalty > 전체 objective 개선 가능량
-        structural_weight = objective_scale * 10
+        # ── 3. Coverage 제약: 단독/Hybrid weight 분리 ──
+        # 단독: feasibility 최우선 → objective를 압도하는 극한 weight
+        # Hybrid: hint 품질 우선 → objective와 균형 잡힌 weight
+        if is_hybrid:
+            structural_weight = objective_scale * 10   # 적당 → 좋은 방향 hint
+        else:
+            structural_weight = objective_scale * 1000  # 극한 → exact partition 강제
         coverage_count = 0
         for tid in problem.task_ids:
             col_ids = task_to_columns.get(tid, [])
