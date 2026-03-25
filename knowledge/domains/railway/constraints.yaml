@@ -199,6 +199,22 @@ constraints:
     - activation
     - crew link
     category: hard
+  crew_activation_reverse:
+    description: 활성화된 crew에는 최소 1개 트립이 배정되어야 함
+    expression_template: y[j] <= sum(x[i,j] for i in I)
+    for_each: j in J
+    parameters: []
+    default_category: hard
+    fixed_category: true
+    constraint_class: hard_operational  # project-specific: override as needed
+    linking: {group: structural, requires: [crew_activation_linking], conflicts_with: []}
+    big_m_strategy: none
+    detection_hints:
+    - 역방향 활성화
+    - reverse activation
+    - 빈 duty 방지
+    category: hard
+    note: "y[j]=1이면 sum(x[i,j])>=1 보장. 빈 duty(y=1, trip=0) 방지."
   no_overlap:
     description: 시간 겹치는 트립은 같은 crew에 배정 금지
     expression_template: x[i1,j] + x[i2,j] <= 1

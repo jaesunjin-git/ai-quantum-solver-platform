@@ -338,6 +338,25 @@ class SolverPipeline:
                 time_limit_sec=int(solver_time),
             )
 
+            # ── 디버그: CQM raw solution 구조 확인 ──
+            if execute_result.success and execute_result.solution:
+                sol = execute_result.solution
+                # non-SP: solution["y"] = {"(0,)": 1.0, "(1,)": 1.0, ...}
+                # SP: solution["z"] = {"col_id": 1, ...}
+                y_data = sol.get("y", {})
+                x_data = sol.get("x", {})
+                active_y = len(y_data) if isinstance(y_data, dict) else (1 if y_data else 0)
+                duties_with_trips = len(set(
+                    k.split(",")[-1].strip(" )('\"") if "," in str(k) else str(k)
+                    for k in (x_data.keys() if isinstance(x_data, dict) else [])
+                ))
+                logger.info(
+                    f"CQM raw solution: top_keys={list(sol.keys())}, "
+                    f"active_y={active_y}, "
+                    f"active_x_entries={len(x_data) if isinstance(x_data, dict) else 0}, "
+                    f"duties_with_trips={duties_with_trips}"
+                )
+
             if not execute_result.success:
                 # INFEASIBLE 등 실패 시에도 진단 정보를 summary에 포함
                 fail_summary = {
