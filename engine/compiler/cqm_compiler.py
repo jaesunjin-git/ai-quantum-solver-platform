@@ -29,12 +29,20 @@ class CQMCompiler(BaseSPCompiler):
         """BaseSPCompiler → D-Wave CQM 변환"""
         return self._compile_cqm(sp_problem, math_model=math_model, **kwargs)
 
-    # CQM column cap: 단독 vs Hybrid 분리
-    # 단독: 탐색 공간 축소 (2,000) → feasible 확률 향상
-    # Hybrid: 넓은 탐색 (20,000) → hint 품질 우선
-    import os as _os
-    CQM_MAX_COLUMNS_STANDALONE = int(_os.environ.get("CQM_MAX_COLUMNS_STANDALONE", 20000))
-    CQM_MAX_COLUMNS_HYBRID = int(_os.environ.get("CQM_MAX_COLUMNS_HYBRID", 20000))
+    @staticmethod
+    def _load_cqm_config() -> dict:
+        """configs/hybrid_strategy.yaml에서 CQM compiler 설정 로딩."""
+        import os, yaml
+        yaml_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "configs", "hybrid_strategy.yaml"
+        )
+        try:
+            with open(yaml_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+            return data.get("cqm_compiler", {})
+        except Exception:
+            return {}
 
     @staticmethod
     def _cap_with_coverage(
@@ -156,11 +164,13 @@ class CQMCompiler(BaseSPCompiler):
 
         t0 = time.time()
 
-        # ── 0. Column cap: 단독 vs Hybrid 분리 ──
-        # 단독: 탐색 공간 축소 (feasible 확률 ↑)
-        # Hybrid: 넓은 탐색 (hint 품질 ↑, exact partition 불필요)
+        # ── 0. Column cap + constraint 전략: YAML config 기반 ──
         is_hybrid = kwargs.get("is_hybrid", False)
-        cap = self.CQM_MAX_COLUMNS_HYBRID if is_hybrid else self.CQM_MAX_COLUMNS_STANDALONE
+        cqm_cfg = self._load_cqm_config()
+        mode_cfg = cqm_cfg.get("hybrid" if is_hybrid else "standalone", {})
+        cap = mode_cfg.get("max_columns", 20000)
+        constraint_mode = mode_cfg.get("constraint_mode", "hard" if not is_hybrid else "soft")
+        weight_multiplier = mode_cfg.get("soft_weight_multiplier", 10)
         columns = problem.columns
         if len(columns) > cap:
             columns = self._cap_with_coverage(
@@ -205,13 +215,13 @@ class CQMCompiler(BaseSPCompiler):
         num_columns = len(columns)
         objective_scale = max(num_columns, max_score)
 
-        # ── 3. Coverage 제약: 단독/Hybrid 전략 분리 ──
-        # 단독: HARD constraint (weight 없음) → D-Wave가 feasible = exact partition 보장
-        # Hybrid: soft weight → hint 품질 우선, exact partition 불필요
-        if is_hybrid:
-            structural_weight = objective_scale * 10
+        # ── 3. Coverage 제약: YAML config 기반 전략 ──
+        # "hard" → D-Wave 네이티브 hard (weight=None, feasible = exact partition)
+        # "soft" → objective_scale × multiplier (hint 품질 우선)
+        if constraint_mode == "hard":
+            structural_weight = None
         else:
-            structural_weight = None  # None = hard constraint (D-Wave CQM 네이티브)
+            structural_weight = objective_scale * weight_multiplier
 
         coverage_count = 0
         for tid in problem.task_ids:
@@ -248,11 +258,10 @@ class CQMCompiler(BaseSPCompiler):
             extra_count += 1
             logger.info(f"CQM: {constraint.label}")
 
-        mode_str = "hybrid(soft)" if is_hybrid else "standalone(hard)"
         logger.info(
-            f"CQM constraints: mode={mode_str}, "
-            f"coverage={coverage_count}, extra={extra_count}, "
-            f"objective_scale={objective_scale}"
+            f"CQM constraints: mode={constraint_mode}, "
+            f"weight={'hard' if structural_weight is None else structural_weight}, "
+            f"coverage={coverage_count}, extra={extra_count}"
         )
 
         compile_time = time.time() - t0

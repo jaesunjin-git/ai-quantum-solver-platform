@@ -54,3 +54,16 @@ quantum_warmstart:
   # ── 자동 방향 선택 (v2) ──
   auto_select: false
   threshold_variables: 50000    # 이상이면 cpsat_then_cqm 방향 선택
+
+# ============================================================
+# CQM Compiler 설정 (단독 / Hybrid 분리)
+# ============================================================
+cqm_compiler:
+  standalone:
+    max_columns: 20000
+    constraint_mode: "hard"           # "hard" = D-Wave 네이티브, "soft" = weight 기반
+    soft_weight_multiplier: 1000      # constraint_mode=soft일 때만 사용
+  hybrid:
+    max_columns: 20000
+    constraint_mode: "soft"           # Hybrid: hint 품질 우선
+    soft_weight_multiplier: 10        # objective_scale × 이 값
