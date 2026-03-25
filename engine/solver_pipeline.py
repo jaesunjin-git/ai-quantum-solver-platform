@@ -44,6 +44,18 @@ class PipelineResult:
     error: Optional[str] = None
 
 
+@dataclass
+class PipelineContext:
+    """한 번의 파이프라인 실행에 필요한 모든 mutable 상태.
+    run() 시작 시 생성, 각 phase에 전달, 실행 종료 후 폐기.
+    재사용 시 이전 실행 상태 오염 방지."""
+    project_id: str = ""
+    gate3_result: Optional[Dict[str, Any]] = None
+    stage5_validation: Optional[Dict[str, Any]] = None
+    sp_duty_map: Optional[Dict[int, Any]] = None
+    sp_duties: Optional[list] = None  # 전체 생성 column (현재 미사용, 향후 확장용)
+
+
 # ============================================================
 # Pipeline Runner
 # ============================================================
@@ -91,7 +103,7 @@ class SolverPipeline:
     ) -> PipelineResult:
         """전체 파이프라인 실행"""
 
-        self._current_project_id = project_id
+        ctx = PipelineContext(project_id=project_id)
         logger.info(f"Pipeline: solver={solver_id}, project={project_id}")
 
         #  Phase 1: Data Binding 
@@ -123,7 +135,7 @@ class SolverPipeline:
             if _use_sp:
                 compile_start = time.time()
                 compile_result, compile_time = self._compile_set_partitioning(
-                    math_model, bound_data, project_id, solver_id, **kwargs
+                    math_model, bound_data, project_id, solver_id, ctx=ctx, **kwargs
                 )
             else:
                 # ── 기존 경로 (D-Wave 등) ──
@@ -213,7 +225,7 @@ class SolverPipeline:
                 )
 
             # Gate3 결과 저장 (compile_summary에 포함)
-            self._gate3_result = gate3_result
+            ctx.gate3_result = gate3_result
 
             if gate3_result["warnings"]:
                 for gw in gate3_result["warnings"]:
@@ -251,13 +263,13 @@ class SolverPipeline:
                 "warnings": compile_result.warnings or [],
                 # PresolveProber 전용 context
                 "bound_data": bound_data,
-                "gate3_result": getattr(self, "_gate3_result", {}),
+                "gate3_result": ctx.gate3_result or {},
                 "_compile_result": compile_result,
             }
             stage5_result = registry.run_stage(5, stage5_ctx)
             if stage5_result.items:
                 # Store for inclusion in final summary
-                self._stage5_validation = stage5_result.to_dict()
+                ctx.stage5_validation = stage5_result.to_dict()
                 logger.info(
                     f"Stage5 validation: errors={stage5_result.error_count}, "
                     f"warnings={stage5_result.warning_count}"
@@ -373,7 +385,7 @@ class SolverPipeline:
         summary = self._build_summary(
             math_model, solver_id, solver_name,
             compile_result, compile_time, execute_result,
-            bound_data=bound_data,
+            bound_data=bound_data, ctx=ctx,
         )
 
         return PipelineResult(
@@ -390,13 +402,14 @@ class SolverPipeline:
     def _build_sp_summary(
         self, math_model, solver_id, solver_name,
         compile_result, compile_time, execute_result, bound_data,
+        ctx: PipelineContext = None,
     ) -> Dict[str, Any]:
         """Set Partitioning 결과 → 기존 프론트엔드 포맷 summary"""
         from engine.column_generator import load_tasks_from_csv
         import os
 
-        column_map = getattr(self, "_sp_duty_map", {})
-        project_id = getattr(self, "_current_project_id", "")
+        column_map = ctx.sp_duty_map or {} if ctx else {}
+        project_id = ctx.project_id if ctx else ""
         trips_path = os.path.join("uploads", str(project_id), "normalized", "trips.csv")
 
         tasks = []
@@ -480,7 +493,7 @@ class SolverPipeline:
         return summary
 
     def _compile_set_partitioning(
-        self, math_model, bound_data, project_id, solver_id, **kwargs
+        self, math_model, bound_data, project_id, solver_id, ctx: PipelineContext = None, **kwargs
     ):
         """
         Set Partitioning 컴파일 (Adaptive Column Generation 지원).
@@ -838,8 +851,9 @@ class SolverPipeline:
 
         # column_map 저장
         if best_compile and best_compile.success:
-            self._sp_duties = all_columns
-            self._sp_duty_map = {d.id: d for d in all_columns}
+            if ctx:
+                ctx.sp_duties = all_columns
+                ctx.sp_duty_map = {d.id: d for d in all_columns}
 
         return best_compile or compile_result, round(compile_time, 3)
 
@@ -852,6 +866,7 @@ class SolverPipeline:
         compile_time: float,
         execute_result: ExecuteResult,
         bound_data: Optional[Dict] = None,
+        ctx: PipelineContext = None,
     ) -> Dict[str, Any]:
         """프론트엔드에 보낼 결과 요약 생성 (compile_summary 포함)"""
 
@@ -859,7 +874,7 @@ class SolverPipeline:
         if compile_result.metadata.get("model_type") == "SetPartitioning":
             return self._build_sp_summary(
                 math_model, solver_id, solver_name,
-                compile_result, compile_time, execute_result, bound_data,
+                compile_result, compile_time, execute_result, bound_data, ctx=ctx,
             )
 
         # 비영 솔루션 변수 개수
@@ -902,7 +917,7 @@ class SolverPipeline:
         }
 
         # Gate3 결과 포함
-        gate3 = getattr(self, "_gate3_result", None)
+        gate3 = ctx.gate3_result if ctx else None
         if gate3:
             compile_summary["gate3"] = {
                 "pass": gate3["pass"],
@@ -961,7 +976,7 @@ class SolverPipeline:
 
         # ── 결과 해석 및 산출물 저장 ──
         try:
-            project_dir = f"uploads/{self._current_project_id}" if hasattr(self, '_current_project_id') else None
+            project_dir = f"uploads/{ctx.project_id}" if ctx and ctx.project_id else None
             if project_dir and os.path.isdir(project_dir):
                 interpreted = interpret_result(
                     solution=execute_result.solution,
@@ -1004,7 +1019,7 @@ class SolverPipeline:
             validation = stage6_result.to_dict()
 
             # Merge Stage 5 presolve findings into the validation response
-            stage5 = getattr(self, "_stage5_validation", None)
+            stage5 = ctx.stage5_validation if ctx else None
             if stage5 and stage5.get("items"):
                 validation["items"] = stage5["items"] + validation["items"]
                 validation["error_count"] += stage5.get("error_count", 0)
