@@ -554,8 +554,13 @@ export function SolverView({
                 <div className="text-[13px] text-white font-mono">{jobPoll.result.summary?.status || jobPoll.result.status}</div>
               </div>
               <div>
-                <div className="text-[11px] text-slate-500">목적함수</div>
-                <div className="text-[13px] text-cyan-400 font-mono">{jobPoll.result.summary?.objective_value ?? '-'}</div>
+                <div className="text-[11px] text-slate-500">
+                  {jobPoll.result.summary?.interpreted_result?.objective_label || '목적함수'}
+                </div>
+                <div className="text-[13px] text-cyan-400 font-mono">
+                  {jobPoll.result.summary?.interpreted_result?.objective_display_value
+                    || jobPoll.result.summary?.objective_value ?? '-'}
+                </div>
               </div>
               <div>
                 <div className="text-[11px] text-slate-500">실행 시간</div>

@@ -24,7 +24,7 @@ export function KPIDashboard({
       <div className="space-y-4">
         <div className="grid grid-cols-3 gap-3">
           <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700 text-center">
-            <div className="text-xs text-slate-500 uppercase mb-1">Objective</div>
+            <div className="text-xs text-slate-500 uppercase mb-1">목적함수 값</div>
             <div className={`text-2xl font-bold ${isFeasible ? 'text-green-400' : 'text-red-400'}`}>
               {formatNumber(data.objective_value)}
             </div>
@@ -48,8 +48,16 @@ export function KPIDashboard({
       {/* 최적화 목적 표시 */}
       <div className="bg-slate-800/30 rounded-xl p-3 border border-slate-700 flex items-center gap-3">
         <div className="text-xs text-slate-500 uppercase whitespace-nowrap">최적화 목적</div>
-        <div className="text-sm font-bold text-cyan-400">{interpreted.objective_label || interpreted.objective_type || '목적함수 최적화'}</div>
-        <div className="text-xs text-slate-500 ml-auto">목적함수 값: <span className="text-white font-mono">{formatNumber(interpreted.objective_value)}</span></div>
+        <div className="text-sm font-bold text-cyan-400">
+          {interpreted.objective_label || interpreted.objective_type || '목적함수 최적화'}
+          {(interpreted as any).objective_display_value && (
+            <span className="ml-2 text-white">{(interpreted as any).objective_display_value}</span>
+          )}
+        </div>
+        <div className="text-xs text-slate-500 ml-auto">
+          {(interpreted as any).objective_direction && <span className="mr-2 text-slate-400">({(interpreted as any).objective_direction})</span>}
+          원시값: <span className="text-white font-mono">{formatNumber(interpreted.objective_value)}</span>
+        </div>
       </div>
 
       {/* 핵심 KPI */}

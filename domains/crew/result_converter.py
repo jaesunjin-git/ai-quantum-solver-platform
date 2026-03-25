@@ -16,6 +16,64 @@ from engine.sp_result_converter import convert_sp_result as _generic_convert
 
 logger = logging.getLogger(__name__)
 
+# YAML objective_display 캐시
+_objective_display_cache: Optional[Dict] = None
+
+
+def _load_objective_display() -> Dict:
+    """result_mapping.yaml에서 objective_display 섹션 로딩 (캐시)"""
+    global _objective_display_cache
+    if _objective_display_cache is not None:
+        return _objective_display_cache
+
+    import os
+    import yaml
+    yaml_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+        "knowledge", "domains", "railway", "result_mapping.yaml"
+    )
+    try:
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        _objective_display_cache = data.get("objective_display", {})
+    except Exception as e:
+        logger.warning(f"Failed to load objective_display: {e}")
+        _objective_display_cache = {}
+    return _objective_display_cache
+
+
+def _resolve_objective_display(
+    objective_type: str, kpi: Dict, objective_value: Optional[float]
+) -> Dict[str, str]:
+    """YAML 기반 목적함수 표시 정보 해석"""
+    display_config = _load_objective_display()
+    cfg = display_config.get(objective_type, {})
+
+    label = cfg.get("label_ko", "목적함수 최적화")
+    direction = cfg.get("direction", "")
+    suffix = cfg.get("value_suffix", "")
+
+    # value_source 해석 (dotted key: "kpi.active_duties" → kpi["active_duties"])
+    value_source = cfg.get("value_source", "objective_value")
+    if value_source == "objective_value":
+        raw = objective_value
+    elif value_source.startswith("kpi."):
+        kpi_key = value_source.split(".", 1)[1]
+        raw = kpi.get(kpi_key)
+    else:
+        raw = objective_value
+
+    if raw is not None:
+        # 정수면 정수 표시, 소수면 소수 표시
+        if isinstance(raw, float) and raw == int(raw):
+            display_value = f"{int(raw)}{suffix}"
+        else:
+            display_value = f"{raw}{suffix}"
+    else:
+        display_value = ""
+
+    return {"label": label, "display_value": display_value, "direction": direction}
+
 
 def convert_crew_result(
     solution: Dict[str, Any],
@@ -26,6 +84,7 @@ def convert_crew_result(
     project_dir: Optional[str] = None,
     objective_value: Optional[float] = None,
     params: Optional[Dict] = None,
+    objective_type: str = "minimize_duties",
     # 하위 호환
     duty_map: Optional[Dict[int, FeasibleColumn]] = None,
     trips: Optional[List[TaskItem]] = None,
@@ -62,8 +121,12 @@ def convert_crew_result(
     ]
     selected.sort(key=lambda c: c.start_time)
 
-    # objective label
-    result["objective_label"] = "승무원 수 최소화 (Set Partitioning)"
+    # objective display (YAML 기반)
+    obj_display = _resolve_objective_display(objective_type, result.get("kpi", {}), objective_value)
+    result["objective_label"] = obj_display["label"]
+    result["objective_display_value"] = obj_display["display_value"]
+    result["objective_direction"] = obj_display["direction"]
+    result["objective_type"] = objective_type
 
     # crew KPI 보강
     kpi = result.get("kpi", {})

@@ -52,6 +52,7 @@ def convert_sp_result(
     project_dir: Optional[str] = None,
     objective_value: Optional[float] = None,
     params: Optional[Dict] = None,
+    objective_type: str = "minimize_duties",
     # 하위 호환
     duty_map: Optional[Dict[int, FeasibleColumn]] = None,
     trips: Optional[List[TaskItem]] = None,
@@ -177,13 +178,21 @@ def _build_kpi(
     total_span = sum(c.span_minutes for c in selected)
     n = max(len(selected), 1)
 
+    # 균형 지표: duty당 trip 수 분포
+    trip_counts = [len(c.trips) for c in selected]
+    avg_trips = total_assigned / n
+    trip_std_dev = (sum((tc - avg_trips) ** 2 for tc in trip_counts) / n) ** 0.5 if n > 1 else 0.0
+    max_min_trip_gap = max(trip_counts) - min(trip_counts) if trip_counts else 0
+
     return {
         "active_duties": len(selected),
         "total_trips": len(all_tasks),
         "covered_trips": len(unique_tasks),
         "coverage_rate": round(len(unique_tasks) / max(len(all_tasks), 1) * 100, 1),
         "overlap_trips": overlap,
-        "avg_trips_per_duty": round(total_assigned / n, 1),
+        "avg_trips_per_duty": round(avg_trips, 1),
+        "trip_std_dev": round(trip_std_dev, 2),
+        "max_min_trip_gap": max_min_trip_gap,
         "total_driving_min": total_active,
         "total_wait_min": total_idle,
         "total_span_min": total_span,

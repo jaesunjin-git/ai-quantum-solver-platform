@@ -414,6 +414,11 @@ class SolverPipeline:
 
         # params 전달 — crew converter가 제약 기준값에 사용
         _params = bound_data.get("parameters", {}) if bound_data else {}
+
+        # objective_type 추출 (YAML 기반 라벨 해석용)
+        from engine.compiler.objective_builder import extract_objective_type
+        _obj_type = extract_objective_type(math_model)
+
         interpretation = converter_fn(
             solution=execute_result.solution,
             column_map=column_map,
@@ -423,6 +428,7 @@ class SolverPipeline:
             project_dir=project_dir,
             objective_value=execute_result.objective_value,
             params=_params,
+            objective_type=_obj_type,
         )
 
         # 기존 summary 포맷과 호환

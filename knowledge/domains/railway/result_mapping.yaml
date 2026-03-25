@@ -155,3 +155,35 @@ artifacts:
   - id: kpi
     filename_template: "kpi_{solver_id}.json"
     format: json
+
+# ── Objective display (목적함수별 사용자 표시 설정) ──
+# label_ko: 화면에 표시할 라벨
+# value_source: KPI 필드 (dotted key) 또는 "objective_value"
+# value_suffix: 단위 접미사
+# direction: 최적화 방향 안내
+objective_display:
+  minimize_duties:
+    label_ko: "최소 승무원 수"
+    value_source: "kpi.active_duties"
+    value_suffix: "조"
+    direction: "낮을수록 좋음"
+  minimize_duties_with_penalties:
+    label_ko: "최소 승무원 수 (페널티 포함)"
+    value_source: "kpi.active_duties"
+    value_suffix: "조"
+    direction: "낮을수록 좋음"
+  balance_workload:
+    label_ko: "워크로드 균형"
+    value_source: "kpi.max_min_trip_gap"
+    value_suffix: "trips 편차"
+    direction: "낮을수록 균등"
+  maximize_efficiency:
+    label_ko: "운전 효율"
+    value_source: "kpi.driving_efficiency"
+    value_suffix: "%"
+    direction: "높을수록 좋음"
+  minimize_cost:
+    label_ko: "총 비용"
+    value_source: "objective_value"
+    value_suffix: ""
+    direction: "낮을수록 좋음"
