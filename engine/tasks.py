@@ -54,7 +54,12 @@ def _run_solver_sync(
     from core.platform.session import load_session_state
     from engine.solver_pipeline import SolverPipeline
 
+    import asyncio
+    import threading
+
     db = SessionLocal()
+    _progress_stop = threading.Event()  # 예외 경로에서도 접근 가능하도록 미리 생성
+
     try:
         job = db.query(JobDB).filter(JobDB.id == job_id).first()
         if job:
@@ -82,7 +87,6 @@ def _run_solver_sync(
         _update_job_progress(db, job_id, "모델 컴파일 중", 20)
 
         # 파이프라인 실행
-        import asyncio
         pipeline = SolverPipeline()
 
         # 도메인 adapter 주입 (GR-1: domain_registry 경유, 하드코딩 없음)
@@ -95,54 +99,64 @@ def _run_solver_sync(
             logger.warning(f"Domain adapter '{domain}' not available — using generic base")
 
         # 시간 기반 progress 업데이트 (별도 스레드)
-        import threading
-        _progress_stop = threading.Event()
-
         def _progress_ticker():
-            """5초마다 progress를 점진적으로 올림 (20→90 범위)"""
+            """5초마다 progress를 점진적으로 올림 (20→90 범위).
+            자체 DB 세션 사용 (메인 스레드 세션과 격리).
+            _progress_stop이 set되면 즉시 종료."""
             from core.database import SessionLocal as _SL
             pct = 20
             while not _progress_stop.is_set():
                 _progress_stop.wait(5)
                 if _progress_stop.is_set():
                     break
-                pct = min(pct + 3, 90)  # 최대 90%까지 (100%는 완료 시)
+                pct = min(pct + 3, 90)
+                _db2 = None
                 try:
                     _db2 = _SL()
                     _update_job_progress(_db2, job_id, "솔버 파이프라인 실행 중", pct)
-                    _db2.close()
                 except Exception:
-                    pass
+                    if _db2:
+                        try:
+                            _db2.rollback()
+                        except Exception:
+                            pass
+                finally:
+                    if _db2:
+                        try:
+                            _db2.close()
+                        except Exception:
+                            pass
 
         ticker = threading.Thread(target=_progress_ticker, daemon=True)
         ticker.start()
 
-        coro = pipeline.run(
-            math_model=math_model,
-            solver_id=solver_id,
-            project_id=str(project_id),
-            solver_name=solver_name,
-            time_limit_sec=time_limit,
-        )
-        # 이미 이벤트 루프가 실행 중이면 (FastAPI sync fallback) nest_asyncio 또는 to_thread 사용
         try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
+            coro = pipeline.run(
+                math_model=math_model,
+                solver_id=solver_id,
+                project_id=str(project_id),
+                solver_name=solver_name,
+                time_limit_sec=time_limit,
+            )
+            # 이미 이벤트 루프가 실행 중이면 별도 스레드에서 새 루프 생성
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
 
-        if loop and loop.is_running():
-            # 이벤트 루프가 이미 실행 중 — 별도 스레드에서 새 루프 생성
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                result = pool.submit(asyncio.run, coro).result()
-        else:
-            result = asyncio.run(coro)
-
-        # progress ticker 중지
-        _progress_stop.set()
+            if loop and loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    result = pool.submit(asyncio.run, coro).result()
+            else:
+                result = asyncio.run(coro)
+        finally:
+            # 파이프라인 완료/실패 관계없이 progress 스레드 즉시 중지
+            # → 완료된 Job의 status를 덮어쓰는 race condition 방지
+            _progress_stop.set()
+            ticker.join(timeout=3)  # 스레드 종료 대기 (최대 3초)
 
         summary = result.summary or {}
-        # INFEASIBLE 시에도 summary 보존 (infeasibility_info, timing 등 진단 정보 포함)
         infeasibility_info = summary.get("infeasibility_info")
         output = {
             "success": result.success,
@@ -156,7 +170,7 @@ def _run_solver_sync(
 
         # 최종 상태 업데이트 (취소 가드 적용)
         final_status = "COMPLETE" if result.success else "FAILED"
-        final_pct = 100 if result.success else None  # FAILED는 마지막 pct 유지
+        final_pct = 100 if result.success else None
         updated = _update_job_status_if_not_cancelled(
             db, job_id, final_status,
             result_json=json.dumps(output, ensure_ascii=False, default=str),
@@ -195,25 +209,26 @@ def _run_solver_sync(
 
         return output
     except Exception as e:
-        # progress ticker 중지 (예외 경로)
-        try:
-            _progress_stop.set()
-        except Exception:
-            pass
+        _progress_stop.set()  # 예외 시에도 반드시 progress 스레드 중지
         logger.error(f"Job {job_id} failed: {e}", exc_info=True)
-        if db:
+        try:
+            _update_job_status_if_not_cancelled(
+                db, job_id, "FAILED",
+                error=str(e),
+                completed_at=datetime.datetime.now(datetime.timezone.utc),
+                progress="실패",
+            )
+        except Exception:
             try:
-                _update_job_status_if_not_cancelled(
-                    db, job_id, "FAILED",
-                    error=str(e),
-                    completed_at=datetime.datetime.now(datetime.timezone.utc),
-                    progress="실패",
-                )
-            except Exception:
                 db.rollback()
+            except Exception:
+                pass
         return {"success": False, "error": str(e)}
     finally:
-        db.close()
+        try:
+            db.close()
+        except Exception:
+            pass
 
 
 # Celery 태스크 등록 (celery_app import 시에만 등록)
