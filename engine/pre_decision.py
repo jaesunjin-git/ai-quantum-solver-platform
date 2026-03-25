@@ -517,6 +517,16 @@ def _generate_execution_strategies(
     modeling_pattern = profile.get("modeling_pattern", "generic_mip")
     primary_goal = objective_intent.get("primary_goal", "minimize_count")
 
+    # SP 지원 solver가 존재하면 modeling_pattern을 set_partitioning으로 보정
+    # (변수 수 기반 탐지는 pre-SP 추정이므로 실제 SP 경로와 불일치 가능)
+    if modeling_pattern != "set_partitioning":
+        from engine.compiler.compiler_registry import supports_set_partitioning
+        sp_solvers = [s for s in solvers if supports_set_partitioning(s.get("solver_id", ""))]
+        if sp_solvers and profile.get("has_multi_index_binary"):
+            modeling_pattern = "set_partitioning"
+            logger.info(f"modeling_pattern overridden to 'set_partitioning' "
+                        f"(SP-capable solvers: {[s['solver_id'] for s in sp_solvers]})")
+
     if modeling_pattern == "set_partitioning" and classical_solvers:
         top_classical = classical_solvers[0]
         sp_strategy = {
