@@ -60,7 +60,7 @@ quantum_warmstart:
 # ============================================================
 cqm_compiler:
   standalone:
-    max_columns: 20000
+    max_columns: 500
     constraint_mode: "hard"           # "hard" = D-Wave 네이티브, "soft" = weight 기반
     soft_weight_multiplier: 1000      # constraint_mode=soft일 때만 사용
   hybrid:

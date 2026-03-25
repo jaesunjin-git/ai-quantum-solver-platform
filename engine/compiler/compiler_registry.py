@@ -37,7 +37,7 @@ class SolverInfo:
 _SOLVER_INFO: Dict[str, SolverInfo] = {
     "classical_cpu": SolverInfo("classical_cpu", "ortools_cp", supports_sp=True, display_name="CP-SAT"),
     "nvidia_cuopt": SolverInfo("nvidia_cuopt", "ortools_cp", supports_sp=True, display_name="cuOpt (CP-SAT compile → cuOpt exec)"),
-    "dwave_hybrid_cqm": SolverInfo("dwave_hybrid_cqm", "dwave_cqm", supports_sp=True, display_name="D-Wave CQM"),
+    "dwave_hybrid_cqm": SolverInfo("dwave_hybrid_cqm", "dwave_cqm", supports_sp=False, display_name="D-Wave CQM"),
     "dwave_hybrid_bqm": SolverInfo("dwave_hybrid_bqm", "dwave_bqm", supports_sp=False, display_name="D-Wave BQM"),
     "dwave_nl": SolverInfo("dwave_nl", "dwave_nl", supports_sp=False, display_name="D-Wave NL"),
     "dwave_advantage_qpu": SolverInfo("dwave_advantage_qpu", "dwave_bqm", supports_sp=False, display_name="D-Wave Advantage QPU"),
