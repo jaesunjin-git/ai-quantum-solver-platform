@@ -47,6 +47,7 @@ def _run_solver_sync(
     project_id: int,
     solver_id: str,
     solver_name: str,
+    strategy: str = "single",
 ) -> dict:
     """동기 솔버 실행 (Celery 태스크 또는 fallback에서 호출)."""
     from core.database import SessionLocal
@@ -131,13 +132,21 @@ def _run_solver_sync(
         ticker.start()
 
         try:
-            coro = pipeline.run(
-                math_model=math_model,
-                solver_id=solver_id,
-                project_id=str(project_id),
-                solver_name=solver_name,
-                time_limit_sec=time_limit,
-            )
+            if strategy == "quantum_warmstart":
+                coro = pipeline.run_hybrid(
+                    math_model=math_model,
+                    project_id=str(project_id),
+                    solver_name=solver_name or "CQM → CP-SAT Hybrid",
+                    time_limit_sec=time_limit,
+                )
+            else:
+                coro = pipeline.run(
+                    math_model=math_model,
+                    solver_id=solver_id,
+                    project_id=str(project_id),
+                    solver_name=solver_name,
+                    time_limit_sec=time_limit,
+                )
             # 이미 이벤트 루프가 실행 중이면 별도 스레드에서 새 루프 생성
             try:
                 loop = asyncio.get_running_loop()

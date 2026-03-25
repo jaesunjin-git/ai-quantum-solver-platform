@@ -34,6 +34,7 @@ class JobSubmitRequest(BaseModel):
     solver_id: str
     solver_name: str = ""
     compare_group_id: Optional[str] = None
+    strategy: str = "single"  # "single" | "quantum_warmstart"
 
 
 class JobStatusResponse(BaseModel):
@@ -127,6 +128,7 @@ async def submit_job(
         async_result = celery_app.send_task(
             "engine.tasks.run_solver_job",
             args=[job.id, body.project_id, body.solver_id, body.solver_name],
+            kwargs={"strategy": body.strategy},
             queue="solver",
         )
         job.celery_task_id = async_result.id
@@ -143,10 +145,10 @@ async def submit_job(
 
         import threading
 
-        def _run_in_background(jid, pid, sid, sname):
+        def _run_in_background(jid, pid, sid, sname, strategy="single"):
             try:
                 from engine.tasks import _run_solver_sync
-                _run_solver_sync(jid, pid, sid, sname)
+                _run_solver_sync(jid, pid, sid, sname, strategy=strategy)
             except Exception as run_err:
                 logger.error(f"Background job {jid} failed: {run_err}")
                 from core.database import SessionLocal
@@ -167,7 +169,7 @@ async def submit_job(
 
         t = threading.Thread(
             target=_run_in_background,
-            args=(job.id, body.project_id, body.solver_id, body.solver_name),
+            args=(job.id, body.project_id, body.solver_id, body.solver_name, body.strategy),
             daemon=True,
         )
         t.start()
