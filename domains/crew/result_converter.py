@@ -130,8 +130,9 @@ def convert_crew_result(
 
     # crew KPI 보강
     kpi = result.get("kpi", {})
-    day_columns = [c for c in selected if c.column_type not in ("night", "overnight")]
-    night_columns = [c for c in selected if c.column_type in ("night", "overnight")]
+    from engine.compiler.sp_problem import ColumnType
+    day_columns = [c for c in selected if c.column_type in ColumnType.DAY_GROUP]
+    night_columns = [c for c in selected if c.column_type in ColumnType.NIGHT_GROUP]
     kpi["day_duties"] = len(day_columns)
     kpi["night_duties"] = len(night_columns)
     kpi["source_distribution"] = {}
@@ -180,8 +181,9 @@ def _build_crew_constraint_status(
     actives = [c.active_minutes for c in selected]
     idles = [c.idle_minutes for c in selected]
     works = [c.elapsed_minutes for c in selected]
-    night_cols = [c for c in selected if c.column_type in ("night", "overnight")]
-    day_cols = [c for c in selected if c.column_type not in ("night", "overnight")]
+    from engine.compiler.sp_problem import ColumnType
+    night_cols = [c for c in selected if c.column_type in ColumnType.NIGHT_GROUP]
+    day_cols = [c for c in selected if c.column_type in ColumnType.DAY_GROUP]
 
     unique_tasks = set()
     for c in selected:
