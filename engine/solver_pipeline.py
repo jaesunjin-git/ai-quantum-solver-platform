@@ -492,6 +492,216 @@ class SolverPipeline:
 
         return summary
 
+    # ── Hybrid: CQM → CP-SAT Warm Start ──────────────────────
+
+    async def run_hybrid(
+        self,
+        math_model: Dict,
+        project_id: str,
+        time_limit_sec: int = 720,
+        solver_name: str = "CQM → CP-SAT Hybrid",
+        **kwargs,
+    ) -> PipelineResult:
+        """CQM → CP-SAT Hybrid 파이프라인.
+
+        1. Data Binding
+        2. Column Generation + SP Problem 구축 (공유)
+        3. CQM compile + execute (skip_repair=True)
+        4. CP-SAT compile + hint 주입 + execute
+        5. Summary (hybrid_info 포함)
+        """
+        from engine.hybrid_strategy import (
+            HybridConfig, HybridResult, HybridPhaseResult,
+            inject_warmstart_hints, compute_time_budget,
+        )
+        from engine.compiler.compiler_registry import get_sp_compiler
+        from engine.executor import get_executor
+        from engine.compiler.base import CompileResult
+        import asyncio
+
+        config = HybridConfig.load()
+        ctx = PipelineContext(project_id=project_id)
+        hybrid_result = HybridResult()
+        pipeline_start = time.time()
+
+        logger.info(f"Hybrid pipeline: project={project_id}, mode={config.mode}")
+
+        # ── Phase 1: Data Binding ──
+        try:
+            binder = DataBinder(project_id)
+            bound_data = binder.bind_all(math_model)
+        except Exception as e:
+            logger.error(f"DataBinding failed: {e}", exc_info=True)
+            return PipelineResult(
+                success=False, phase="bind", error=f"Data binding failed: {e}"
+            )
+
+        # ── Phase 2: Column Generation + SP Problem (공유) ──
+        sp_problem, all_columns, params, all_task_ids, objective_type = \
+            self._prepare_sp_columns(math_model, bound_data, project_id, ctx=ctx)
+
+        if sp_problem is None:
+            return PipelineResult(
+                success=False, phase="compile",
+                error="SP problem construction failed (trips.csv not found?)"
+            )
+
+        gen_time = time.time() - pipeline_start
+
+        # ── 시간 예산 계산 ──
+        budget = compute_time_budget(time_limit_sec, config, elapsed_sec=gen_time)
+        if not budget["viable"]:
+            logger.warning("Hybrid: insufficient time, falling back to CP-SAT only")
+            return await self.run(
+                math_model, "classical_cpu", project_id,
+                solver_name="CP-SAT (hybrid fallback)",
+                time_limit_sec=time_limit_sec, **kwargs,
+            )
+
+        # ── Phase 3: CQM Compile + Execute ──
+        cqm_success = False
+        cqm_solution = None
+        try:
+            cqm_compiler = get_sp_compiler("dwave_hybrid_cqm")
+            cqm_compile = cqm_compiler.compile(
+                math_model, bound_data, sp_problem=sp_problem
+            )
+
+            if cqm_compile.success:
+                cqm_executor = get_executor("dwave_cqm")
+                cqm_exec = await asyncio.to_thread(
+                    cqm_executor.execute, cqm_compile,
+                    time_limit_sec=budget["cqm"],
+                    skip_repair=True,
+                )
+                cqm_solution = cqm_exec.solution
+                cqm_selected = sum(
+                    1 for v in cqm_solution.get("z", {}).values() if int(v) > 0
+                )
+
+                hybrid_result.cqm_phase = HybridPhaseResult(
+                    solver="dwave_hybrid_cqm",
+                    status=cqm_exec.status,
+                    objective_value=cqm_exec.objective_value,
+                    time_sec=cqm_exec.execution_time_sec,
+                    selected_columns=cqm_selected,
+                )
+                cqm_success = cqm_exec.success
+                logger.info(
+                    f"Hybrid CQM phase: {cqm_exec.status}, "
+                    f"obj={cqm_exec.objective_value}, "
+                    f"selected={cqm_selected}, time={cqm_exec.execution_time_sec}s"
+                )
+            else:
+                logger.warning(f"Hybrid CQM compile failed: {cqm_compile.error}")
+
+        except Exception as e:
+            logger.warning(f"Hybrid CQM phase failed: {e}")
+
+        # CQM 실패 → fallback
+        if not cqm_success and config.fallback_on_cqm_failure:
+            logger.info("Hybrid: CQM failed, falling back to CP-SAT only")
+            hybrid_result.strategy_used = "cpsat_fallback"
+            remaining = time_limit_sec - (time.time() - pipeline_start)
+            return await self.run(
+                math_model, "classical_cpu", project_id,
+                solver_name="CP-SAT (hybrid fallback)",
+                time_limit_sec=int(max(remaining, 120)), **kwargs,
+            )
+
+        # ── Phase 4: CP-SAT Compile + Hint 주입 ──
+        cpsat_compiler = get_sp_compiler("classical_cpu")
+        cpsat_compile = cpsat_compiler.compile(
+            math_model, bound_data, sp_problem=sp_problem
+        )
+
+        if not cpsat_compile.success:
+            return PipelineResult(
+                success=False, phase="compile",
+                compile_result=cpsat_compile,
+                error=cpsat_compile.error,
+            )
+
+        # Hint 주입
+        hints_injected = 0
+        skip_reason = ""
+        if cqm_solution and cpsat_compile.solver_model:
+            total_duties = int(params.get("total_duties", 0)) or None
+            hints_injected, skip_reason = inject_warmstart_hints(
+                cpsat_compile.solver_model,
+                cpsat_compile.variable_map.get("z", {}),
+                cqm_solution,
+                config,
+                total_duties=total_duties,
+            )
+        hybrid_result.hints_injected = hints_injected
+        hybrid_result.hints_skipped_reason = skip_reason
+
+        # ── Phase 5: CP-SAT Execute ──
+        remaining = time_limit_sec - (time.time() - pipeline_start)
+        margin = max(30, time_limit_sec * 0.05)
+        solver_time = max(60, int(remaining - margin))
+
+        logger.info(
+            f"Hybrid CP-SAT phase: hints={hints_injected}, "
+            f"solver_time={solver_time}s"
+        )
+
+        executor = get_executor(cpsat_compile.solver_type)
+        cpsat_exec = await asyncio.to_thread(
+            executor.execute, cpsat_compile, time_limit_sec=solver_time,
+        )
+
+        cpsat_selected = sum(
+            1 for v in cpsat_exec.solution.get("z", {}).values()
+            if isinstance(v, (int, float)) and v > 0
+        )
+        hybrid_result.cpsat_phase = HybridPhaseResult(
+            solver="classical_cpu",
+            status=cpsat_exec.status,
+            objective_value=cpsat_exec.objective_value,
+            time_sec=cpsat_exec.execution_time_sec,
+            selected_columns=cpsat_selected,
+        )
+        hybrid_result.strategy_used = "hybrid_warmstart"
+
+        # improvement 계산
+        if (hybrid_result.cqm_phase and hybrid_result.cqm_phase.objective_value
+                and cpsat_exec.objective_value):
+            cqm_obj = hybrid_result.cqm_phase.objective_value
+            cpsat_obj = cpsat_exec.objective_value
+            if cqm_obj > 0:
+                hybrid_result.improvement_pct = (cqm_obj - cpsat_obj) / cqm_obj * 100
+
+        logger.info(
+            f"Hybrid complete: CQM={hybrid_result.cqm_phase.status} "
+            f"→ CP-SAT={cpsat_exec.status}, "
+            f"hints={hints_injected}, "
+            f"improvement={hybrid_result.improvement_pct:.1f}%"
+            if hybrid_result.improvement_pct is not None else
+            f"Hybrid complete: CP-SAT={cpsat_exec.status}"
+        )
+
+        # ── Phase 6: Summary ──
+        compile_time = time.time() - pipeline_start
+        summary = self._build_summary(
+            math_model, "classical_cpu", solver_name,
+            cpsat_compile, compile_time, cpsat_exec,
+            bound_data=bound_data, ctx=ctx,
+        )
+        summary["hybrid_info"] = hybrid_result.to_dict()
+
+        return PipelineResult(
+            success=cpsat_exec.status in ("OPTIMAL", "FEASIBLE"),
+            phase="complete",
+            solver_id="hybrid_cqm_cpsat",
+            solver_name=solver_name,
+            compile_result=cpsat_compile,
+            compile_time_sec=round(compile_time, 3),
+            execute_result=cpsat_exec,
+            summary=summary,
+        )
+
     def _prepare_sp_columns(
         self, math_model, bound_data, project_id, ctx: PipelineContext = None,
     ):
