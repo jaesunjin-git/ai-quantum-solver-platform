@@ -45,5 +45,7 @@ frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 
-# Claude Code
+# Claude Code (settings 제외, rules는 추적)
 .claude/
+!.claude/rules/
+!.claude/rules/*.md

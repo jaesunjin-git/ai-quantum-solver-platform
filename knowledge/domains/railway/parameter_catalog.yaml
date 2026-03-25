@@ -23,6 +23,8 @@ parameters:
     not_alias_of: [preparation_minutes_night, min_night_sleep_minutes]
     related_constraints: [preparation_time]
     description: 출고/승계 시 준비시간
+    semantic_guard:
+      prompt_hint: "주간 출고/승계 준비시간입니다. 야간 준비시간은 preparation_minutes_night으로 별도 설정합니다."
 
   preparation_minutes_departure:
     family: duration
@@ -72,6 +74,8 @@ parameters:
     not_alias_of: [cleanup_minutes_night, min_night_sleep_minutes]
     related_constraints: [cleanup_time]
     description: 입고/승계 시 정리시간
+    semantic_guard:
+      prompt_hint: "주간 입고/승계 정리시간입니다. 야간 정리시간은 cleanup_minutes_night으로 별도 설정합니다."
 
   cleanup_minutes_arrival:
     family: duration
@@ -156,6 +160,9 @@ parameters:
     valid_range: [180, 420]
     aliases: []
     related_constraints: [avg_driving_time_target]
+    semantic_guard:
+      upper_ref: max_driving_minutes
+      prompt_hint: "평균 운전시간 목표이며, 최대 운전시간({max_driving_minutes}) 이하여야 합니다."
 
   avg_wait_target_minutes:
     family: duration
@@ -165,6 +172,21 @@ parameters:
     valid_range: [60, 300]
     aliases: []
     related_constraints: [avg_wait_time_target]
+    semantic_guard:
+      upper_ref: max_wait_minutes
+      prompt_hint: "평균 대기시간 목표이며, 최대 대기시간({max_wait_minutes}) 이하여야 합니다."
+
+  recognized_wait_minutes:
+    family: duration
+    semantic_role: wait
+    type: scalar
+    unit: minutes
+    valid_range: [60, 300]
+    aliases: []
+    description: 인정 대기시간 (이 시간까지 대기를 인정)
+    semantic_guard:
+      upper_ref: max_wait_minutes
+      prompt_hint: "인정 대기시간이며, 최대 대기시간({max_wait_minutes}) 이하여야 합니다."
 
   # ── Duration: 휴식/식사 ──
   min_break_minutes:
@@ -207,6 +229,9 @@ parameters:
     not_alias_of: [min_night_sleep_minutes]
     related_constraints: [night_rest]
     description: 야간 총 휴식시간 (수면+입고+출고 포함)
+    semantic_guard:
+      lower_ref: min_night_sleep_minutes
+      prompt_hint: "총 야간 휴식시간이며, 최소 수면시간({min_night_sleep_minutes}) 이상이어야 합니다."
 
   # ── Duration: 강차 후 ──
   post_arrival_rest_minutes:
@@ -281,6 +306,11 @@ parameters:
     valid_range: [1, 200]
     aliases: []
     related_constraints: [fixed_day_crew_count]
+    semantic_guard:
+      upper_ref: total_duties
+      prompt_hint: >
+        주간 승무원 수이며, total_duties({total_duties}) 이하여야 합니다.
+        전체 trip 커버리지는 솔버가 hard constraint로 자동 보장하므로, trip 수를 crew count에 반영하지 마세요.
 
   night_crew_count:
     family: count
@@ -290,6 +320,11 @@ parameters:
     valid_range: [1, 200]
     aliases: []
     related_constraints: [fixed_night_crew_count]
+    semantic_guard:
+      upper_ref: total_duties
+      prompt_hint: >
+        야간 승무원 수이며, total_duties({total_duties}) 이하여야 합니다.
+        전체 trip 커버리지는 솔버가 hard constraint로 자동 보장하므로, trip 수를 crew count에 반영하지 마세요.
 
   total_duties:
     family: count
@@ -299,6 +334,11 @@ parameters:
     valid_range: [1, 500]
     aliases: []
     related_constraints: [fixed_total_duties]
+    semantic_guard:
+      not_confused_with: "len(I)"
+      guard_ratio: 0.5
+      confusion_label: trip_count
+      prompt_hint: "총 승무 교번(duty) 수이며, trip 수({trip_count})와 다른 개념입니다. 커버리지는 솔버가 자동 보장합니다."
 
   max_trips_per_crew:
     family: count

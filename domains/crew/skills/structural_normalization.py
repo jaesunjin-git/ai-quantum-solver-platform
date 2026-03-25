@@ -765,6 +765,15 @@ class StructuralNormalizationSkill:
                 "options": [{"label": "재시도", "action": "send", "message": "구조 정규화 시작"}],
             }
 
+        # data_facts 갱신: structural_normalization에서 확정된 데이터 사실
+        state.data_facts = state.data_facts or {}
+        state.data_facts["trip_count"] = result.get("timetable_trips", 0)
+        state.data_facts["param_count"] = result.get("parameters_extracted", 0)
+        state.data_facts["overlap_pair_count"] = result.get("overlap_pairs", 0)
+        state.data_facts["sequential_pair_count"] = result.get("sequential_pairs", 0)
+        trip_stats = result.get("trip_stats", {})
+        state.data_facts["station_count"] = len(trip_stats.get("stations", []))
+
         # 세션 저장
         state.structural_normalization_done = True
         state.phase1_summary = result

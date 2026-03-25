@@ -1249,14 +1249,40 @@ class SolverPipeline:
             validation = stage6_result.to_dict()
 
             # Merge Stage 5 presolve findings into the validation response
+            # 솔버 실행 성공 시 presolve error를 info로 다운그레이드
             stage5 = ctx.stage5_validation if ctx else None
+            solve_success = execute_result.status in ("OPTIMAL", "FEASIBLE")
             if stage5 and stage5.get("items"):
-                validation["items"] = stage5["items"] + validation["items"]
-                validation["error_count"] += stage5.get("error_count", 0)
-                validation["warning_count"] += stage5.get("warning_count", 0)
-                validation["info_count"] += stage5.get("info_count", 0)
+                merged_items = []
+                downgraded = 0
+                for item in stage5["items"]:
+                    if solve_success and item.get("severity") == "error":
+                        # 솔버가 성공했으므로 presolve error는 참고 정보로 다운그레이드
+                        item = dict(item)
+                        item["severity"] = "info"
+                        item["message"] = (
+                            "[Presolve 참고] " + item.get("message", "")
+                        )
+                        downgraded += 1
+                    merged_items.append(item)
+
+                if downgraded:
+                    logger.info(
+                        f"Presolve: {downgraded} error(s) downgraded to info "
+                        f"(solver status={execute_result.status})"
+                    )
+
+                # 다운그레이드 후 severity별 카운트 재계산
+                extra_errors = sum(1 for it in merged_items if it.get("severity") == "error")
+                extra_warnings = sum(1 for it in merged_items if it.get("severity") == "warning")
+                extra_infos = sum(1 for it in merged_items if it.get("severity") == "info")
+
+                validation["items"] = merged_items + validation["items"]
+                validation["error_count"] += extra_errors
+                validation["warning_count"] += extra_warnings
+                validation["info_count"] += extra_infos
                 validation["validators_run"] = stage5.get("validators_run", []) + validation["validators_run"]
-                if stage5.get("blocking"):
+                if not solve_success and stage5.get("blocking"):
                     validation["blocking"] = True
                     validation["passed"] = False
 

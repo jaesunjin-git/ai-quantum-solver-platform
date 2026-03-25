@@ -70,6 +70,8 @@ class ProblemDefinitionSkill:
         for stage_key, stage_info in self.taxonomy.get("stages", {}).items():
             self._stage_variant_group[stage_key] = stage_info.get("variant_group", stage_key)
 
+        self._current_domain = None  # handle() 시점에 설정
+
         logger.info("ProblemDefinitionSkill init (TASK 3 refactored)")
 
     # ──────────────────────────────────────
@@ -159,6 +161,7 @@ class ProblemDefinitionSkill:
             return await self._handle_user_response(model, session, project_id, message)
 
         # 첫 진입: 분석 결과 + Phase 1 기반 제안 생성
+        self._current_domain = state.detected_domain or "railway"
         dk = self._load_domain(state)
         detected_data_types = self._detect_data_types(state)
         problem_type = self._determine_problem_type(state, dk, detected_data_types)
@@ -636,37 +639,22 @@ class ProblemDefinitionSkill:
                 "computation_phase": "compile_time",
             }
 
-        # constant 타입 (big_m 등): 자동 세팅
+        # constant 타입: reference_default 사용, 데이터 기반 계산은 PolicyEngine에 위임
         elif ctype in ("constant",):
             param_name = cdata.get("parameter")
             if param_name:
                 ref_val = self._lookup_reference_value(param_name)
-                if param_name == "big_m" and ref_val:
-                    # big_m은 데이터 기반 자동 조정: max(기본값, 최대도착시각*2)
-                    max_arr = 1440
-                    try:
-                        import pandas as _pd
-                        from pathlib import Path as _Path
-                        _base = _Path(__file__).resolve().parents[3] / "uploads"
-                        for _pid in sorted(_base.iterdir(), reverse=True):
-                            _tt = _pid / "phase1" / "timetable_rows.csv"
-                            if _tt.is_file():
-                                _df = _pd.read_csv(str(_tt))
-                                if "trip_arr_time" in _df.columns:
-                                    max_arr = max(max_arr, int(_df["trip_arr_time"].max()))
-                                break
-                    except Exception:
-                        pass
-                    auto_val = max(int(ref_val), max_arr + 60)  # 최대도착+60분 여유, 최소 1440
-                    return {
-                        "status": "confirmed",
-                        "values": {param_name: {"value": auto_val, "source": "auto_computed", "confidence": 1.0}},
-                    }
-                elif ref_val is not None:
+                if ref_val is not None:
                     return {
                         "status": "confirmed",
                         "values": {param_name: {"value": ref_val, "source": "reference_default", "confidence": 0.9}},
                     }
+                # reference_default 없으면 컴파일 시점에 PolicyEngine이 계산
+                return {
+                    "status": "computed_at_compile_time",
+                    "values": {param_name: {"value": None, "source": "policy_engine"}},
+                    "computation_phase": "compile_time",
+                }
 
         return {"status": "unknown_type", "values": {}}
 
@@ -711,68 +699,36 @@ class ProblemDefinitionSkill:
         }
 
 
-    # NEW: reference_ranges.yaml lookup
-    def _lookup_reference_value(self, param_name: str):
-        """reference_ranges.yaml에서 첫 번째 매칭되는 기본값 반환"""
-        if not hasattr(self, "_reference_cache"):
-            self._reference_cache = self._load_reference_ranges()
-        return self._reference_cache.get(param_name)
+    # reference_ranges.yaml lookup (도메인별 격리)
+    def _lookup_reference_value(self, param_name: str, domain: str = None):
+        """해당 도메인의 reference_ranges.yaml에서 기본값 반환"""
+        domain = domain or self._current_domain or "railway"
+        cache_key = f"_reference_cache_{domain}"
+        if not hasattr(self, cache_key):
+            setattr(self, cache_key, self._load_reference_ranges(domain))
+        return getattr(self, cache_key).get(param_name)
 
-    def _load_reference_ranges(self) -> dict:
-        """모든 reference_ranges.yaml에서 파라미터 기본값 수집"""
-        import os, yaml
+    def _load_reference_ranges(self, domain: str) -> dict:
+        """지정된 도메인의 reference_ranges.yaml에서 파라미터 기본값 수집"""
+        import os
         base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__)))))
-        domains_dir = os.path.join(base, "knowledge", "domains")
+        rpath = os.path.join(base, "knowledge", "domains", domain, "reference_ranges.yaml")
         values = {}
-        if not os.path.isdir(domains_dir):
+        if not os.path.isfile(rpath):
             return values
-        for dname in os.listdir(domains_dir):
-            rpath = os.path.join(domains_dir, dname, "reference_ranges.yaml")
-            if not os.path.isfile(rpath):
-                continue
-            try:
-                with open(rpath, "r", encoding="utf-8") as f:
-                    rdata = yaml.safe_load(f) or {}
-            except Exception:
-                continue
-            for region_key, region in rdata.items():
-                if isinstance(region, dict) and "values" in region:
-                    for k, v in region["values"].items():
-                        if k not in values:
-                            values[k] = v
+        try:
+            with open(rpath, "r", encoding="utf-8") as f:
+                rdata = yaml.safe_load(f) or {}
+        except Exception:
+            return values
+        for region_key, region in rdata.items():
+            if isinstance(region, dict) and "values" in region:
+                for k, v in region["values"].items():
+                    if k not in values:
+                        values[k] = v
         return values
 
-    def _find_best_cdata_for_param(self, param_name: str, fallback_cdata: dict) -> dict:
-        """파라미터가 독립 제약에서 정의되어 있으면 그 제약의 cdata 반환.
-        예: prep_time_minutes는 max_work_time의 sub-param이지만,
-            prep_cleanup_time 제약에서 독립 정의 → 그 hints가 더 정확."""
-        if not hasattr(self, '_dk_ref'):
-            return fallback_cdata
-        dk = self._dk_ref
-        if not dk:
-            return fallback_cdata
-
-        # hard constraints에서 이 param을 직접 정의하는 제약 찾기
-        for cname, cdef in dk.hard_constraints.items():
-            if not isinstance(cdef, dict):
-                continue
-            # single_param으로 직접 정의
-            if cdef.get("parameter") == param_name:
-                return cdef
-            # compound의 sub-param으로 정의 (다른 제약에서)
-            sub_params = cdef.get("parameters") or {}
-            if param_name in sub_params and cdef is not fallback_cdata:
-                # 이 제약의 hints가 더 구체적인지 확인
-                # ★ CHANGED: detection_hints가 list일 수도 dict일 수도 있음
-                raw_this = cdef.get("detection_hints") or []
-                this_hints = raw_this if isinstance(raw_this, list) else raw_this.get("ko", [])
-                raw_fall = fallback_cdata.get("detection_hints") or []
-                fall_hints = raw_fall if isinstance(raw_fall, list) else raw_fall.get("ko", [])
-                if this_hints != fall_hints:
-                    return cdef
-
-        return fallback_cdata
     def _extract_compound(self, cname: str, cdata: dict, phase1_data: dict) -> dict:
         params = cdata.get('parameters', {})
         # parameters가 list인 경우 dict로 변환
@@ -783,8 +739,7 @@ class ProblemDefinitionSkill:
     
         for pname in params:
             pinfo = params[pname] if isinstance(params[pname], dict) else {}
-            better_cdata = self._find_best_cdata_for_param(pname, cdata)
-            value = self._search_phase1_params(pname, better_cdata, phase1_data)
+            value = self._search_phase1_params(pname, cdata, phase1_data)
             if value is not None:
                 values[pname] = {'value': value, 'source': 'phase1_data', 'confidence': 0.8}
             else:
@@ -1898,9 +1853,21 @@ class ProblemDefinitionSkill:
         if changes:
             change_text = "\n\n**자동 연동 변경:**\n" + "\n".join(changes)
 
-        # 추가 지시사항 → LLM Smart Apply
-        extra_applied_text = ""
+        # 추가 지시사항 → LLM Smart Apply (추가 지시가 있을 때만)
+        # 목적함수 관련 텍스트가 남아있으면 제거 (이미 결정적 handler로 변경 완료)
         if _extra_instr:
+            _obj_keywords = [
+                odata.get("description_ko", ""), odata.get("description", ""),
+                oname, "목적함수", "변경", "바꿈", "바꿔", "최적화",
+            ]
+            _cleaned = _extra_instr
+            for kw in _obj_keywords:
+                if kw and len(kw) >= 2:
+                    _cleaned = _cleaned.replace(kw, "")
+            _extra_instr = re.sub(r'[\s,\.로으]+$', '', _cleaned).strip()
+
+        extra_applied_text = ""
+        if _extra_instr and len(_extra_instr.strip()) > 3:
             try:
                 extra_result = await self._llm_smart_apply(model, state, project_id, _extra_instr)
                 extra_text = extra_result.get("text", "")
@@ -2201,6 +2168,29 @@ class ProblemDefinitionSkill:
             for k, v in params.items()
         ]) if params else "  (없음)"
 
+        # catalog 기반 semantic hints (도메인 무관)
+        # data_facts + phase1 데이터에서 trip_count 등 보충
+        _data_facts = dict(getattr(state, "data_facts", None) or {})
+        if "trip_count" not in _data_facts:
+            _phase1 = self._load_phase1_data(project_id)
+            if _phase1.get("trip_count", 0) > 0:
+                _data_facts["trip_count"] = _phase1["trip_count"]
+        _semantic_hints = ""
+        try:
+            from engine.policy.parameter_catalog import get_catalog
+            _domain = current_pd.get("domain", "railway")
+            _catalog = get_catalog(_domain)
+            _hints = _catalog.build_prompt_hints(
+                data_facts=_data_facts, current_params=params
+            )
+            if _hints:
+                _semantic_hints = f"\n## 파라미터 주의사항 (catalog 기반)\n{_hints}\n"
+                logger.info(f"Semantic hints generated: {len(_hints.splitlines())} rules")
+            else:
+                logger.info("Semantic hints: no guards found in catalog")
+        except Exception as _e:
+            logger.warning(f"Semantic hints generation failed: {_e}")
+
         smart_prompt = f"""사용자가 최적화 문제 정의를 수정하려고 합니다.
 
 ## 사용자 요청
@@ -2214,7 +2204,7 @@ Soft 제약조건:
 {soft_detail}
 파라미터:
 {param_detail}
-
+{_semantic_hints}
 ## 사용 가능한 목적함수
 {obj_list_str}
 
@@ -2263,7 +2253,8 @@ Soft 제약조건:
 - 목적함수 변경은 사용 가능한 목록에서 선택합니다.
 - 새 제약조건 추가 시 의미 있는 영문 ID를 생성하세요.
 - 사용자가 명시하지 않은 것은 변경하지 마세요.
-- actions 배열에 변경사항이 없으면 빈 배열을 반환하세요."""
+- actions 배열에 변경사항이 없으면 빈 배열을 반환하세요.
+- 위 '파라미터 주의사항'에 명시된 혼동 규칙을 반드시 준수하세요."""
 
         try:
             response = await asyncio.to_thread(model.generate_content, smart_prompt)
@@ -2327,6 +2318,37 @@ Soft 제약조건:
                 val = action.get("value")
                 desc = action.get("description", "")
                 if pid and val is not None:
+                    # parameter_catalog 기반 2단 검증 (범위 + 의미)
+                    try:
+                        from engine.policy.parameter_catalog import get_catalog
+                        _domain = pd.get("domain", "railway")
+                        _catalog = get_catalog(_domain)
+                        # 1단: valid_range 검증
+                        _err = _catalog.validate_value(pid, val)
+                        if not _err:
+                            # 2단: semantic_guard 검증
+                            _data_facts = dict(getattr(state, "data_facts", None) or {})
+                            if "trip_count" not in _data_facts:
+                                _p1 = self._load_phase1_data(project_id)
+                                if _p1.get("trip_count", 0) > 0:
+                                    _data_facts["trip_count"] = _p1["trip_count"]
+                            _err = _catalog.validate_semantic(
+                                pid, val,
+                                data_facts=_data_facts,
+                                current_params=pd.get("parameters", {}),
+                            )
+                        if _err:
+                            logger.warning(f"LLM Smart Apply blocked: {_err}")
+                            _current_val = pd.get("parameters", {}).get(pid, {})
+                            _cur_display = _current_val.get("value", "미설정") if isinstance(_current_val, dict) else _current_val
+                            applied.append(
+                                f"⚠️ `{pid}={val}` 차단됨 — {_err}\n"
+                                f"  → 현재 확정값: {_cur_display}"
+                            )
+                            continue
+                    except Exception as _cat_err:
+                        logger.debug(f"Catalog validation skipped: {_cat_err}")
+
                     if pid in pd.get("parameters", {}):
                         pd["parameters"][pid]["value"] = val
                         if desc:

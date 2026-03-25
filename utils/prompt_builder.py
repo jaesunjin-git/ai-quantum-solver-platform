@@ -48,6 +48,7 @@ def _load_profiles() -> Dict[str, Any]:
             "generic": {
                 "display_name": "일반 인력 스케줄링",
                 "icon": "👥",
+                "description": "범용 인력/자원 스케줄링 최적화",
                 "terminology": {"crew": "인력", "shift": "교대", "route": "작업"},
                 "typical_constraints": {"hard": [], "soft": []},
                 "typical_objectives": [],
@@ -55,6 +56,12 @@ def _load_profiles() -> Dict[str, Any]:
             }
         }
         return _profiles_cache
+
+
+def invalidate_cache():
+    """개발/테스트용 캐시 무효화. domain_profiles.yaml 수정 후 호출."""
+    global _profiles_cache
+    _profiles_cache = None
 
 
 def get_profile(domain: str) -> Dict[str, Any]:
@@ -99,8 +106,6 @@ def _get_fallback_template() -> str:
 ## 5. 제약 조건 분석
 
 ## 6. 데이터 품질 이슈
-
-## 7. 추천 다음 단계
 """
 
 
@@ -241,15 +246,24 @@ def build_analysis_prompt(
     # ── 7) 템플릿 로드 & 플레이스홀더 치환 ──
     template = _load_template()
 
+    # terminology 빈 값 기본값 처리
+    if not term_table or not term_table.strip():
+        term_table = "(도메인 특화 용어 없음 — 일반 용어 사용)"
+
     replacements = {
         "{detected_domain_display}": f"{icon} {display_name}",
         "{confidence_status}": status_label,
         "{domain_instruction}": domain_instruction,
         "{terminology_table}": term_table,
+        "{domain_terminology_table}": term_table,
         "{common_constraints}": constraints_text,
         "{typical_objectives}": objectives_text,
         "{regulations}": regulations_text,
         "{domain_description}": profile.get("description", ""),
+        # analysis_report.md v3.2 템플릿 변수
+        "{domain_icon}": icon,
+        "{domain_display_name}": display_name,
+        "{domain_confidence}": f"{confidence_pct}%",
     }
 
     prompt = template
@@ -257,8 +271,8 @@ def build_analysis_prompt(
         prompt = prompt.replace(placeholder, value)
 
     # ── 8) 최종 조립 ──
+    # domain_instruction은 템플릿 내 {domain_instruction} 치환으로 이미 포함됨 — 중복 제거
     sections = [
-        domain_instruction,
         f"## DOMAIN CONTEXT\n{domain_context}",
         prompt,
     ]
@@ -267,10 +281,12 @@ def build_analysis_prompt(
         sections.append(f"\n---\n## DATA SUMMARY\n```\n{csv_summary}\n```")
 
     if context:
+        # HTML 주석 injection 방지: --> 문자열 escape
+        safe_context = context.replace("-->", "——>")
         sections.insert(0,
             f"<!-- SYSTEM-INTERNAL: DO NOT include the following state information in your output. "
             f"This is for your reference only to understand the current pipeline status. -->\n"
-            f"<!-- STATE: {context} -->\n"
+            f"<!-- STATE: {safe_context} -->\n"
             f"<!-- END SYSTEM-INTERNAL -->"
         )
     # ★ 추가: 팩트 데이터 (코드로 계산된 확정값)

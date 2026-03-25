@@ -184,6 +184,12 @@ def _build_kpi(
     trip_std_dev = (sum((tc - avg_trips) ** 2 for tc in trip_counts) / n) ** 0.5 if n > 1 else 0.0
     max_min_trip_gap = max(trip_counts) - min(trip_counts) if trip_counts else 0
 
+    # 운행 시간대 (earliest start ~ latest end)
+    earliest = min((c.start_time for c in selected), default=0)
+    latest = max((c.end_time for c in selected), default=0)
+    earliest_hhmm = f"{earliest // 60:02d}:{earliest % 60:02d}"
+    latest_hhmm = f"{latest // 60:02d}:{latest % 60:02d}"
+
     return {
         "active_duties": len(selected),
         "total_trips": len(all_tasks),
@@ -194,12 +200,16 @@ def _build_kpi(
         "trip_std_dev": round(trip_std_dev, 2),
         "max_min_trip_gap": max_min_trip_gap,
         "total_driving_min": total_active,
-        "total_wait_min": total_idle,
+        "total_idle_min": total_idle,
         "total_span_min": total_span,
         "avg_driving_per_duty": round(total_active / n, 1),
-        "avg_wait_per_duty": round(total_idle / n, 1),
+        "avg_idle_per_duty": round(total_idle / n, 1),
         "driving_efficiency": round(total_active / max(total_span, 1) * 100, 1),
         "constraint_violations": 0,
+        "earliest_start": earliest,
+        "earliest_start_hhmm": earliest_hhmm,
+        "latest_end": latest,
+        "latest_end_hhmm": latest_hhmm,
     }
 
 

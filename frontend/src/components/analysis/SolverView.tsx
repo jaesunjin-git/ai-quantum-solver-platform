@@ -167,7 +167,7 @@ export function SolverView({
           variable_count: profile.variable_count || '-',
           constraint_count: profile.constraint_count || '-',
           variable_types: profile.variable_types?.join(', ') || '-',
-          time_limit_sec: solver?.time_limit_sec || 600,
+          time_limit_sec: solver?.time_limit_sec || null,
         });
       }, 1000);
       return;
@@ -319,7 +319,7 @@ export function SolverView({
   };
 
   const selectedSolverData = solvers[selectedSolver];
-  const timeLimitSec = selectedSolverData?.time_limit_sec || 600;
+  const timeLimitSec = selectedSolverData?.time_limit_sec || null;
   const estimatedTime = selectedSolverData?.estimated_time;
 
   // Compare mode results for CompareResultsPanel
@@ -475,7 +475,7 @@ export function SolverView({
             ) : (
               <div className="text-[11px] text-slate-400 flex justify-between">
                 <span>선택 솔버: <span className="text-cyan-400 font-medium">{selectedSolverData?.solver_name || '-'}</span></span>
-                <span>최대 {timeLimitSec}초{estimatedTime ? ` (예상 ${Array.isArray(estimatedTime) ? `${estimatedTime[0]}~${estimatedTime[1]}` : estimatedTime}초)` : ''}</span>
+                <span>{timeLimitSec ? `최대 ${timeLimitSec}초` : ''}{estimatedTime ? ` (예상 ${Array.isArray(estimatedTime) ? `${estimatedTime[0]}~${estimatedTime[1]}` : estimatedTime}초)` : ''}</span>
               </div>
             )}
           </div>
@@ -488,7 +488,7 @@ export function SolverView({
               <div className="text-[12px] text-slate-300">변수: <span className="text-white font-mono">{compileInfo.variable_count}</span></div>
               <div className="text-[12px] text-slate-300">제약조건: <span className="text-white font-mono">{compileInfo.constraint_count}</span></div>
               <div className="text-[12px] text-slate-300">변수 타입: <span className="text-white font-mono">{compileInfo.variable_types}</span></div>
-              <div className="text-[12px] text-slate-300">최대 시간: <span className="text-white font-mono">{compileInfo.time_limit_sec}초</span></div>
+              {compileInfo.time_limit_sec && <div className="text-[12px] text-slate-300">최대 시간: <span className="text-white font-mono">{compileInfo.time_limit_sec}초</span></div>}
             </div>
           )}
 
@@ -543,7 +543,7 @@ export function SolverView({
             </div>
             <div className="flex items-center gap-4 text-[11px] text-slate-500">
               <span>경과: {jobPoll.elapsedSec}초</span>
-              {execMode !== 'compare' && <span>최대: {timeLimitSec}초</span>}
+              {execMode !== 'compare' && timeLimitSec && <span>최대: {timeLimitSec}초</span>}
             </div>
             {/* 취소 버튼 */}
             <button
