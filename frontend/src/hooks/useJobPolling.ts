@@ -24,7 +24,7 @@ export interface JobPollState {
 }
 
 interface UseJobPollingReturn extends JobPollState {
-  submitJob: (projectId: string, solverId: string, solverName: string, compareGroupId?: string) => Promise<number | null>;
+  submitJob: (projectId: string, solverId: string, solverName: string, compareGroupId?: string, strategy?: string) => Promise<number | null>;
   cancelJob: () => Promise<void>;
   reset: () => void;
 }
@@ -143,6 +143,7 @@ export function useJobPolling(
     solverId: string,
     solverName: string,
     compareGroupId?: string,
+    strategy?: string,
   ): Promise<number | null> => {
     stopPolling();
 
@@ -160,6 +161,7 @@ export function useJobPolling(
         solver_name: solverName,
       };
       if (compareGroupId) body.compare_group_id = compareGroupId;
+      if (strategy) body.strategy = strategy;
 
       const res = await authFetch(`${API_BASE_URL}/api/jobs/submit`, {
         method: 'POST',

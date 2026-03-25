@@ -60,6 +60,33 @@ export function KPIDashboard({
         </div>
       </div>
 
+      {/* Hybrid Info (CQM → CP-SAT) */}
+      {data?.hybrid_info && (
+        <div className="bg-gradient-to-r from-purple-900/20 to-indigo-900/20 rounded-xl p-3 border border-purple-700/30">
+          <div className="text-[11px] text-purple-400 font-bold mb-1.5">Quantum Hybrid: {data.hybrid_info.strategy_used === 'hybrid_warmstart' ? 'CQM → CP-SAT' : 'CP-SAT Fallback'}</div>
+          <div className="grid grid-cols-3 gap-2 text-[11px]">
+            {data.hybrid_info.cqm_phase && (
+              <div className="text-slate-400">
+                CQM: <span className="text-purple-300">{data.hybrid_info.cqm_phase.status}</span>
+                <span className="text-slate-500 ml-1">({data.hybrid_info.cqm_phase.time_sec}s)</span>
+              </div>
+            )}
+            {data.hybrid_info.cpsat_phase && (
+              <div className="text-slate-400">
+                CP-SAT: <span className="text-cyan-300">{data.hybrid_info.cpsat_phase.status}</span>
+                <span className="text-slate-500 ml-1">({data.hybrid_info.cpsat_phase.time_sec}s)</span>
+              </div>
+            )}
+            <div className="text-slate-400">
+              Hints: <span className="text-white">{data.hybrid_info.hints_injected}</span>
+              {data.hybrid_info.improvement_pct != null && (
+                <span className="text-green-400 ml-1">+{data.hybrid_info.improvement_pct}%</span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 핵심 KPI */}
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-gradient-to-br from-cyan-900/30 to-blue-900/30 rounded-xl p-4 border border-cyan-700/30">

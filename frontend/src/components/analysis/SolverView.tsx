@@ -142,14 +142,18 @@ export function SolverView({
 
   // ── Handlers ──
 
-  const handleAutoRun = useCallback(async () => {
+  const handleAutoRun = useCallback(async (strategy?: string) => {
     const solver = solvers[selectedSolver];
     if (!solver || !projectId) return;
     setInfeasibilityInfo(null);
     await jobPoll.submitJob(
       projectId,
       solver.solver_id,
-      `${solver.provider} ${solver.solver_name}`.trim(),
+      strategy === 'quantum_warmstart'
+        ? 'CQM → CP-SAT Hybrid'
+        : `${solver.provider} ${solver.solver_name}`.trim(),
+      undefined,
+      strategy,
     );
   }, [selectedSolver, solvers, projectId, jobPoll]);
 
@@ -490,20 +494,33 @@ export function SolverView({
 
           {/* Run button */}
           <div className="px-3 pb-3">
-            <button
-              onClick={handleRun}
-              disabled={execMode === 'compare' && compareSelection.size < 2}
-              className={`w-full py-3 rounded-xl font-bold text-white transition-all ${
-                execMode === 'compare' && compareSelection.size < 2
-                  ? 'bg-slate-700 cursor-not-allowed opacity-50'
-                  : 'bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500'
-              }`}
-            >
-              {execMode === 'auto' && '자동 실행'}
-              {execMode === 'step' && stepPhase === 'select' && '컴파일'}
-              {execMode === 'step' && stepPhase === 'compiled' && '실행'}
-              {execMode === 'compare' && `${compareSelection.size}개 솔버 비교 실행`}
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={handleRun}
+                disabled={execMode === 'compare' && compareSelection.size < 2}
+                className={`flex-1 py-3 rounded-xl font-bold text-white transition-all ${
+                  execMode === 'compare' && compareSelection.size < 2
+                    ? 'bg-slate-700 cursor-not-allowed opacity-50'
+                    : 'bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500'
+                }`}
+              >
+                {execMode === 'auto' && '자동 실행'}
+                {execMode === 'step' && stepPhase === 'select' && '컴파일'}
+                {execMode === 'step' && stepPhase === 'compiled' && '실행'}
+                {execMode === 'compare' && `${compareSelection.size}개 솔버 비교 실행`}
+              </button>
+              {execMode === 'auto' && data?.execution_strategies?.some(
+                (s: any) => s.strategy_type === 'quantum_warmstart'
+              ) && (
+                <button
+                  onClick={() => handleAutoRun('quantum_warmstart')}
+                  className="py-3 px-4 rounded-xl font-bold text-white transition-all bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-[12px]"
+                  title="CQM이 초기 해를 탐색 → CP-SAT이 warm start로 정밀 최적화"
+                >
+                  Hybrid
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}

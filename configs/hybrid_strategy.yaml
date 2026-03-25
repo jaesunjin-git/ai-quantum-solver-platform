@@ -41,6 +41,16 @@ quantum_warmstart:
   # CQM 실패(INFEASIBLE, SDK 미설치, 시간 초과) 시 CP-SAT 단독 실행
   fallback_on_cqm_failure: true
 
+  # ── CQM 반복 전략 (v2) ──
+  # "time_adaptive": 첫 실행 소요시간 기반 추가 실행 결정 (권장)
+  # "fixed": 문제 규모 기반 고정 횟수
+  # "convergence": 해 품질 수렴 기반 (v3)
+  cqm_repeat_strategy: "time_adaptive"
+  cqm_fast_threshold_sec: 10    # 이 시간 이내면 추가 실행
+  cqm_max_attempts: 3           # 최대 반복 횟수
+  cqm_time_budget_sec: 60       # CQM 전체 시간 한도 (반복 포함)
+  cqm_improvement_threshold: 0.01  # convergence 모드: 1% 미만 개선 시 중단 (v3)
+
   # ── 자동 방향 선택 (v2) ──
   auto_select: false
   threshold_variables: 50000    # 이상이면 cpsat_then_cqm 방향 선택
