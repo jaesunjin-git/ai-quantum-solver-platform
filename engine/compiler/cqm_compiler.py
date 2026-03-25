@@ -29,9 +29,12 @@ class CQMCompiler(BaseSPCompiler):
         """BaseSPCompiler → D-Wave CQM 변환"""
         return self._compile_cqm(sp_problem, math_model=math_model, **kwargs)
 
-    # CQM용 column cap (100K는 compile에 263초 소요)
+    # CQM column cap: 단독 vs Hybrid 분리
+    # 단독: 탐색 공간 축소 (2,000) → feasible 확률 향상
+    # Hybrid: 넓은 탐색 (20,000) → hint 품질 우선
     import os as _os
-    CQM_MAX_COLUMNS = int(_os.environ.get("CQM_MAX_COLUMNS", 20000))
+    CQM_MAX_COLUMNS_STANDALONE = int(_os.environ.get("CQM_MAX_COLUMNS_STANDALONE", 2000))
+    CQM_MAX_COLUMNS_HYBRID = int(_os.environ.get("CQM_MAX_COLUMNS_HYBRID", 20000))
 
     @staticmethod
     def _cap_with_coverage(
@@ -153,15 +156,18 @@ class CQMCompiler(BaseSPCompiler):
 
         t0 = time.time()
 
-        # ── 0. Column cap: CQM은 대규모 변수에 느리므로 제한 ──
-        # coverage 보장: 모든 task를 커버하는 column은 cap에서 보호
+        # ── 0. Column cap: 단독 vs Hybrid 분리 ──
+        # 단독: 탐색 공간 축소 (feasible 확률 ↑)
+        # Hybrid: 넓은 탐색 (hint 품질 ↑, exact partition 불필요)
+        is_hybrid = kwargs.get("is_hybrid", False)
+        cap = self.CQM_MAX_COLUMNS_HYBRID if is_hybrid else self.CQM_MAX_COLUMNS_STANDALONE
         columns = problem.columns
-        if len(columns) > self.CQM_MAX_COLUMNS:
+        if len(columns) > cap:
             columns = self._cap_with_coverage(
-                problem.columns, problem.task_to_columns, problem.task_ids,
-                self.CQM_MAX_COLUMNS
+                problem.columns, problem.task_to_columns, problem.task_ids, cap
             )
-            logger.info(f"CQM: column cap {len(problem.columns)} → {len(columns)}")
+            logger.info(f"CQM: column cap {len(problem.columns)} → {len(columns)} "
+                        f"({'hybrid' if is_hybrid else 'standalone'})")
 
             # task_to_columns 재구축
             task_to_columns = {}

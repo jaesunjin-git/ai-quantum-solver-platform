@@ -564,7 +564,7 @@ class SolverPipeline:
         try:
             cqm_compiler = get_sp_compiler("dwave_hybrid_cqm")
             cqm_compile = cqm_compiler.compile(
-                math_model, bound_data, sp_problem=sp_problem
+                math_model, bound_data, sp_problem=sp_problem, is_hybrid=True
             )
 
             if cqm_compile.success:
