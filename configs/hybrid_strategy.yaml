@@ -1,0 +1,46 @@
+# ============================================================
+# Hybrid Solver Strategy 설정
+# ============================================================
+# CQM↔CP-SAT 하이브리드 전략의 시간 배분, fallback, 방향 설정.
+# 코드 변경 없이 전략 동작을 조정할 수 있습니다.
+#
+# v1: cqm_then_cpsat 단방향 (CQM warm start → CP-SAT 정밀 최적화)
+# v2 예정: auto_select (문제 규모에 따라 방향 자동 선택)
+# ============================================================
+
+version: "1.0"
+
+quantum_warmstart:
+  # 전략 방향: "cqm_then_cpsat" (v1 고정)
+  # v2에서 "cpsat_then_cqm" 추가 + auto_select 활성화
+  default_mode: "cqm_then_cpsat"
+
+  # ── 시간 예산 배분 ──
+  cqm_time_fraction: 0.3        # 총 예산 중 CQM에 할당 (30%)
+  cqm_min_time_sec: 60          # CQM 최소 시간 (D-Wave min_time_limit 이상)
+  cpsat_min_time_sec: 120       # CP-SAT 최소 시간 (이 미만이면 hybrid 포기)
+  total_default_time_sec: 720   # 기본 총 시간 예산
+
+  # ── Column Pool 전략 ──
+  # true: CQM과 CP-SAT에 동일 column pool 사용 (hint 가치 극대화)
+  # false: CQM은 CQM_MAX_COLUMNS로 cap (대규모 문제용)
+  use_same_column_pool: true
+
+  # ── Warm Start 옵션 ──
+  # AddHint: CQM 해를 CP-SAT에 참고용 초기 해로 제공 (항상 활성)
+  # Objective bound: CQM objective를 CP-SAT 상한으로 설정 (v2 예정)
+  use_objective_bound: false
+
+  # ── Hint 품질 필터 ──
+  # CQM 해의 품질이 너무 낮으면 hint 주입 skip (CP-SAT 자유 탐색)
+  # 판정: selected_columns / total_duties 비율이 이 값 미만이면 skip
+  # 0.0 = 항상 주입 (비활성), 0.5 = 50% 이상 선택해야 주입
+  min_hint_quality: 0.0         # v1: 비활성 (항상 주입), 실행 데이터 쌓이면 조정
+
+  # ── Fallback ──
+  # CQM 실패(INFEASIBLE, SDK 미설치, 시간 초과) 시 CP-SAT 단독 실행
+  fallback_on_cqm_failure: true
+
+  # ── 자동 방향 선택 (v2) ──
+  auto_select: false
+  threshold_variables: 50000    # 이상이면 cpsat_then_cqm 방향 선택

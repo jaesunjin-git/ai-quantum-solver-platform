@@ -492,32 +492,26 @@ class SolverPipeline:
 
         return summary
 
-    def _compile_set_partitioning(
-        self, math_model, bound_data, project_id, solver_id, ctx: PipelineContext = None, **kwargs
+    def _prepare_sp_columns(
+        self, math_model, bound_data, project_id, ctx: PipelineContext = None,
     ):
-        """
-        Set Partitioning 컴파일 (Adaptive Column Generation 지원).
+        """Column generation + Balance cap + SP problem 구축 (solver-agnostic).
 
-        ENABLE_ADAPTIVE_CG=true일 때: 최대 N회 반복하며 column pool 확장.
-        ENABLE_ADAPTIVE_CG=false일 때: 기존 단일 실행.
+        ACG loop으로 column pool을 확장하고, 최종 SP problem을 반환.
+        compile은 호출자가 수행 — CQM/CP-SAT 양쪽에서 재사용 가능.
 
         Returns:
-            (CompileResult, compile_time_sec)
+            (sp_problem, all_columns, params, all_task_ids, objective_type)
+            또는 (None, ...) — trips.csv 미존재 등 에러 시
         """
         import os
-        compile_start = time.time()
 
-        # Trip 로딩
         trips_path = os.path.join("uploads", str(project_id), "normalized", "trips.csv")
         if not os.path.exists(trips_path):
-            from engine.compiler.base import CompileResult
-            return CompileResult(
-                success=False, error=f"trips.csv not found: {trips_path}"
-            ), 0.0
+            return None, [], {}, set(), "minimize_duties"
 
         from engine.column_generator import load_tasks_from_csv, BaseColumnGenerator, BaseColumnConfig
-        from engine.compiler.compiler_registry import get_sp_compiler
-        from engine.compiler.sp_problem import build_sp_problem
+        from engine.compiler.sp_problem import build_sp_problem, GenerationHint
 
         tasks = load_tasks_from_csv(trips_path)
         logger.info(f"SP: loaded {len(tasks)} tasks from {trips_path}")
@@ -525,11 +519,9 @@ class SolverPipeline:
 
         params = bound_data.get("parameters", {})
 
-        # objective_type 추출 (제약 연산자 결정에 사용)
         from engine.compiler.objective_builder import extract_objective_type
         objective_type = extract_objective_type(math_model)
 
-        # ACG 설정 (feature flag)
         enable_acg = os.environ.get("ENABLE_ADAPTIVE_CG", "true").lower() == "true"
         max_attempts = int(os.environ.get("ACG_MAX_ATTEMPTS", "3")) if enable_acg else 1
 
@@ -540,11 +532,9 @@ class SolverPipeline:
             f"night_crew_count={params.get('night_crew_count')}"
         )
 
-        from engine.compiler.sp_problem import GenerationHint
-
         all_columns = []
-        best_compile = None
-        hint = None  # Layer 2: 진단 결과 → generator 힌트
+        hint = None
+        sp_problem = None
 
         for attempt in range(1, max_attempts + 1):
             acg_scale = 1.0 + (attempt - 1) * 0.5  # 1.0 → 1.5 → 2.0
@@ -777,19 +767,56 @@ class SolverPipeline:
                 )
                 continue
 
-            # SP 컴파일
-            compiler = get_sp_compiler(solver_id)
-            compile_result = compiler.compile(
-                math_model, bound_data, sp_problem=sp_problem
+            # ACG loop에서 SP problem 구축 완료 — compile 준비 완료
+            sp_problem = sp_problem  # 현재 attempt의 최종 SP problem
+            break  # compile은 호출자가 수행
+
+        # column_map 저장
+        if ctx:
+            ctx.sp_duties = all_columns
+            ctx.sp_duty_map = {d.id: d for d in all_columns}
+
+        return sp_problem, all_columns, params, all_task_ids, objective_type
+
+    def _compile_set_partitioning(
+        self, math_model, bound_data, project_id, solver_id, ctx: PipelineContext = None, **kwargs
+    ):
+        """
+        Set Partitioning 컴파일 (기존 단독 경로).
+
+        _prepare_sp_columns()로 SP problem 구축 후 지정 solver로 compile.
+
+        Returns:
+            (CompileResult, compile_time_sec)
+        """
+        import os
+        compile_start = time.time()
+
+        from engine.compiler.compiler_registry import get_sp_compiler
+        from engine.compiler.sp_problem import build_sp_problem
+
+        sp_problem, all_columns, params, all_task_ids, objective_type = \
+            self._prepare_sp_columns(math_model, bound_data, project_id, ctx=ctx)
+
+        if sp_problem is None:
+            from engine.compiler.base import CompileResult
+            trips_path = os.path.join("uploads", str(project_id), "normalized", "trips.csv")
+            return CompileResult(
+                success=False, error=f"trips.csv not found: {trips_path}"
+            ), 0.0
+
+        # SP 컴파일
+        compiler = get_sp_compiler(solver_id)
+        compile_result = compiler.compile(
+            math_model, bound_data, sp_problem=sp_problem
+        )
+
+        if not compile_result.success:
+            # constraint 완화 시도
+            cov_diag = sp_problem.diagnose_coverage(
+                use_top_k=(objective_type == "balance_workload")
             )
-
-            if compile_result.success:
-                best_compile = compile_result
-                break
-
-            # 컴파일 실패 → Layer 3: constraint 완화 시도
-            if not compile_result.success and cov_diag.capacity_gap > 0:
-                # == 제약을 <= 로 완화 (추가 slack 허용)
+            if cov_diag.capacity_gap > 0:
                 suggested_total = cov_diag.max_columns + max(
                     2, cov_diag.capacity_gap // int(cov_diag.current_avg or 7)
                 )
@@ -799,7 +826,6 @@ class SolverPipeline:
                 )
                 relaxed_params = dict(params)
                 relaxed_params["total_duties"] = suggested_total
-                # day/night도 비례 완화
                 if params.get("day_crew_count") and params.get("night_crew_count"):
                     ratio = suggested_total / max(cov_diag.max_columns, 1)
                     relaxed_params["day_crew_count"] = int(
@@ -808,24 +834,12 @@ class SolverPipeline:
                     relaxed_params["night_crew_count"] = (
                         suggested_total - relaxed_params["day_crew_count"]
                     )
-                    logger.info(
-                        f"ACG relaxed: total={suggested_total}, "
-                        f"day={relaxed_params['day_crew_count']}, "
-                        f"night={relaxed_params['night_crew_count']}"
-                    )
 
-                # 완화된 params로 SP problem 재구축 + 재진단 + 재컴파일
                 relaxed_problem = build_sp_problem(
                     all_columns, relaxed_params, all_task_ids, objective_type
                 )
-                # 완화 후 재진단 (night column이 충분한지)
                 relaxed_diag = relaxed_problem.diagnose_coverage()
-                if not relaxed_diag.feasible:
-                    logger.warning(
-                        f"ACG: relaxation도 infeasible "
-                        f"(gap={relaxed_diag.capacity_gap}), 추가 완화 필요"
-                    )
-                else:
+                if relaxed_diag.feasible:
                     compile_result = compiler.compile(
                         math_model,
                         {**bound_data, "parameters": relaxed_params},
@@ -837,25 +851,9 @@ class SolverPipeline:
                             f"partition_count_relaxed: exact {cov_diag.max_columns} infeasible, "
                             f"relaxed to {suggested_total}"
                         )
-                        best_compile = compile_result
-                        break
-
-            best_compile = compile_result
-            if attempt < max_attempts:
-                hint = GenerationHint.from_diagnostics(cov_diag)
-                logger.warning(f"ACG attempt {attempt}: compile failed, retrying")
-                continue
-            break
 
         compile_time = time.time() - compile_start
-
-        # column_map 저장
-        if best_compile and best_compile.success:
-            if ctx:
-                ctx.sp_duties = all_columns
-                ctx.sp_duty_map = {d.id: d for d in all_columns}
-
-        return best_compile or compile_result, round(compile_time, 3)
+        return compile_result, round(compile_time, 3)
 
     def _build_summary(
         self,
