@@ -278,9 +278,16 @@ class SetPartitioningProblem:
             type_deficits=type_deficits,
         )
 
-    def should_regenerate(self, params: Optional[Dict] = None) -> bool:
+    def should_regenerate(self, params: Optional[Dict] = None,
+                          use_top_k: bool = False) -> bool:
         """ACG: column pool 재생성이 필요한지 판단.
-        "재생성으로 풀릴 문제만" 감지 — constraint 충돌은 재생성 무의미."""
+        "재생성으로 풀릴 문제만" 감지 — constraint 충돌은 재생성 무의미.
+
+        Args:
+            params: bound_data["parameters"]
+            use_top_k: balance_workload 등 top-K 기반 진단 사용 여부
+                       (Pipeline의 diagnose_coverage 호출과 일치해야 함)
+        """
         d = self.diagnostics or {}
         params = params or {}
 
@@ -289,7 +296,7 @@ class SetPartitioningProblem:
             return True
 
         # coverage capacity 부족 (solver 호출 전 수학적 검증)
-        cov_diag = self.diagnose_coverage()
+        cov_diag = self.diagnose_coverage(use_top_k=use_top_k)
         if not cov_diag.feasible:
             logger.warning(
                 f"Coverage capacity insufficient: "

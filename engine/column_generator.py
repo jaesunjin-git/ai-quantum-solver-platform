@@ -424,11 +424,12 @@ class BaseColumnGenerator:
 
         elapsed = time.time() - t0
 
-        # ── 진단 로그 ──
+        # ── 진단 로그 (dominance/cap 이후 실제 coverage 기준) ──
         _trip_cnt = Counter()
         for c in all_columns:
             for tid in c.trips:
                 _trip_cnt[tid] += 1
+        _actual_covered = len(_trip_cnt)
         _density = Counter(_trip_cnt.values())
         _source = Counter(c.source for c in all_columns)
         _avg = sum(len(c.trips) for c in all_columns) / max(len(all_columns), 1)
@@ -436,7 +437,7 @@ class BaseColumnGenerator:
         logger.info(
             f"Generator: {len(all_columns)} columns "
             f"({before_dom} before dominance, {elapsed:.1f}s, "
-            f"coverage: {len(covered)}/{len(all_task_ids)} tasks, "
+            f"coverage: {_actual_covered}/{len(all_task_ids)} tasks, "
             f"avg_tasks/column: {_avg:.1f}, "
             f"source: {dict(_source)}, "
             f"coverage_density: {dict(sorted(_density.items()))}"

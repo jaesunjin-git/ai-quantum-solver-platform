@@ -23,7 +23,7 @@ night_overhead_cost_weight: 0.005 # 야간 오버헤드 비용 계수
 night_short_penalty_ratio: 0.5   # 야간 short penalty 비율 (base의 50%)
 
 # ── Block Combine (DIA 정답: 주간 block-gap-block 구조) ─────
-block_combine_enabled: false     # 임시 비활성화 — INFEASIBLE 원인 분리 검증
+block_combine_enabled: false     # OFF — solver가 선택하지 않음 (objective 튜닝 후 재활성화)
 # max_gap: 0 → max_idle_time(params)에서 자동 도출
 # top_k: 0 → max_columns_target*0.3에서 자동 도출
 block_combine_exclude_types:     # block 결합 제외 column type

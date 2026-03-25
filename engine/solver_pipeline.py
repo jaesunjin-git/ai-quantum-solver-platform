@@ -588,30 +588,116 @@ class SolverPipeline:
                     all_columns.append(c)
                 all_columns = gen._remove_dominated(all_columns)
 
-            # balance_workload: type별 column cap (rhs 비례 — 하드코딩 없음)
+            # pre-cap coverage 기록 (ACG 판단용)
+            pre_cap_coverage = set(tid for c in all_columns for tid in c.trips)
+
+            # balance_workload: type별 column cap (rhs 비례 — coverage 보호 포함)
             if objective_type == "balance_workload" and len(all_columns) > 50000:
                 from engine.compiler.sp_problem import ColumnType
                 day_rhs = int(params.get("day_crew_count", 32))
                 night_rhs = int(params.get("night_crew_count", 13))
-                # config에서 cap 배수 로딩 (YAML 외부화 가능)
                 cap_per_rhs = int(os.environ.get("BALANCE_CAP_PER_RHS", "1500"))
                 day_cap = day_rhs * cap_per_rhs
                 night_cap = night_rhs * cap_per_rhs
 
-                day_cols = sorted(
-                    [c for c in all_columns if c.column_type in ColumnType.DAY_GROUP],
+                # Step 1: type별 분류
+                day_all = [c for c in all_columns if c.column_type in ColumnType.DAY_GROUP]
+                night_all = [c for c in all_columns if c.column_type in ColumnType.NIGHT_GROUP]
+
+                # Step 2: Coverage 보호 — 한쪽 type에만 존재하는 task의 column 보장
+                task_in_day: dict = {}
+                task_in_night: dict = {}
+                for c in day_all:
+                    for tid in c.trips:
+                        task_in_day.setdefault(tid, []).append(c)
+                for c in night_all:
+                    for tid in c.trips:
+                        task_in_night.setdefault(tid, []).append(c)
+
+                protected_day_ids: set = set()
+                protected_night_ids: set = set()
+                all_covered = set(task_in_day.keys()) | set(task_in_night.keys())
+
+                for tid in all_covered:
+                    in_day = task_in_day.get(tid, [])
+                    in_night = task_in_night.get(tid, [])
+                    if in_day and not in_night:
+                        # day에만 존재 → cost 최소 column 보호
+                        protected_day_ids.add(min(in_day, key=lambda c: c.cost).id)
+                    elif in_night and not in_day:
+                        # night에만 존재 → cost 최소 column 보호
+                        protected_night_ids.add(min(in_night, key=lambda c: c.cost).id)
+
+                # Step 3: Day — 보호 column 우선 + 나머지 cost 순 cap
+                day_protected = [c for c in day_all if c.id in protected_day_ids]
+                day_rest = sorted(
+                    [c for c in day_all if c.id not in protected_day_ids],
                     key=lambda c: c.cost
-                )[:day_cap]
-                night_cols = sorted(
-                    [c for c in all_columns if c.column_type in ColumnType.NIGHT_GROUP],
+                )
+                day_cols = (day_protected + day_rest)[:max(day_cap, len(day_protected))]
+
+                # Step 3b: Night — subtype 다양성 보존
+                # overnight/morning_only는 새벽 trip의 유일한 커버 수단
+                # → night_cap 내에서 전량 확보, 나머지 슬롯을 night으로 채움
+                night_pure = sorted(
+                    [c for c in night_all if c.column_type == ColumnType.NIGHT],
                     key=lambda c: c.cost
-                )[:night_cap]
+                )
+                overnight_sorted = sorted(
+                    [c for c in night_all if c.column_type == ColumnType.OVERNIGHT],
+                    key=lambda c: c.cost
+                )
+                morning_sorted = sorted(
+                    [c for c in night_all if c.column_type == ColumnType.MORNING_ONLY],
+                    key=lambda c: c.cost
+                )
+
+                # subtype 전량 확보 (night_cap << 총량이므로 여유 충분)
+                reserved_count = len(overnight_sorted) + len(morning_sorted)
+                remaining_night_cap = max(0, night_cap - reserved_count)
+                night_capped = night_pure[:remaining_night_cap]
+
+                # coverage 보호 column 병합 (night_pure에서 잘린 것 중 보호 대상)
+                night_capped_ids = {c.id for c in night_capped}
+                for c in night_pure:
+                    if c.id in protected_night_ids and c.id not in night_capped_ids:
+                        night_capped.append(c)
+
+                night_cols = overnight_sorted + morning_sorted + night_capped
+
                 before_cap = len(all_columns)
                 all_columns = day_cols + night_cols
+
+                # Step 4: 최종 coverage 검증 (defensive)
+                post_cap_tasks = set(tid for c in all_columns for tid in c.trips)
+                lost_tasks = all_covered - post_cap_tasks
+                if lost_tasks:
+                    logger.warning(
+                        f"Balance cap lost {len(lost_tasks)} tasks despite protection: "
+                        f"{sorted(lost_tasks)[:10]}"
+                    )
+                    restore_pool = day_rest + [c for c in night_pure if c.id not in night_capped_ids]
+                    restored = 0
+                    restored_ids: set = set()
+                    for tid in lost_tasks:
+                        for c in restore_pool:
+                            if tid in c.trips and c.id not in restored_ids:
+                                all_columns.append(c)
+                                restored_ids.add(c.id)
+                                restored += 1
+                                break
+                    if restored:
+                        logger.info(f"Balance cap: restored {restored} columns for lost tasks")
+
                 logger.info(
                     f"Balance column cap: {before_cap} → {len(all_columns)} "
-                    f"(day={len(day_cols)}/{day_cap}, night={len(night_cols)}/{night_cap}, "
-                    f"cap_per_rhs={cap_per_rhs})"
+                    f"(day={len(day_cols)}/{day_cap}, "
+                    f"night_pure={len(night_capped)}, "
+                    f"overnight={len(overnight_sorted)}, "
+                    f"morning_only={len(morning_sorted)}, "
+                    f"night_total={len(night_cols)}/{night_cap}, "
+                    f"cap_per_rhs={cap_per_rhs}, "
+                    f"protected: day={len(protected_day_ids)}, night={len(protected_night_ids)})"
                 )
 
             # SP Problem 구축
@@ -623,6 +709,7 @@ class SolverPipeline:
             cov_diag = sp_problem.diagnose_coverage(use_top_k=use_top_k)
             type_dist = sp_problem.diagnostics.get("column_type_distribution", {})
 
+            post_cap_cov = len(set(tid for c in all_columns for tid in c.trips))
             logger.info(
                 f"ACG attempt {attempt}/{max_attempts}: "
                 f"scale={acg_scale}, generated={len(new_columns)}, "
@@ -630,14 +717,23 @@ class SolverPipeline:
                 f"types={type_dist}, "
                 f"uncovered={len(sp_problem.uncovered_tasks)}, "
                 f"degree_1={len(sp_problem.degree_1_tasks)}, "
-                f"coverage: required_avg={cov_diag.required_avg:.1f}, "
+                f"coverage: pre_cap={len(pre_cap_coverage)}/{len(all_task_ids)}, "
+                f"post_cap={post_cap_cov}/{len(all_task_ids)}, "
+                f"required_avg={cov_diag.required_avg:.1f}, "
                 f"current_avg={cov_diag.current_avg:.1f}, "
                 f"capacity_gap={cov_diag.capacity_gap}, "
                 f"feasible={cov_diag.feasible}"
             )
 
             # Pre-solve: 재생성이 의미있는 경우만 계속
-            if sp_problem.should_regenerate(params) and attempt < max_attempts:
+            # cap-caused uncovered 감지: generator는 커버했는데 cap에서 잘린 경우 skip
+            if sp_problem.uncovered_tasks and pre_cap_coverage >= all_task_ids:
+                logger.warning(
+                    f"ACG attempt {attempt}: uncovered={len(sp_problem.uncovered_tasks)} "
+                    f"caused by balance cap (generator had full coverage). "
+                    f"Skipping regeneration — cap 보호 로직으로 해결 필요."
+                )
+            elif sp_problem.should_regenerate(params, use_top_k=use_top_k) and attempt < max_attempts:
                 # Bottleneck trip 식별: coverage가 하위 10%인 trip
                 bottleneck = []
                 if sp_problem.task_to_columns:
