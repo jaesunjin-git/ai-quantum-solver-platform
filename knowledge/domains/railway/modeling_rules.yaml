@@ -1,0 +1,65 @@
+# ──────────────────────────────────────────────────────────────
+# modeling_rules.yaml — 철도 승무원 스케줄링 수학 모델링 규칙
+# ──────────────────────────────────────────────────────────────
+# LLM 프롬프트(prompts/math_model.yaml)의 placeholder를 치환하는 데 사용.
+# 다른 도메인은 자체 modeling_rules.yaml을 정의하면 동일 엔진으로 동작.
+#
+# 변수/Set 이름은 constraints.yaml과 일치해야 한다 (Single Source of Truth).
+# ──────────────────────────────────────────────────────────────
+
+# ── 변수명 규칙 ──
+# mode: whitelist → allowed 목록만 허용, 미명시 변수는 자동 금지
+variable_naming:
+  mode: whitelist
+  allowed:
+    - { id: "x", indices: "[i,j]", type: binary, desc: "트립 i를 crew j에 배정 여부" }
+    - { id: "y", indices: "[j]", type: binary, desc: "crew j 활성화 여부" }
+    - { id: "duty_start", indices: "[j]", type: integer, desc: "crew j의 근무 시작 시각 (분)" }
+    - { id: "duty_end", indices: "[j]", type: integer, desc: "crew j의 근무 종료 시각 (분)" }
+    - { id: "is_night", indices: "[j]", type: binary, desc: "crew j의 야간 근무 여부" }
+    - { id: "first_trip_dep", indices: "[j]", type: integer, desc: "crew j의 첫 번째 trip 출발 시각 (분)", role: derived_event }
+    - { id: "last_trip_arr", indices: "[j]", type: integer, desc: "crew j의 마지막 trip 도착 시각 (분)", role: derived_event }
+  explicit_warnings:
+    - { pattern: "u[d]", reason: "레거시 변수명 — y[j] 사용" }
+    - { pattern: "s[d]", reason: "레거시 변수명 — duty_start[j] 사용" }
+    - { pattern: "e[d]", reason: "레거시 변수명 — duty_end[j] 사용" }
+    - { pattern: "n[d]", reason: "레거시 변수명 — is_night[j] 사용" }
+    - { pattern: "mb[d]", reason: "미정의 변수 — 식사휴게는 제약조건 파라미터로 처리" }
+    - { pattern: "s_next[d]", reason: "미정의 변수 — 숙박조 구조는 별도 설계" }
+  time_variable_type: integer  # 시간 관련 변수의 타입 강제 (continuous 금지)
+
+# ── Set 이름 규칙 ──
+# constraints.yaml과 동일한 canonical 이름 사용
+set_naming:
+  mode: whitelist
+  allowed:
+    - { id: "I", index_var: "i", source: "trips.csv", source_column: "trip_id", desc: "트립 집합" }
+    - { id: "J", index_var: "j", source_type: "range", desc: "근무/crew 집합" }
+  explicit_warnings:
+    - { pattern: "T", reason: "레거시 Set명 — I 사용" }
+    - { pattern: "D", reason: "레거시 Set명 — J 사용" }
+
+# ── 목적함수 예시 ──
+# operator_overrides는 constraints.yaml의 objective_operator_override에 선언됨 — 여기서 중복하지 않음
+objective_examples:
+  - { id: "min_duties", expression: "sum(y[j] for j in J)", type: "minimize", desc: "최소 근무 수" }
+  - { id: "min_total_cost", expression: "sum(cost[i,j]*x[i,j] for i in I for j in J)", type: "minimize", desc: "최소 총 비용" }
+
+# ── 도메인별 모델링 규칙 ──
+# severity: CRITICAL > HIGH > MEDIUM
+# LLM 프롬프트에서 [CRITICAL] R1: ... 형태로 주입
+domain_specific_rules:
+  - id: R1
+    severity: CRITICAL
+    rule: "trip 단위(i)와 crew 단위(j) 혼동 금지"
+    example_violation: "sum(x[i,j] for j in I)  # I는 trip set — j로 순회하면 안 됨"
+  - id: R2
+    severity: CRITICAL
+    rule: "binary 변수를 시간 상수와 직접 비교 금지"
+    example_violation: "x[i,j] <= 660  # binary(0/1)을 분 단위와 비교"
+  - id: R3
+    severity: HIGH
+    rule: "모든 시간 변수(duty_start[j], duty_end[j])는 분 단위 정수 — continuous 사용 금지"
+  - id: R4
+    severity: HIGH
+    rule: "soft 제약에 무의미한 식 금지 (예: 0 <= 0)"

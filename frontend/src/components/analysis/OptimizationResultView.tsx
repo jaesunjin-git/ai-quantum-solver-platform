@@ -190,7 +190,7 @@ export function OptimizationResultView({
             <Download size={13} /> 배정표 다운로드
           </button>
         )}
-        <button onClick={() => onAction?.('send', '솔버 추천 결과 보여줘')}
+        <button onClick={() => onAction?.('switch_step', 'solver')}
           className="flex-1 py-2 rounded-xl text-[12px] font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 transition flex items-center justify-center gap-1.5">
           <RotateCcw size={13} /> 다른 솔버
         </button>

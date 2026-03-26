@@ -287,7 +287,13 @@ export default function AnalysisReport({
         )}
         {hasResultData && (
           <div className="h-full" style={{ display: isResultView ? 'block' : 'none' }}>
-            <OptimizationResultView data={(isResultView ? data : stepCache.result) as ResultData} projectId={projectId} onAction={onAction} />
+            <OptimizationResultView data={(isResultView ? data : stepCache.result) as ResultData} projectId={projectId} onAction={(action, msg) => {
+              if (action === 'switch_step' && msg) {
+                switchToStep(msg as any);
+              } else {
+                onAction?.(action, msg);
+              }
+            }} />
           </div>
         )}
       </div>

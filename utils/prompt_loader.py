@@ -12,28 +12,37 @@ PROMPT_DIR = os.path.join(BASE_DIR, "prompts")
 
 
 @lru_cache()
-def load_prompt(domain: str, filename: str) -> str:
-    file_path = os.path.join(PROMPT_DIR, domain, f"{filename}.md")
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            return f.read()
-    except FileNotFoundError:
-        logger.warning(f"Prompt file not found: {file_path}")
-        return "You are a helpful AI assistant."
+def load_prompt(domain: str, filename: str) -> Optional[str]:
+    """도메인별 프롬프트 MD 파일 로드. 미발견 시 None 반환."""
+    # 도메인 하위 디렉토리 우선 → 루트 fallback
+    domain_path = os.path.join(PROMPT_DIR, domain, f"{filename}.md")
+    root_path = os.path.join(PROMPT_DIR, f"{filename}.md")
+    for file_path in [domain_path, root_path]:
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except FileNotFoundError:
+            continue
+    logger.warning(f"Prompt file not found: {domain_path} (root fallback도 없음)")
+    return None
 
 
 @lru_cache()
 def load_yaml_prompt(domain: str, filename: str) -> Dict[str, Any]:
-    file_path = os.path.join(PROMPT_DIR, f"{filename}.yaml")
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
-    except FileNotFoundError:
-        logger.warning(f"YAML prompt not found: {file_path}")
-        return {}
-    except yaml.YAMLError as e:
-        logger.error(f"YAML parse error in {file_path}: {e}")
-        return {}
+    """도메인별 프롬프트 YAML 파일 로드. 도메인 하위 디렉토리 우선 → 루트 fallback."""
+    domain_path = os.path.join(PROMPT_DIR, domain, f"{filename}.yaml")
+    root_path = os.path.join(PROMPT_DIR, f"{filename}.yaml")
+    for file_path in [domain_path, root_path]:
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
+        except FileNotFoundError:
+            continue
+        except yaml.YAMLError as e:
+            logger.error(f"YAML parse error in {file_path}: {e}")
+            return {}
+    logger.warning(f"YAML prompt not found: {domain_path} (root fallback도 없음)")
+    return {}
 
 
 @lru_cache()

@@ -16,9 +16,255 @@ from typing import List,  Dict, Any, Optional
 
 import google.generativeai as genai
 from core.config import settings
+import yaml as _yaml
 from utils.prompt_loader import load_yaml_prompt, load_schema, get_constraint_schema_text
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# Modeling Rules 로더 + 렌더러 (도메인별 동적 치환)
+# ============================================================
+
+def _load_modeling_rules(domain: str) -> dict:
+    """knowledge/domains/{domain}/modeling_rules.yaml 로드. 없으면 빈 dict."""
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(base, "knowledge", "domains", domain, "modeling_rules.yaml")
+    if not os.path.isfile(path):
+        logger.warning(f"modeling_rules.yaml not found for domain={domain}")
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return _yaml.safe_load(f) or {}
+    except Exception as e:
+        logger.error(f"Failed to load modeling_rules.yaml: {e}")
+        return {}
+
+
+def _render_variable_list(rules: dict) -> str:
+    """variable_naming.allowed → 의사결정 변수 설명 텍스트"""
+    vn = rules.get("variable_naming", {})
+    allowed = vn.get("allowed", [])
+    if not allowed:
+        return ""
+    parts = ", ".join(f"{v['id']}{v['indices']}={v['desc']}" for v in allowed)
+    return f"의사결정 변수: {parts}."
+
+
+def _render_variable_naming_rule(rules: dict) -> str:
+    """whitelist → ★ 변수명 규칙 텍스트"""
+    vn = rules.get("variable_naming", {})
+    allowed = vn.get("allowed", [])
+    warnings = vn.get("explicit_warnings", [])
+    if not allowed:
+        return ""
+    ids = ", ".join(f"{v['id']}{v['indices']}" for v in allowed)
+    line = f"★ 변수명 규칙: {ids}만 사용."
+    if warnings:
+        forbidden = ", ".join(w["pattern"] for w in warnings)
+        line += f" {forbidden} 등은 금지."
+    return line
+
+
+def _render_set_naming_rule(rules: dict) -> str:
+    """whitelist → ★ Set 규칙 텍스트"""
+    sn = rules.get("set_naming", {})
+    allowed = sn.get("allowed", [])
+    warnings = sn.get("explicit_warnings", [])
+    if not allowed:
+        return ""
+    names = ", ".join(f"{s['id']}({s['desc']})" for s in allowed)
+    line = f"★ Set 규칙: {names}만 사용."
+    if warnings:
+        forbidden = ", ".join(w["pattern"] for w in warnings)
+        line += f" {forbidden}는 사용하지 마라."
+    return line
+
+
+def _render_set_index_examples(rules: dict) -> str:
+    """set_naming.allowed → sum/for_each 예시 텍스트"""
+    sn = rules.get("set_naming", {})
+    allowed = sn.get("allowed", [])
+    if not allowed:
+        return '"i in I", "j in J"'
+    return ", ".join(f'"{s["index_var"]} in {s["id"]}"' for s in allowed)
+
+
+def _render_time_type_rule(rules: dict) -> str:
+    """time_variable_type → ★ 변수 타입 규칙"""
+    vn = rules.get("variable_naming", {})
+    vtype = vn.get("time_variable_type", "")
+    if not vtype:
+        return ""
+    time_vars = [v for v in vn.get("allowed", []) if v.get("type") == "integer" and "시각" in v.get("desc", "")]
+    if not time_vars:
+        return f"★ 변수 타입 규칙: 시간 관련 변수는 type을 반드시 {vtype}로 설정하라. continuous를 사용하지 마라."
+    var_names = ", ".join(f"{v['id']}{v['indices']}" for v in time_vars)
+    return f"★ 변수 타입 규칙: 시간 변수({var_names})는 분 단위 정수이므로 type을 반드시 {vtype}로 설정하라. continuous를 사용하지 마라."
+
+
+def _render_domain_rules(rules: dict) -> str:
+    """domain_specific_rules → [SEVERITY] ID: rule 텍스트"""
+    dsr = rules.get("domain_specific_rules", [])
+    if not dsr:
+        return ""
+    lines = []
+    for r in dsr:
+        severity = r.get("severity", "HIGH")
+        rid = r.get("id", "")
+        rule = r.get("rule", "")
+        line = f"★ [{severity}] {rid}: {rule}"
+        example = r.get("example_violation", "")
+        if example:
+            line += f" (위반 예: {example})"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _render_objective_examples(rules: dict) -> str:
+    """objective_examples → 목적함수 예시 텍스트"""
+    examples = rules.get("objective_examples", [])
+    if not examples:
+        return ""
+    return "\n".join(
+        f"- '{e['id']}: {e['expression']}를 {e['type']}.' "
+        for e in examples
+    )
+
+
+def _render_constraint_template_rules(rules: dict) -> str:
+    """variable_naming + set_naming → constraint_templates 섹션의 규칙 텍스트"""
+    sn = rules.get("set_naming", {})
+    vn = rules.get("variable_naming", {})
+    lines = []
+
+    # Set 인덱스 규칙
+    allowed_sets = sn.get("allowed", [])
+    if allowed_sets:
+        set_examples = ", ".join(f"{s['desc']}는 {s['index_var']} in {s['id']}" for s in allowed_sets)
+        lines.append(f"2. 인덱스 규칙: {set_examples}.")
+
+    # 변수명 규칙
+    allowed_vars = vn.get("allowed", [])
+    if allowed_vars:
+        var_list = ", ".join(f"{v['id']}{v['indices']}" for v in allowed_vars)
+        lines.append(f"3. 변수명 규칙: {var_list}만 사용하세요.")
+        warnings = vn.get("explicit_warnings", [])
+        if warnings:
+            forbidden = ", ".join(w["pattern"] for w in warnings)
+            lines.append(f"   - {forbidden} 등은 사용하지 마세요.")
+
+    lines.append("4. 파라미터명은 parameters.csv의 semantic_id를 그대로 사용하세요.")
+
+    # Set 규칙
+    if allowed_sets:
+        set_names = ", ".join(f"{s['id']}({s['desc']})" for s in allowed_sets)
+        forbidden_sets = sn.get("explicit_warnings", [])
+        line5 = f"5. Set은 {set_names}만 사용하세요."
+        if forbidden_sets:
+            line5 += " " + ", ".join(f"{w['pattern']}는 사용하지 마세요" for w in forbidden_sets) + "."
+        lines.append(line5)
+
+    return "\n".join(lines)
+
+
+def _render_domain_checklist(rules: dict) -> str:
+    """modeling_rules → 체크리스트 도메인별 항목"""
+    sn = rules.get("set_naming", {})
+    vn = rules.get("variable_naming", {})
+    lines = []
+
+    # Set 검증
+    allowed_sets = sn.get("allowed", [])
+    if allowed_sets:
+        set_names = ", ".join(s["id"] for s in allowed_sets)
+        forbidden_sets = sn.get("explicit_warnings", [])
+        forbidden_names = ", ".join(w["pattern"] for w in forbidden_sets) if forbidden_sets else ""
+        line = f"(6) Set은 {set_names}만 사용했는가?"
+        if forbidden_names:
+            line += f" {forbidden_names}를 사용하지 않았는가?"
+        lines.append(line)
+
+    # 변수명 검증
+    allowed_vars = vn.get("allowed", [])
+    if allowed_vars:
+        var_list = ", ".join(f"{v['id']}{v['indices']}" for v in allowed_vars)
+        lines.append(f"(7) 변수명이 {var_list}만 사용됐는가?")
+
+    lines.append("(8) constraint의 expression이 템플릿과 일치하는가?")
+
+    return "\n\n  ".join(lines)
+
+
+def _apply_modeling_rules(config: dict, rules: dict) -> dict:
+    """math_model.yaml의 placeholder를 modeling_rules 기반으로 치환한 config 반환.
+    rules가 비어있으면 placeholder를 빈 문자열로 치환 (graceful degradation)."""
+    import copy as _copy
+    cfg = _copy.deepcopy(config)
+
+    # rules 리스트 내 placeholder 치환
+    replacements = {
+        "{variable_list_text}": _render_variable_list(rules),
+        "{set_index_examples}": _render_set_index_examples(rules),
+        "{for_each_examples}": _render_set_index_examples(rules),
+        "{set_naming_rule}": _render_set_naming_rule(rules),
+        "{variable_naming_rule}": _render_variable_naming_rule(rules),
+        "{time_type_rule}": _render_time_type_rule(rules),
+        "{domain_rules_text}": _render_domain_rules(rules),
+    }
+
+    # objective_rules 내 placeholder
+    obj_replacements = {
+        "{objective_examples_text}": _render_objective_examples(rules),
+    }
+
+    # constraint_templates 섹션 내 placeholder
+    section_replacements = {
+        "{constraint_template_rules}": _render_constraint_template_rules(rules),
+    }
+
+    # checklist 내 placeholder
+    checklist_replacements = {
+        "{domain_checklist}": _render_domain_checklist(rules),
+    }
+
+    # rules 리스트 치환
+    new_rules = []
+    for rule in cfg.get("rules", []):
+        for placeholder, value in replacements.items():
+            if placeholder in rule:
+                rule = rule.replace(placeholder, value)
+        # 빈 문자열로 치환된 규칙은 제거
+        if rule.strip():
+            new_rules.append(rule)
+    cfg["rules"] = new_rules
+
+    # objective_rules 치환
+    new_obj_rules = []
+    for rule in cfg.get("objective_rules", []):
+        for placeholder, value in obj_replacements.items():
+            if placeholder in rule:
+                rule = rule.replace(placeholder, value)
+        if rule.strip():
+            new_obj_rules.append(rule)
+    cfg["objective_rules"] = new_obj_rules
+
+    # sections.constraint_templates 치환
+    sections = cfg.get("sections", {})
+    ct = sections.get("constraint_templates", "")
+    for placeholder, value in section_replacements.items():
+        if placeholder in ct:
+            ct = ct.replace(placeholder, value)
+    sections["constraint_templates"] = ct
+
+    # checklist 치환
+    cl = cfg.get("checklist", "")
+    for placeholder, value in checklist_replacements.items():
+        if placeholder in cl:
+            cl = cl.replace(placeholder, value)
+    cfg["checklist"] = cl
+
+    return cfg
 
 # ── LLM 초기화 ──
 _model = None
@@ -90,8 +336,8 @@ def _load_domain_yaml(domain: str) -> dict:
             return merged
     return {}
 
-def _get_model_schema() -> str:
-    config = load_yaml_prompt("crew", "math_model")
+def _get_model_schema(domain: str = "railway") -> str:
+    config = load_yaml_prompt(domain, "math_model")
     if not config:
         return "{}"
     # 기본 모델 스키마 (sets, parameters, variables, objective, metadata)
@@ -307,11 +553,14 @@ def _build_modeling_prompt(
     data_guide: str = "",
     confirmed_problem=None,
 ) -> str:
-    """LLM에게 수학 모델 JSON 생성을 요청하는 프롬프트를 조립 (YAML 기반 v2)"""
+    """LLM에게 수학 모델 JSON 생성을 요청하는 프롬프트를 조립 (YAML 기반 v3 — 도메인 독립)"""
     import json as _json
 
-    # YAML 프롬프트 설정 로드
-    config = load_yaml_prompt("crew", "math_model")
+    # YAML 프롬프트 설정 로드 + 도메인별 모델링 규칙 적용
+    raw_config = load_yaml_prompt(domain, "math_model")
+    modeling_rules = _load_modeling_rules(domain)
+    config = _apply_modeling_rules(raw_config, modeling_rules)
+
     system = config.get("system", "")
     rules = config.get("rules", [])
     rules_text = "\n".join(f"  {i+1}. {r}" for i, r in enumerate(rules))
@@ -323,7 +572,7 @@ def _build_modeling_prompt(
     obj_rules_text = "\n".join(f"  - {r}" for r in obj_rules)
 
     constraint_schema_text = get_constraint_schema_text()
-    model_schema = _get_model_schema()
+    model_schema = _get_model_schema(domain)
     sections = config.get("sections", {})
 
     # 목적함수 지시
@@ -504,15 +753,6 @@ def _build_modeling_prompt(
     if checklist:
         prompt += "\n\n" + checklist
 
-
-    # === DEBUG: 프롬프트 저장 ===
-    import os as _dbg_os
-    _dbg_dir = _dbg_os.path.join('uploads', '94')
-    _dbg_os.makedirs(_dbg_dir, exist_ok=True)
-    with open(_dbg_os.path.join(_dbg_dir, 'debug_prompt.txt'), 'w', encoding='utf-8') as _dbg_f:
-        _dbg_f.write(prompt)
-    logger.info(f"DEBUG: prompt saved to uploads/94/debug_prompt.txt ({len(prompt)} chars)")
-    # === END DEBUG ===
 
     return prompt
 
@@ -1035,7 +1275,9 @@ async def repair_constraints(
     try:
         from utils.prompt_loader import load_yaml_prompt, get_constraint_schema_text
 
-        config = load_yaml_prompt("crew", "constraint_repair")
+        # 모델 JSON에서 도메인 추출 (fallback: railway)
+        _repair_domain = model.get("domain", "railway")
+        config = load_yaml_prompt(_repair_domain, "constraint_repair")
         system = config.get("system", "")
         rules = config.get("rules", [])
         rules_text = "\n".join(f"  {i+1}. {r}" for i, r in enumerate(rules))

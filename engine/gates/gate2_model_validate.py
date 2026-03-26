@@ -1234,11 +1234,14 @@ def run(math_model: Dict,
                     )
 
     # 검증6: 양쪽 모두 변수가 없는 제약 (param vs param, value vs value)
+    # 변수 이름 목록 수집 (expression 내 변수 참조 확인용)
+    _var_ids = {v.get("id", "") for v in variables}
+
     for con in math_model.get("constraints", []):
         cname = con.get("name", "unknown")
         lhs = con.get("lhs", {})
         rhs = con.get("rhs", {})
-        
+
         if not isinstance(lhs, dict) or not isinstance(rhs, dict):
             continue
 
@@ -1261,6 +1264,10 @@ def run(math_model: Dict,
             return False
 
         if not _has_var(lhs) and not _has_var(rhs):
+            # template model: lhs/rhs가 없지만 expression에 변수 참조가 있으면 스킵
+            expr = con.get("expression", "")
+            if expr and _var_ids and any(vid in expr for vid in _var_ids if vid):
+                continue
             warnings.append(
                 f"Constraint '{cname}': 양쪽에 의사결정 변수가 없음 — "
                 f"데이터 검증일 뿐 최적화에 영향 없음 (제거 권장)"

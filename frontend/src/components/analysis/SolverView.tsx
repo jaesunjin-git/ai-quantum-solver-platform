@@ -81,6 +81,8 @@ export function SolverView({
   const [stepPhase, setStepPhase] = useState<'select' | 'compiled' | 'running' | 'done'>('select');
   const [compileInfo, setCompileInfo] = useState<any>(null);
   const [infeasibilityInfo, setInfeasibilityInfo] = useState<any>(null);
+  const [selectedStrategyId, setSelectedStrategyId] = useState<string>('');
+  const [selectedStrategyType, setSelectedStrategyType] = useState<string>('');
 
   // Compare mode state
   const [compareState, compareDispatch] = useReducer(compareReducer, { jobs: {}, groupId: null });
@@ -129,7 +131,10 @@ export function SolverView({
         const statusText = result.success ? '완료' : '완료 (일부 제약 미충족)';
         onAction?.('execute_done', `${label}으로 최적화 실행이 ${statusText}되었습니다. 결과를 설명해주세요.`);
       }
-      if (!result.success) {
+      // 성공 시 이전 infeasibility 정보 초기화, 실패 시 새 정보 설정
+      if (result.success) {
+        setInfeasibilityInfo(null);
+      } else {
         setInfeasibilityInfo(result.infeasibility_info || result.summary?.infeasibility_info || null);
       }
     }
@@ -146,16 +151,26 @@ export function SolverView({
     const solver = solvers[selectedSolver];
     if (!solver || !projectId) return;
     setInfeasibilityInfo(null);
+    // 선택된 전략 사용 (없으면 인자로 전달된 strategy 사용)
+    const effectiveStrategy = strategy || selectedStrategyType || undefined;
+    // 전략에 따른 표시 이름 결정
+    const relatedStrategies = data.execution_strategies?.filter((st: any) =>
+      st.steps?.some((s: any) => s.solver_name === solver.solver_name)
+    ) || [];
+    const matchedStrategy = relatedStrategies.find((st: any) =>
+      st.strategy_type === effectiveStrategy || st.strategy_id === selectedStrategyId
+    );
+    const displayName = matchedStrategy?.name
+      || (effectiveStrategy === 'quantum_warmstart' ? 'CQM → CP-SAT Hybrid' : `${solver.provider} ${solver.solver_name}`.trim());
+
     await jobPoll.submitJob(
       projectId,
       solver.solver_id,
-      strategy === 'quantum_warmstart'
-        ? 'CQM → CP-SAT Hybrid'
-        : `${solver.provider} ${solver.solver_name}`.trim(),
+      displayName,
       undefined,
-      strategy,
+      effectiveStrategy,
     );
-  }, [selectedSolver, solvers, projectId, jobPoll]);
+  }, [selectedSolver, solvers, projectId, jobPoll, selectedStrategyType, selectedStrategyId, data.execution_strategies]);
 
   const handleStepRun = useCallback(async () => {
     if (stepPhase === 'select') {
@@ -315,7 +330,15 @@ export function SolverView({
       });
     } else {
       setSelectedSolver(idx);
+      // 솔버 변경 시 전략 초기화 (새 솔버의 추천 전략이 자동 선택됨)
+      setSelectedStrategyId('');
+      setSelectedStrategyType('');
     }
+  };
+
+  const handleStrategySelect = (strategyId: string, strategyType: string) => {
+    setSelectedStrategyId(strategyId);
+    setSelectedStrategyType(strategyType);
   };
 
   const selectedSolverData = solvers[selectedSolver];
@@ -434,7 +457,9 @@ export function SolverView({
                       isCompareMode={execMode === 'compare'}
                       strategies={data.execution_strategies}
                       recommendedStrategy={data.recommended_strategy}
+                      selectedStrategyId={selectedSolver === idx ? selectedStrategyId : undefined}
                       onSelect={() => handleSolverSelect(idx)}
+                      onStrategySelect={handleStrategySelect}
                     />
                   ))}
                 </div>
@@ -472,12 +497,25 @@ export function SolverView({
               <div className="text-[11px] text-slate-400">
                 비교 솔버: {Array.from(compareSelection).map(i => solvers[i]?.solver_name).filter(Boolean).join(', ') || '위에서 2~3개를 클릭하세요'}
               </div>
-            ) : (
-              <div className="text-[11px] text-slate-400 flex justify-between">
-                <span>선택 솔버: <span className="text-cyan-400 font-medium">{selectedSolverData?.solver_name || '-'}</span></span>
-                <span>{timeLimitSec ? `최대 ${timeLimitSec}초` : ''}{estimatedTime ? ` (예상 ${Array.isArray(estimatedTime) ? `${estimatedTime[0]}~${estimatedTime[1]}` : estimatedTime}초)` : ''}</span>
-              </div>
-            )}
+            ) : (() => {
+              // 현재 선택된 전략명 계산
+              const _relStrats = data.execution_strategies?.filter((st: any) =>
+                st.steps?.some((s: any) => s.solver_name === selectedSolverData?.solver_name)
+              ) || [];
+              const _activeStrat = _relStrats.find((st: any) => st.strategy_id === selectedStrategyId)
+                || _relStrats.find((st: any) => data.recommended_strategy?.strategy_id === st.strategy_id)
+                || _relStrats[0];
+              const stratLabel = _activeStrat?.name || '';
+              return (
+                <div className="text-[11px] text-slate-400 flex justify-between">
+                  <span>
+                    <span className="text-cyan-400 font-medium">{selectedSolverData?.solver_name || '-'}</span>
+                    {stratLabel && <span className="text-slate-500"> › {stratLabel}</span>}
+                  </span>
+                  <span>{timeLimitSec ? `최대 ${timeLimitSec}초` : ''}{estimatedTime ? ` (예상 ${Array.isArray(estimatedTime) ? `${estimatedTime[0]}~${estimatedTime[1]}` : estimatedTime}초)` : ''}</span>
+                </div>
+              );
+            })()}
           </div>
 
           {/* Step-by-step: compile info */}
@@ -509,17 +547,7 @@ export function SolverView({
                 {execMode === 'step' && stepPhase === 'compiled' && '실행'}
                 {execMode === 'compare' && `${compareSelection.size}개 솔버 비교 실행`}
               </button>
-              {execMode === 'auto' && data?.execution_strategies?.some(
-                (s: any) => s.strategy_type === 'quantum_warmstart'
-              ) && (
-                <button
-                  onClick={() => handleAutoRun('quantum_warmstart')}
-                  className="py-3 px-4 rounded-xl font-bold text-white transition-all bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-[12px]"
-                  title="CQM이 초기 해를 탐색 → CP-SAT이 warm start로 정밀 최적화"
-                >
-                  Hybrid
-                </button>
-              )}
+              {/* Hybrid 버튼 제거 — 전략 선택이 SolverCard 라디오로 통합됨 */}
             </div>
           </div>
         </div>

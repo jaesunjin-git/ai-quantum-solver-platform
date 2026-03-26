@@ -163,7 +163,8 @@ def _build_regulations_text(profile: Dict[str, Any]) -> str:
 
 
 def _build_domain_context(profile: Dict[str, Any]) -> str:
-    """프로파일 전체를 LLM이 참고할 도메인 컨텍스트 블록으로 조립"""
+    """프로파일 전체를 LLM이 참고할 도메인 컨텍스트 블록으로 조립.
+    용어(terminology)는 템플릿의 {terminology_table}로 별도 주입되므로 여기서는 참조만."""
     sections = []
 
     # 설명
@@ -171,9 +172,8 @@ def _build_domain_context(profile: Dict[str, Any]) -> str:
     if desc:
         sections.append(f"도메인 설명: {desc}")
 
-    # 용어
-    term_table = _build_terminology_table(profile)
-    sections.append(f"도메인 용어:\n{term_table}")
+    # 용어는 별도 섹션으로 주입됨 — 중복 방지
+    sections.append("도메인 용어: (상세는 TERMINOLOGY 섹션 참조)")
 
     # 제약 조건
     constraints_text = _build_constraints_text(profile)

@@ -14,6 +14,7 @@ Problem Definition Skill – TASK 3 Refactored Version.
 """
 
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -786,7 +787,7 @@ class ProblemDefinitionSkill:
         consequence_param = consequence.get("parameter")
         if consequence_param:
             # Merge consequence hints (context_must, typical_range) into search cdata
-            conseq_cdata = dict(cdata)
+            conseq_cdata = copy.deepcopy(cdata)
             if consequence.get("context_must"):
                 conseq_cdata["context_must"] = consequence["context_must"]
             if consequence.get("typical_range"):
@@ -1304,9 +1305,9 @@ class ProblemDefinitionSkill:
         self, session: CrewSession, project_id: str, event_data: Dict
     ) -> Dict:
         state = session.state
-        pd = state.problem_definition
-        if not pd:
-            pd = {}
+        pdef = state.problem_definition
+        if not pdef:
+            pdef = {}
 
         constraint_changes = event_data.get("constraint_changes", [])
         new_constraints = event_data.get("new_constraints", [])
@@ -1321,7 +1322,7 @@ class ProblemDefinitionSkill:
                 if not cname:
                     continue
                 # 이미 존재하면 스킵
-                if cname in pd.get("hard_constraints", {}) or cname in pd.get("soft_constraints", {}):
+                if cname in pdef.get("hard_constraints", {}) or cname in pdef.get("soft_constraints", {}):
                     continue
                 # constraints.yaml에서 메타데이터 가져오기
                 template = dk.get_constraint(cname) if dk else None
@@ -1345,12 +1346,12 @@ class ProblemDefinitionSkill:
                         "changeable": True,
                     }
                 target_key = f"{category}_constraints"
-                pd.setdefault(target_key, {})[cname] = cdata
+                pdef.setdefault(target_key, {})[cname] = cdata
                 added_lines.append(f"  - **{cdata['name_ko']}** ({category.upper()})")
 
                 # 제약에 필요한 파라미터도 추가
                 if template and template.get("parameters"):
-                    params = pd.get("parameters", {})
+                    params = pdef.get("parameters", {})
                     for pname in template["parameters"]:
                         if pname not in params:
                             # reference_ranges에서 기본값 가져오기
@@ -1362,7 +1363,7 @@ class ProblemDefinitionSkill:
                                 "value": ref_val,
                                 "source": "reference_default" if ref_val else "user_input_required",
                             }
-                    pd["parameters"] = params
+                    pdef["parameters"] = params
 
         # 제약조건 변경 적용
         changed_lines = []
@@ -1374,24 +1375,24 @@ class ProblemDefinitionSkill:
             from_cat = "soft" if to_cat == "hard" else "hard"
             from_key = f"{from_cat}_constraints"
             to_key = f"{to_cat}_constraints"
-            if cname in pd.get(from_key, {}):
-                moved = pd[from_key].pop(cname)
-                pd.setdefault(to_key, {})[cname] = moved
+            if cname in pdef.get(from_key, {}):
+                moved = pdef[from_key].pop(cname)
+                pdef.setdefault(to_key, {})[cname] = moved
                 direction = "Hard → Soft" if to_cat == "soft" else "Soft → Hard"
                 changed_lines.append(f"  - **{cname}**: {direction}")
 
         # ── 확정 시점 Ambiguity Detection ──
-        state.problem_definition = pd
+        state.problem_definition = pdef
 
         # 기존 clarification_answers가 있으면 이미 답변 완료 → 재질문 방지
         if state.clarification_answers and len(state.clarification_answers) > 0:
             state.clarification_done = True
 
         if not state.clarification_done:
-            parameters = pd.get("parameters", {})
+            parameters = pdef.get("parameters", {})
             confirmed_constraints = {
-                "hard": pd.get("hard_constraints", {}),
-                "soft": pd.get("soft_constraints", {}),
+                "hard": pdef.get("hard_constraints", {}),
+                "soft": pdef.get("soft_constraints", {}),
             }
             clarification_result = self._run_ambiguity_detection(
                 state, project_id, parameters, confirmed_constraints
@@ -1402,11 +1403,11 @@ class ProblemDefinitionSkill:
 
         # 문제 정의 확정
         state.problem_defined = True
-        state.confirmed_problem = pd
+        state.confirmed_problem = pdef
         state.constraints_confirmed = True
         state.confirmed_constraints = {
-            "hard": pd.get("hard_constraints", {}),
-            "soft": pd.get("soft_constraints", {}),
+            "hard": pdef.get("hard_constraints", {}),
+            "soft": pdef.get("soft_constraints", {}),
         }
         save_session_state(project_id, state)
 
@@ -1498,7 +1499,15 @@ class ProblemDefinitionSkill:
             return self._pd_handle_restart(state, project_id)
         elif intent == "cancel":
             return self._pd_handle_cancel(state, project_id)
-        elif intent == "remove_constraint" or intent == "add_constraint":
+        elif intent == "remove_constraint":
+            # regex-first: 결정적 매칭으로 제약조건 제거 시도
+            result = self._try_remove_constraint_regex(state, project_id, message)
+            if result:
+                return result
+            # fallback: LLM smart apply
+            if model and len(message.strip()) > 5:
+                return await self._llm_smart_apply(model, state, project_id, message)
+        elif intent == "add_constraint":
             if model and len(message.strip()) > 5:
                 return await self._llm_smart_apply(model, state, project_id, message)
         elif intent == "question":
@@ -1517,11 +1526,11 @@ class ProblemDefinitionSkill:
 
         # 확정 시점 Ambiguity Detection
         if not state.clarification_done:
-            pd = state.problem_definition or {}
-            parameters = pd.get("parameters", {})
+            pdef = state.problem_definition or {}
+            parameters = pdef.get("parameters", {})
             confirmed_constraints = {
-                "hard": pd.get("hard_constraints", {}),
-                "soft": pd.get("soft_constraints", {}),
+                "hard": pdef.get("hard_constraints", {}),
+                "soft": pdef.get("soft_constraints", {}),
             }
             clarification_result = self._run_ambiguity_detection(
                 state, project_id, parameters, confirmed_constraints
@@ -1574,6 +1583,59 @@ class ProblemDefinitionSkill:
                 "agent_status": "modification_pending",
             },
             "options": [],
+        }
+
+    def _try_remove_constraint_regex(self, state, project_id: str, message: str) -> Optional[Dict]:
+        """regex로 제약조건 제거를 결정적으로 처리. 매칭 실패 시 None 반환 (LLM fallback)."""
+        pdef = state.problem_definition
+        if not pdef:
+            return None
+
+        # 모든 제약조건 이름 수집
+        all_constraints = {}
+        for ckey in ["hard_constraints", "soft_constraints"]:
+            for cname, cdata in pdef.get(ckey, {}).items():
+                name_ko = cdata.get("name_ko", "") if isinstance(cdata, dict) else ""
+                all_constraints[cname] = (ckey, name_ko)
+
+        if not all_constraints:
+            return None
+
+        # 메시지에서 제약조건명 매칭 (영문 ID 또는 한국어 name_ko)
+        matched_cname = None
+        msg_lower = message.lower().strip()
+        for cname, (ckey, name_ko) in all_constraints.items():
+            if cname.lower() in msg_lower or (name_ko and name_ko in message):
+                matched_cname = cname
+                break
+
+        if not matched_cname:
+            return None
+
+        # 제거 의도 확인 (제거/삭제/remove/delete 키워드)
+        remove_keywords = ["제거", "삭제", "remove", "delete", "빼"]
+        if not any(kw in msg_lower for kw in remove_keywords):
+            return None
+
+        # 결정적 제거 수행
+        ckey, name_ko = all_constraints[matched_cname]
+        del pdef[ckey][matched_cname]
+        state.problem_definition = pdef
+        save_session_state(project_id, state)
+
+        display_name = name_ko if name_ko else matched_cname
+        logger.info(f"Constraint removed (regex): {matched_cname} from {ckey}")
+        return {
+            "type": "problem_definition",
+            "text": f"제약조건 **{display_name}** (`{matched_cname}`)을 제거했습니다.",
+            "data": {
+                "view_mode": "problem_definition",
+                "proposal": state.problem_definition,
+            },
+            "options": [
+                {"label": "확인", "action": "send", "message": "확인"},
+                {"label": "되돌리기", "action": "send", "message": f"{matched_cname} 추가"},
+            ],
         }
 
     # ──────────────────────────────────────
@@ -2191,10 +2253,20 @@ class ProblemDefinitionSkill:
         except Exception as _e:
             logger.warning(f"Semantic hints generation failed: {_e}")
 
+        # data_facts를 프롬프트에 포함 (trip_count 등 LLM이 숫자 맥락 파악에 필수)
+        _facts_lines = []
+        if _data_facts:
+            for _fk, _fv in _data_facts.items():
+                _facts_lines.append(f"  - {_fk}: {_fv}")
+        _facts_text = "\n".join(_facts_lines) if _facts_lines else "  (없음)"
+
         smart_prompt = f"""사용자가 최적화 문제 정의를 수정하려고 합니다.
 
 ## 사용자 요청
 "{message}"
+
+## 검증된 데이터 팩트 (코드로 계산된 확정값)
+{_facts_text}
 
 ## 현재 문제 정의
 목적함수: {current_obj.get('description_ko', current_obj.get('description', 'N/A'))} ({current_obj.get('target', 'N/A')})
@@ -2242,6 +2314,10 @@ Soft 제약조건:
     {{
       "type": "remove_constraint",
       "name": "제거할 제약조건명"
+    }},
+    {{
+      "type": "confirm",
+      "message": "기존 설정이 이미 요구사항을 충족하는 이유 설명"
     }}
   ],
   "summary": "사용자에게 보여줄 변경 내용 요약 (한국어, markdown)"
@@ -2253,6 +2329,8 @@ Soft 제약조건:
 - 목적함수 변경은 사용 가능한 목록에서 선택합니다.
 - 새 제약조건 추가 시 의미 있는 영문 ID를 생성하세요.
 - 사용자가 명시하지 않은 것은 변경하지 마세요.
+- 사용자 요청이 이미 데이터 팩트나 제약조건으로 충족되는 경우, "confirm" 액션으로 기존 설정이 충분한 이유를 설명하세요.
+  예: 사용자가 "320 trip을 소화"라고 했고 데이터에 trip_count=320이며 trip_coverage가 Hard 제약이면 → confirm (이미 보장됨).
 - actions 배열에 변경사항이 없으면 빈 배열을 반환하세요.
 - 위 '파라미터 주의사항'에 명시된 혼동 규칙을 반드시 준수하세요."""
 
@@ -2308,7 +2386,7 @@ Soft 제약조건:
         actions = parsed.get("actions", [])
         summary = parsed.get("summary", "")
         applied = []
-        pd = state.problem_definition
+        pdef = state.problem_definition
 
         for action in actions:
             atype = action.get("type", "")
@@ -2321,7 +2399,7 @@ Soft 제약조건:
                     # parameter_catalog 기반 2단 검증 (범위 + 의미)
                     try:
                         from engine.policy.parameter_catalog import get_catalog
-                        _domain = pd.get("domain", "railway")
+                        _domain = pdef.get("domain", "railway")
                         _catalog = get_catalog(_domain)
                         # 1단: valid_range 검증
                         _err = _catalog.validate_value(pid, val)
@@ -2335,11 +2413,11 @@ Soft 제약조건:
                             _err = _catalog.validate_semantic(
                                 pid, val,
                                 data_facts=_data_facts,
-                                current_params=pd.get("parameters", {}),
+                                current_params=pdef.get("parameters", {}),
                             )
                         if _err:
                             logger.warning(f"LLM Smart Apply blocked: {_err}")
-                            _current_val = pd.get("parameters", {}).get(pid, {})
+                            _current_val = pdef.get("parameters", {}).get(pid, {})
                             _cur_display = _current_val.get("value", "미설정") if isinstance(_current_val, dict) else _current_val
                             applied.append(
                                 f"⚠️ `{pid}={val}` 차단됨 — {_err}\n"
@@ -2349,12 +2427,12 @@ Soft 제약조건:
                     except Exception as _cat_err:
                         logger.debug(f"Catalog validation skipped: {_cat_err}")
 
-                    if pid in pd.get("parameters", {}):
-                        pd["parameters"][pid]["value"] = val
+                    if pid in pdef.get("parameters", {}):
+                        pdef["parameters"][pid]["value"] = val
                         if desc:
-                            pd["parameters"][pid]["description"] = desc
+                            pdef["parameters"][pid]["description"] = desc
                     else:
-                        pd.setdefault("parameters", {})[pid] = {
+                        pdef.setdefault("parameters", {})[pid] = {
                             "value": val,
                             "description": desc,
                             "status": "user_set",
@@ -2365,7 +2443,7 @@ Soft 제약조건:
                 target = action.get("target", "")
                 if target and target in objectives_map:
                     odata = objectives_map[target]
-                    pd["objective"] = {
+                    pdef["objective"] = {
                         "type": odata["type"],
                         "target": target,
                         "description": odata["description"],
@@ -2383,7 +2461,7 @@ Soft 제약조건:
                 cat = action.get("category", "hard")
                 if cname:
                     ckey = f"{cat}_constraints"
-                    pd.setdefault(ckey, {})[cname] = {
+                    pdef.setdefault(ckey, {})[cname] = {
                         "name_ko": action.get("name_ko", cname),
                         "description": action.get("description", ""),
                         "status": "confirmed",
@@ -2398,21 +2476,27 @@ Soft 제약조건:
                     from_cat = "soft" if to_cat == "hard" else "hard"
                     from_key = f"{from_cat}_constraints"
                     to_key = f"{to_cat}_constraints"
-                    if cname in pd.get(from_key, {}):
-                        moved = pd[from_key].pop(cname)
-                        pd.setdefault(to_key, {})[cname] = moved
+                    if cname in pdef.get(from_key, {}):
+                        moved = pdef[from_key].pop(cname)
+                        pdef.setdefault(to_key, {})[cname] = moved
                         applied.append(f"제약조건 이동: `{cname}` → {to_cat}")
 
             elif atype == "remove_constraint":
                 cname = action.get("name", "")
                 if cname:
                     for ckey in ["hard_constraints", "soft_constraints"]:
-                        if cname in pd.get(ckey, {}):
-                            del pd[ckey][cname]
+                        if cname in pdef.get(ckey, {}):
+                            del pdef[ckey][cname]
                             applied.append(f"제약조건 제거: `{cname}`")
                             break
 
-        state.problem_definition = pd
+            elif atype == "confirm":
+                # LLM이 "기존 설정으로 충분"이라고 판단 — 변경 없이 확인 메시지 전달
+                confirm_msg = action.get("message", "기존 설정이 요구사항을 충족합니다.")
+                applied.append(f"✅ {confirm_msg}")
+                logger.info(f"LLM confirm (no change): {confirm_msg}")
+
+        state.problem_definition = pdef
         save_session_state(project_id, state)
 
         if not applied:
@@ -2638,23 +2722,41 @@ Soft 제약조건:
         if state.problem_definition:
             state.problem_definition["parameters"] = parameters
 
-            # 승무원 수 확정 시 total_duties 자동 계산 (1 crew = 1 DIA)
-            if qid == "crew_counts" and isinstance(parsed_answer, dict):
-                day = parsed_answer.get("day_crew_count", 0) or 0
-                night = parsed_answer.get("night_crew_count", 0) or 0
-                total = int(day + night)
-                if total > 0:
-                    parameters["total_duties"] = {
-                        "value": total,
-                        "source": "auto_calculated",
-                        "description": f"주간({int(day)}) + 야간({int(night)}) = {total}",
-                    }
-                    logger.info(f"Auto-calculated total_duties={total} from crew counts")
-                    # pending에서 total_duties 질문 제거 + 답변 완료 처리
-                    pending = [q for q in pending if q.get("question_id") != "total_duties_missing.total_duties"]
-                    state.pending_clarifications = pending
-                    answers["total_duties_missing.total_duties"] = total
-                    state.clarification_answers = answers
+            # 답변 후 파생 파라미터 자동 계산 (YAML derived_params 기반)
+            q_def_derived = q_def.get("derived_params", {})
+            if q_def_derived and isinstance(parsed_answer, dict):
+                for dp_id, dp_spec in q_def_derived.items():
+                    formula = dp_spec.get("formula", "")
+                    if not formula:
+                        continue
+                    # formula 내 변수를 parsed_answer에서 치환하여 계산
+                    try:
+                        _eval_vars = {k: (v or 0) for k, v in parsed_answer.items() if isinstance(v, (int, float))}
+                        dp_value = int(eval(formula, {"__builtins__": {}}, _eval_vars))  # noqa: S307
+                    except Exception as _dp_err:
+                        logger.warning(f"derived_param '{dp_id}' formula eval failed: {_dp_err}")
+                        continue
+                    if dp_value > 0:
+                        desc_tmpl = dp_spec.get("description_template", "")
+                        _fmt_vars = {**{k: int(v or 0) for k, v in parsed_answer.items()
+                                       if isinstance(v, (int, float))}, dp_id: dp_value}
+                        try:
+                            desc = desc_tmpl.format(**_fmt_vars) if desc_tmpl else f"{dp_id}={dp_value}"
+                        except (KeyError, ValueError):
+                            desc = f"{dp_id}={dp_value}"
+                        parameters[dp_id] = {
+                            "value": dp_value,
+                            "source": dp_spec.get("source", "auto_calculated"),
+                            "description": desc,
+                        }
+                        logger.info(f"Auto-calculated {dp_id}={dp_value} from derived_params")
+                        # suppresses_question: 해당 질문을 pending에서 제거
+                        suppress_qid = dp_spec.get("suppresses_question", "")
+                        if suppress_qid:
+                            pending = [q for q in pending if q.get("question_id") != suppress_qid]
+                            state.pending_clarifications = pending
+                            answers[suppress_qid] = dp_value
+                            state.clarification_answers = answers
 
         # follow_up 질문이 있으면 해당 질문을 pending에서 찾아서 다음으로
         follow_ups = result.get("follow_up", [])
@@ -2736,8 +2838,8 @@ Soft 제약조건:
         activation_condition 평가에 사용."""
         resolved = {}
         # 1. problem_definition에 저장된 parameters
-        pd = state.problem_definition or {}
-        for pname, pdata in pd.get("parameters", {}).items():
+        pdef = state.problem_definition or {}
+        for pname, pdata in pdef.get("parameters", {}).items():
             if isinstance(pdata, dict) and pdata.get("value") is not None:
                 resolved[pname] = pdata
         # 2. clarification_answers에서 set_params로 적용된 값 (우선)
@@ -2769,13 +2871,13 @@ Soft 제약조건:
             save_session_state(project_id, state)
             return await self.handle(model, session, project_id, "분석", {})
 
-        pd = state.problem_definition
+        pdef = state.problem_definition
 
         # ── activation_condition 재평가: clarification 답변으로 새 제약 활성화 ──
         resolved_params = self._build_resolved_params(state)
         if resolved_params:
-            detected_data_types = set(pd.get("detected_data_types", []))
-            topology = pd.get("topology")
+            detected_data_types = set(pdef.get("detected_data_types", []))
+            topology = pdef.get("topology")
             new_constraints = await self._determine_constraints_phased(
                 model, state, project_id, dk, detected_data_types, topology,
                 resolved_params=resolved_params,
@@ -2783,35 +2885,34 @@ Soft 제약조건:
             # 기존 제약 유지 + 새로 활성화된 제약 추가
             activated = []
             for cname, cval in new_constraints.get("hard", {}).items():
-                if cname not in pd.get("hard_constraints", {}):
-                    pd.setdefault("hard_constraints", {})[cname] = cval
+                if cname not in pdef.get("hard_constraints", {}):
+                    pdef.setdefault("hard_constraints", {})[cname] = cval
                     activated.append(f"  - **{cval.get('name_ko', cname)}** (HARD)")
                     logger.info(f"Constraint activated by clarification: {cname}")
             for cname, cval in new_constraints.get("soft", {}).items():
-                if cname not in pd.get("soft_constraints", {}):
-                    pd.setdefault("soft_constraints", {})[cname] = cval
+                if cname not in pdef.get("soft_constraints", {}):
+                    pdef.setdefault("soft_constraints", {})[cname] = cval
                     activated.append(f"  - **{cval.get('name_ko', cname)}** (SOFT)")
                     logger.info(f"Soft constraint activated by clarification: {cname}")
 
-        # ── clarification resolved_params를 pd.parameters에 병합 ──
+        # ── clarification resolved_params를 pdef.parameters에 병합 ──
         # resolved_params에 is_overnight_crew, sleep_counts_as_work 등이 있지만
-        # pd["parameters"]에는 반영되지 않으면 template_model_builder가 받지 못함
+        # pdef["parameters"]에는 반영되지 않으면 template_model_builder가 받지 못함
         if resolved_params:
-            pd_params = pd.setdefault("parameters", {})
+            pdef_params = pdef.setdefault("parameters", {})
             for pk, pv in resolved_params.items():
-                if pk not in pd_params:
-                    pd_params[pk] = pv
+                if pk not in pdef_params:
+                    pdef_params[pk] = pv
                     logger.info(f"Clarification param merged: {pk} = {pv}")
 
         # 문제 정의 확정 — 명시적 deepcopy (참조 공유에 기대지 않음)
-        import copy
-        state.problem_definition = pd
+        state.problem_definition = pdef
         state.problem_defined = True
-        state.confirmed_problem = copy.deepcopy(pd)
+        state.confirmed_problem = copy.deepcopy(pdef)
         state.constraints_confirmed = True
         state.confirmed_constraints = copy.deepcopy({
-            "hard": pd.get("hard_constraints", {}),
-            "soft": pd.get("soft_constraints", {}),
+            "hard": pdef.get("hard_constraints", {}),
+            "soft": pdef.get("soft_constraints", {}),
         })
         save_session_state(project_id, state)
 

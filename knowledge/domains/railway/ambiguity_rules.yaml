@@ -77,6 +77,14 @@ rules:
             label: "야간 승무원 수"
             type: numeric
             required: true
+        # 답변 후 파생 파라미터 자동 계산 (코드 하드코딩 대신 선언적 정의)
+        derived_params:
+          total_duties:
+            formula: "day_crew_count + night_crew_count"
+            source: "auto_calculated"
+            description_template: "주간({day_crew_count}) + 야간({night_crew_count}) = {total_duties}"
+            # 이 파라미터가 파생되면 해당 질문을 자동 소거
+            suppresses_question: "total_duties_missing.total_duties"
 
   # ── 값 범위 이상: typical_range 벗어남 ──
   param_out_of_range:
