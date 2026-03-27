@@ -28,13 +28,15 @@ TIME_PATTERNS = [
 
 
 def run(dataframes: Dict[str, pd.DataFrame],
-        file_names: Optional[List[str]] = None) -> Dict[str, Any]:
+        file_names: Optional[List[str]] = None,
+        constraints_config: Optional[Dict] = None) -> Dict[str, Any]:
     """
     메인 프로파일링 함수.
 
     Args:
         dataframes: {시트키: DataFrame} 딕셔너리 (DataBinder._dataframes 형태)
         file_names: 원본 파일명 목록 (옵션)
+        constraints_config: constraints.yaml 내용 (옵션, Layer 2 set source 검증용)
 
     Returns:
         data_profile 딕셔너리
@@ -42,6 +44,7 @@ def run(dataframes: Dict[str, pd.DataFrame],
     profile: Dict[str, Any] = {
         "files": {},
         "warnings": [],
+        "data_quality": [],
         "summary": {
             "total_sheets": 0,
             "total_rows": 0,
@@ -81,10 +84,18 @@ def run(dataframes: Dict[str, pd.DataFrame],
     # 전체 경고 메시지 생성
     profile["warnings"] = _build_warnings(profile["summary"])
 
+    # CSV 품질 검증 (2계층: 자동 감지 + 도메인 지식)
+    data_quality = _validate_csv_quality(profile["files"], constraints_config)
+    profile["data_quality"] = data_quality
+    if data_quality:
+        for dq in data_quality:
+            profile["warnings"].append(dq["message"])
+
     logger.info(
         f"Gate1 profile: {profile['summary']['total_sheets']} sheets, "
         f"{profile['summary']['total_rows']} rows, "
-        f"{len(profile['warnings'])} warnings"
+        f"{len(profile['warnings'])} warnings, "
+        f"{len(data_quality)} data quality issues"
     )
 
     return profile
@@ -302,6 +313,93 @@ def to_text_summary(profile: Dict[str, Any]) -> str:
             )
 
     return "\n".join(lines)
+
+
+def _validate_csv_quality(
+    files: Dict[str, Any],
+    constraints_config: Optional[Dict] = None,
+) -> List[Dict[str, Any]]:
+    """CSV 데이터 품질 검증 (2계층).
+
+    Layer 1 (도메인 무관): identifier 컬럼 자동 중복 검사
+    Layer 2 (도메인 인식): constraints.yaml sets → source column unique 검증
+
+    Returns:
+        데이터 품질 이슈 목록 [{layer, sheet, column, type, count, message}, ...]
+    """
+    issues: List[Dict[str, Any]] = []
+    checked_columns: set = set()
+
+    # ── Layer 1: identifier 컬럼 자동 중복 검사 (도메인 무관) ──
+    for sheet_key, sheet_profile in files.items():
+        for col_name, col_info in sheet_profile.get("columns", {}).items():
+            if col_info.get("inferred_role") != "identifier":
+                continue
+            total = col_info.get("total_count", 0)
+            unique = col_info.get("unique_count", 0)
+            if total > 0 and unique < total:
+                dup_count = total - unique
+                issues.append({
+                    "layer": "auto",
+                    "sheet": sheet_key,
+                    "column": col_name,
+                    "type": "duplicate_id",
+                    "count": dup_count,
+                    "message": (
+                        f"{sheet_key}:{col_name} — {dup_count}건 중복 ID 감지 "
+                        f"({unique}/{total} 고유값)"
+                    ),
+                })
+                checked_columns.add((sheet_key, col_name))
+
+    # ── Layer 2: constraints.yaml sets 기반 unique 검증 (도메인 인식) ──
+    if constraints_config:
+        sets_def = constraints_config.get("sets", {})
+        for set_name, set_info in sets_def.items():
+            if not isinstance(set_info, dict):
+                continue
+            source = set_info.get("source", "")
+            column = set_info.get("column", "")
+            if not source or not column:
+                continue
+
+            # source 파일명 → sheet_key 매칭 (normalized/ 접두사, .csv 제거 등)
+            matched_sheet = None
+            source_base = source.replace(".csv", "").replace(".json", "")
+            for sheet_key in files:
+                # sheet_key 예: "normalized/trips", "timetable_rows" 등
+                sheet_base = sheet_key.replace("normalized/", "").replace(".csv", "")
+                if source_base in sheet_base or sheet_base in source_base:
+                    matched_sheet = sheet_key
+                    break
+
+            if not matched_sheet:
+                continue
+            if (matched_sheet, column) in checked_columns:
+                continue  # Layer 1에서 이미 검사됨
+
+            col_info = files[matched_sheet].get("columns", {}).get(column)
+            if not col_info:
+                continue
+
+            total = col_info.get("total_count", 0)
+            unique = col_info.get("unique_count", 0)
+            if total > 0 and unique < total:
+                dup_count = total - unique
+                issues.append({
+                    "layer": "constraint",
+                    "sheet": matched_sheet,
+                    "column": column,
+                    "set": set_name,
+                    "type": "duplicate_set_element",
+                    "count": dup_count,
+                    "message": (
+                        f"Set {set_name}의 원소 {matched_sheet}:{column} — "
+                        f"{dup_count}건 중복 (솔버 결과에 영향)"
+                    ),
+                })
+
+    return issues
 
 
 def _build_warnings(summary: Dict) -> List[str]:
