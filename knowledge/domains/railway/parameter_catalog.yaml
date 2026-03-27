@@ -121,6 +121,7 @@ parameters:
     type: scalar
     unit: minutes
     valid_range: [240, 480]
+    absolute_range: [60, 1440]     # 1시간 ~ 24시간 (물리적 한계)
     aliases: []
     related_constraints: [max_driving_time]
 
@@ -130,6 +131,7 @@ parameters:
     type: scalar
     unit: minutes
     valid_range: [420, 780]
+    absolute_range: [120, 1440]    # 2시간 ~ 24시간
     aliases: []
     related_constraints: [max_work_time, overnight_work_time_excluding_sleep]
 
@@ -139,6 +141,7 @@ parameters:
     type: scalar
     unit: minutes
     valid_range: [120, 420]
+    absolute_range: [0, 1440]      # 0 ~ 24시간
     aliases: []
     related_constraints: [max_wait_time]
 
@@ -148,6 +151,7 @@ parameters:
     type: scalar
     unit: minutes
     valid_range: [480, 960]
+    absolute_range: [120, 2880]    # 2시간 ~ 48시간 (숙박조 포함)
     aliases: []
     related_constraints: [max_total_stay_time]
 
@@ -304,6 +308,7 @@ parameters:
     type: scalar
     unit: count
     valid_range: [1, 200]
+    absolute_range: [1, 10000]     # 물리적 한계 (1만 명 초과 불가)
     aliases: []
     related_constraints: [fixed_day_crew_count]
     semantic_guard:
@@ -318,6 +323,7 @@ parameters:
     type: scalar
     unit: count
     valid_range: [1, 200]
+    absolute_range: [1, 10000]
     aliases: []
     related_constraints: [fixed_night_crew_count]
     semantic_guard:
@@ -332,6 +338,7 @@ parameters:
     type: scalar
     unit: count
     valid_range: [1, 500]
+    absolute_range: [1, 10000]
     aliases: []
     related_constraints: [fixed_total_duties]
     semantic_guard:

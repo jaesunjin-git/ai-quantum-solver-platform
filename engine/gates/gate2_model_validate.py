@@ -1285,6 +1285,47 @@ def run(math_model: Dict,
             )
 
 
+    # ── 검증8: 파라미터 범위 검증 (2단계: absolute_range → error, valid_range → warning) ──
+    # parameter_catalog.yaml 기반. 어떤 경로로 값이 설정되었든 Gate2에서 최종 검증.
+    if confirmed_problem:
+        _cp_params = confirmed_problem.get("parameters", {})
+        if _cp_params:
+            try:
+                from engine.policy.parameter_catalog import get_catalog
+                _domain = confirmed_problem.get("domain", "railway")
+                _catalog = get_catalog(_domain)
+                for _pid, _pval in _cp_params.items():
+                    _value = _pval.get("value") if isinstance(_pval, dict) else _pval
+                    if _value is None:
+                        continue
+                    try:
+                        _value = float(_value)
+                    except (TypeError, ValueError):
+                        continue
+                    _entry = _catalog.resolve(_pid)
+                    if not _entry:
+                        continue
+                    # 1단계: absolute_range — 물리적 한계 위반 → error
+                    _abs = _entry.absolute_range
+                    if _abs and len(_abs) >= 2:
+                        if _value < _abs[0] or _value > _abs[1]:
+                            errors.append(
+                                f"파라미터 '{_pid}'={_value} — "
+                                f"허용 한계 [{_abs[0]}, {_abs[1]}] 초과. 진행 불가."
+                            )
+                            continue  # absolute 위반이면 valid_range 체크 불필요
+                    # 2단계: valid_range — 정상 범위 이탈 → warning
+                    _vr = _entry.valid_range
+                    if _vr and len(_vr) >= 2:
+                        if _value < _vr[0] or _value > _vr[1]:
+                            warnings.append(
+                                f"파라미터 '{_pid}'={_value} — "
+                                f"정상 범위 [{_vr[0]}, {_vr[1]}] 벗어남. "
+                                f"의도된 설정인지 확인 필요."
+                            )
+            except Exception as _e:
+                logger.debug(f"Gate2 parameter range validation skipped: {_e}")
+
     # ── 검증7: Set source column 중복 검사 (Layer 2 — 도메인 인식) ──
     # constraints.yaml의 sets 정의에서 source + column을 읽어,
     # 해당 컬럼에 중복이 있으면 솔버 결과 직접 훼손 → error

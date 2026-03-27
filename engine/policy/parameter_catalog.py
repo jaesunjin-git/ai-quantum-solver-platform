@@ -28,6 +28,7 @@ class CatalogEntry:
     type: str = "scalar"
     unit: str = ""
     valid_range: Optional[list] = None
+    absolute_range: Optional[list] = None
     aliases: list = field(default_factory=list)
     default_alias: str = ""
     not_alias_of: list = field(default_factory=list)
@@ -68,6 +69,7 @@ class ParameterCatalog:
                 type=pdef.get("type", "scalar"),
                 unit=pdef.get("unit", ""),
                 valid_range=pdef.get("valid_range"),
+                absolute_range=pdef.get("absolute_range"),
                 aliases=pdef.get("aliases", []),
                 default_alias=pdef.get("default_alias", ""),
                 not_alias_of=pdef.get("not_alias_of", []),
