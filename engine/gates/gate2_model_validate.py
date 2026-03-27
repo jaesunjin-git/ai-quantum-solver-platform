@@ -1285,6 +1285,51 @@ def run(math_model: Dict,
             )
 
 
+    # ── 검증7: Set source column 중복 검사 (Layer 2 — 도메인 인식) ──
+    # constraints.yaml의 sets 정의에서 source + column을 읽어,
+    # 해당 컬럼에 중복이 있으면 솔버 결과 직접 훼손 → error
+    if confirmed_problem and dataframes:
+        _domain = confirmed_problem.get("domain", "")
+        if _domain:
+            try:
+                import yaml as _yaml_gate2
+                import os as _os_gate2
+                _cpath = _os_gate2.path.join(
+                    _os_gate2.path.dirname(_os_gate2.path.dirname(_os_gate2.path.dirname(
+                        _os_gate2.path.abspath(__file__)))),
+                    "knowledge", "domains", _domain, "constraints.yaml"
+                )
+                if _os_gate2.path.isfile(_cpath):
+                    with open(_cpath, encoding="utf-8") as _f:
+                        _cdata = _yaml_gate2.safe_load(_f) or {}
+                    for _set_name, _set_info in _cdata.get("sets", {}).items():
+                        if not isinstance(_set_info, dict):
+                            continue
+                        _source = _set_info.get("source", "")
+                        _column = _set_info.get("column", "")
+                        if not _source or not _column or _source.endswith(".json"):
+                            continue
+                        # dataframes에서 해당 시트 찾기
+                        _source_base = _source.replace(".csv", "")
+                        for _dk, _df in dataframes.items():
+                            _dk_base = str(_dk).replace("normalized/", "").replace(".csv", "")
+                            if _source_base not in _dk_base and _dk_base not in _source_base:
+                                continue
+                            if _column not in _df.columns:
+                                continue
+                            _total = len(_df)
+                            _unique = _df[_column].nunique()
+                            if _total > 0 and _unique < _total:
+                                _dup = _total - _unique
+                                errors.append(
+                                    f"Set '{_set_name}' source {_source}:{_column} — "
+                                    f"{_dup}건 중복 ID ({_unique}/{_total} 고유값). "
+                                    f"솔버 결과가 훼손됩니다. 데이터 정제 후 재시도하세요."
+                                )
+                            break
+            except Exception as _e:
+                logger.debug(f"Gate2 set source duplicate check skipped: {_e}")
+
     is_valid = len(errors) == 0
 
     # -- 상세 로그 출력 --
