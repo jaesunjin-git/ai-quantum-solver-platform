@@ -7,6 +7,11 @@ domain: railway
 # 각 파라미터에 type/family/scope/aliases/valid_range 메타데이터.
 # DataBinder는 이 catalog으로만 alias 해석.
 # similarity/prefix/token 매칭은 실행 경로에서 제거됨.
+#
+# 범위 정책:
+#   - 시간(minutes) 계열: valid_range + absolute_range (물리적 한계 명확)
+#   - count 계열: valid_range만 (도메인/고객 규모에 따라 상이)
+#   - absolute_range 미선언 시 warning만 동작, 파이프라인 중단 없음
 # ════════════════════════════════════════════
 
 parameters:
@@ -308,7 +313,7 @@ parameters:
     type: scalar
     unit: count
     valid_range: [1, 200]
-    absolute_range: [1, 10000]     # 물리적 한계 (1만 명 초과 불가)
+    # absolute_range 없음 — count 계열은 도메인/고객 규모에 따라 상이
     aliases: []
     related_constraints: [fixed_day_crew_count]
     semantic_guard:
@@ -323,7 +328,7 @@ parameters:
     type: scalar
     unit: count
     valid_range: [1, 200]
-    absolute_range: [1, 10000]
+    # absolute_range 없음
     aliases: []
     related_constraints: [fixed_night_crew_count]
     semantic_guard:
@@ -338,7 +343,7 @@ parameters:
     type: scalar
     unit: count
     valid_range: [1, 500]
-    absolute_range: [1, 10000]
+    # absolute_range 없음
     aliases: []
     related_constraints: [fixed_total_duties]
     semantic_guard:
