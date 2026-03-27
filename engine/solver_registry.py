@@ -96,6 +96,14 @@ class SolverRegistry:
         """전체 솔버 목록"""
         return cls.load()
 
+    @classmethod
+    def resolve_display_name(cls, solver_id: str) -> str:
+        """solver_id → 표시 이름 resolve. configs/solvers/*.yaml이 단일 진실 공급원."""
+        solver = cls.get_solver(solver_id)
+        if not solver:
+            return solver_id
+        return solver.get("name", solver_id)
+
 
 # ============================================================
 # Problem Profile 생성 (v2.0 — 구조 분석 강화)

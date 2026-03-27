@@ -136,7 +136,7 @@ def _run_solver_sync(
                 coro = pipeline.run_hybrid(
                     math_model=math_model,
                     project_id=str(project_id),
-                    solver_name=solver_name or "CQM → CP-SAT Hybrid",
+                    solver_name=solver_name or "Hybrid (CQM → CP-SAT)",
                     time_limit_sec=time_limit,
                 )
             else:

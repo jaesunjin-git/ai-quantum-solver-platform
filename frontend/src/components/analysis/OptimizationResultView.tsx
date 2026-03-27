@@ -99,6 +99,19 @@ export function OptimizationResultView({
           </div>
         </div>
 
+        {/* Hybrid fallback 안내 배너 */}
+        {(data as any).fallback_info?.occurred && (
+          <div className="mb-2 p-3 rounded-lg bg-amber-900/20 border border-amber-500/30 flex items-start gap-2">
+            <AlertTriangle size={14} className="text-amber-400 mt-0.5 flex-shrink-0" />
+            <div>
+              <div className="text-[13px] text-amber-300 font-medium">전략 전환 안내</div>
+              <div className="text-[12px] text-amber-200/80 mt-0.5">
+                {(data as any).fallback_info.message_ko || '양자 하이브리드에서 단독 솔버로 전환되었습니다.'}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Validation summary (오류/경고/안내) — 클릭 시 상세 펼치기 */}
         {data.validation && (data.validation.error_count > 0 || data.validation.warning_count > 0 || data.validation.info_count > 0) && (
           <div className="mb-2">

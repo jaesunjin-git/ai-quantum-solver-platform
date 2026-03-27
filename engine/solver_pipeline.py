@@ -435,6 +435,7 @@ class SolverPipeline:
     ) -> Dict[str, Any]:
         """Set Partitioning 결과 → 기존 프론트엔드 포맷 summary"""
         from engine.column_generator import load_tasks_from_csv
+        from engine.solver_registry import SolverRegistry
         import os
 
         column_map = ctx.sp_duty_map or {} if ctx else {}
@@ -466,7 +467,7 @@ class SolverPipeline:
             column_map=column_map,
             tasks=tasks,
             solver_id=solver_id,
-            solver_name=solver_name or "CP-SAT (Set Partitioning)",
+            solver_name=solver_name or SolverRegistry.resolve_display_name(solver_id),
             project_dir=project_dir,
             objective_value=execute_result.objective_value,
             params=_params,
@@ -528,7 +529,7 @@ class SolverPipeline:
         math_model: Dict,
         project_id: str,
         time_limit_sec: int = 720,
-        solver_name: str = "CQM → CP-SAT Hybrid",
+        solver_name: str = "",
         **kwargs,
     ) -> PipelineResult:
         """CQM → CP-SAT Hybrid 파이프라인.
@@ -581,11 +582,24 @@ class SolverPipeline:
         budget = compute_time_budget(time_limit_sec, config, elapsed_sec=gen_time)
         if not budget["viable"]:
             logger.warning("Hybrid: insufficient time, falling back to CP-SAT only")
-            return await self.run(
+            from engine.solver_registry import SolverRegistry
+            _fb_name = SolverRegistry.resolve_display_name("classical_cpu")
+            result = await self.run(
                 math_model, "classical_cpu", project_id,
-                solver_name="CP-SAT (hybrid fallback)",
+                solver_name=_fb_name,
                 time_limit_sec=time_limit_sec, **kwargs,
             )
+            # fallback_info 구조화 — 프론트엔드 안내 배너용
+            if result.summary:
+                result.summary["fallback_info"] = {
+                    "occurred": True,
+                    "reason": "time_insufficient",
+                    "original_strategy": solver_name or "quantum_warmstart",
+                    "actual_solver_id": "classical_cpu",
+                    "actual_solver_name": _fb_name,
+                    "message_ko": f"양자 하이브리드 실행 시간이 부족하여 {_fb_name} 단독으로 전환되었습니다.",
+                }
+            return result
 
         # ── Phase 3: CQM Compile + Execute ──
         cqm_success = False
@@ -632,11 +646,23 @@ class SolverPipeline:
             logger.info("Hybrid: CQM failed, falling back to CP-SAT only")
             hybrid_result.strategy_used = "cpsat_fallback"
             remaining = time_limit_sec - (time.time() - pipeline_start)
-            return await self.run(
+            from engine.solver_registry import SolverRegistry
+            _fb_name = SolverRegistry.resolve_display_name("classical_cpu")
+            result = await self.run(
                 math_model, "classical_cpu", project_id,
-                solver_name="CP-SAT (hybrid fallback)",
+                solver_name=_fb_name,
                 time_limit_sec=int(max(remaining, 120)), **kwargs,
             )
+            if result.summary:
+                result.summary["fallback_info"] = {
+                    "occurred": True,
+                    "reason": "cqm_failed",
+                    "original_strategy": solver_name or "quantum_warmstart",
+                    "actual_solver_id": "classical_cpu",
+                    "actual_solver_name": _fb_name,
+                    "message_ko": f"양자 CQM 솔버 실행 실패로 {_fb_name} 단독으로 전환되었습니다.",
+                }
+            return result
 
         # ── Phase 4: CP-SAT Compile + Hint 주입 ──
         cpsat_compiler = get_sp_compiler("classical_cpu")
