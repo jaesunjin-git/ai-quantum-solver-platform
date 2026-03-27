@@ -34,6 +34,7 @@ class HybridConfig:
     use_objective_bound: bool = False
     min_hint_quality: float = 0.0
     fallback_on_cqm_failure: bool = True
+    hint_policy: Dict[str, str] = field(default_factory=lambda: {"default": "enabled"})
 
     @classmethod
     def load(cls) -> "HybridConfig":
@@ -51,7 +52,7 @@ class HybridConfig:
                 "cqm_time_fraction", "cqm_min_time_sec", "cpsat_min_time_sec",
                 "total_default_time_sec", "use_same_column_pool",
                 "use_objective_bound", "min_hint_quality",
-                "fallback_on_cqm_failure",
+                "fallback_on_cqm_failure", "hint_policy",
             ]:
                 val = section.get(attr)
                 if val is not None:
@@ -119,6 +120,7 @@ def inject_warmstart_hints(
     cqm_solution: Dict[str, Any],
     config: HybridConfig,
     total_duties: Optional[int] = None,
+    objective_type: str = "",
 ) -> tuple:
     """CQM raw solution을 CP-SAT hint로 주입.
 
@@ -128,6 +130,7 @@ def inject_warmstart_hints(
         cqm_solution: CQM executor 반환값의 solution dict
         config: HybridConfig
         total_duties: 목표 duty 수 (hint 품질 판정용)
+        objective_type: 목적함수 유형 (hint_policy 판정용)
 
     Returns:
         (hints_injected: int, skip_reason: str)
@@ -136,6 +139,15 @@ def inject_warmstart_hints(
     z_values = cqm_solution.get("z", {})
     if not z_values:
         return 0, "CQM solution has no z values"
+
+    # 목적함수별 hint 정책 확인 (YAML hint_policy 기반)
+    policy = config.hint_policy or {}
+    hint_enabled = policy.get(objective_type, policy.get("default", "enabled"))
+    if hint_enabled == "disabled":
+        logger.info(
+            f"Hybrid hint: disabled for objective_type='{objective_type}' (hint_policy)"
+        )
+        return 0, f"hint_policy: disabled for {objective_type}"
 
     # 품질 필터: 선택된 column 수 / 목표 duty 수
     selected_count = sum(1 for v in z_values.values() if int(v) > 0)

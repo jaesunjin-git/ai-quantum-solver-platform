@@ -677,7 +677,10 @@ class SolverPipeline:
                 error=cpsat_compile.error,
             )
 
-        # Hint 주입
+        # Hint 주입 (objective_type 기반 hint_policy 적용)
+        from engine.compiler.objective_builder import extract_objective_type
+        _obj_type = extract_objective_type(math_model)
+
         hints_injected = 0
         skip_reason = ""
         if cqm_solution and cpsat_compile.solver_model:
@@ -688,6 +691,7 @@ class SolverPipeline:
                 cqm_solution,
                 config,
                 total_duties=total_duties,
+                objective_type=_obj_type,
             )
         hybrid_result.hints_injected = hints_injected
         hybrid_result.hints_skipped_reason = skip_reason

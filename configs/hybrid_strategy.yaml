@@ -37,6 +37,17 @@ quantum_warmstart:
   # 0.0 = 항상 주입 (비활성), 0.5 = 50% 이상 선택해야 주입
   min_hint_quality: 0.0         # v1: 비활성 (항상 주입), 실행 데이터 쌓이면 조정
 
+  # ── 목적함수별 Hint 정책 ──
+  # balance_workload: CQM soft constraint와 CP-SAT hard constraint의 괴리로
+  #   hint가 CP-SAT 탐색을 방해 (OPTIMAL 155K → FEASIBLE 161K 열화 확인)
+  # minimize_duties: 단순 최소화는 CQM/CP-SAT 방향 동일 → hint 유효
+  hint_policy:
+    minimize_duties: enabled
+    minimize_duties_with_penalties: enabled
+    balance_workload: disabled    # CQM soft ≠ CP-SAT hard, hint 방해 확인됨
+    maximize_efficiency: enabled
+    default: enabled              # 미등록 목적함수는 기본 활성
+
   # ── Fallback ──
   # CQM 실패(INFEASIBLE, SDK 미설치, 시간 초과) 시 CP-SAT 단독 실행
   fallback_on_cqm_failure: true
