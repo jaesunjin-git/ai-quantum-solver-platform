@@ -60,10 +60,15 @@ export function SolverCard({
   onSelect, onStrategySelect,
 }: SolverCardProps) {
 
-  // 이 솔버와 관련된 전략들
-  const relatedStrategies = strategies?.filter((st: any) =>
-    st.steps?.some((s: any) => s.solver_name === svr.solver_name)
-  ) || [];
+  // 이 솔버와 관련된 전략들 (주체 solver에만 표시 — 중복 방지)
+  const relatedStrategies = strategies?.filter((st: any) => {
+    const steps = st.steps || [];
+    if (steps.length <= 1) {
+      return steps.some((s: any) => s.solver_name === svr.solver_name);
+    }
+    const mainStep = steps.find((s: any) => s.role === 'main_solver') || steps[0];
+    return mainStep?.solver_name === svr.solver_name;
+  }) || [];
   const bestStrategy = relatedStrategies.find((st: any) =>
     recommendedStrategy?.strategy_id === st.strategy_id
   ) || relatedStrategies[0];

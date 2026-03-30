@@ -154,9 +154,17 @@ export function SolverView({
     // 선택된 전략 사용 (없으면 인자로 전달된 strategy 사용)
     const effectiveStrategy = strategy || selectedStrategyType || undefined;
     // 전략에 따른 표시 이름 결정
-    const relatedStrategies = data.execution_strategies?.filter((st: any) =>
-      st.steps?.some((s: any) => s.solver_name === solver.solver_name)
-    ) || [];
+    const relatedStrategies = data.execution_strategies?.filter((st: any) => {
+      // 전략의 주체 solver에만 표시 (중복 방지)
+      // single: 해당 solver만 포함
+      // multi-step: 첫 번째 step 또는 main_solver role인 solver만
+      const steps = st.steps || [];
+      if (steps.length <= 1) {
+        return steps.some((s: any) => s.solver_name === solver.solver_name);
+      }
+      const mainStep = steps.find((s: any) => s.role === 'main_solver') || steps[0];
+      return mainStep?.solver_name === solver.solver_name;
+    }) || [];
     const matchedStrategy = relatedStrategies.find((st: any) =>
       st.strategy_type === effectiveStrategy || st.strategy_id === selectedStrategyId
     );
@@ -499,9 +507,14 @@ export function SolverView({
               </div>
             ) : (() => {
               // 현재 선택된 전략명 계산
-              const _relStrats = data.execution_strategies?.filter((st: any) =>
-                st.steps?.some((s: any) => s.solver_name === selectedSolverData?.solver_name)
-              ) || [];
+              const _relStrats = data.execution_strategies?.filter((st: any) => {
+                const steps = st.steps || [];
+                if (steps.length <= 1) {
+                  return steps.some((s: any) => s.solver_name === selectedSolverData?.solver_name);
+                }
+                const mainStep = steps.find((s: any) => s.role === 'main_solver') || steps[0];
+                return mainStep?.solver_name === selectedSolverData?.solver_name;
+              }) || [];
               const _activeStrat = _relStrats.find((st: any) => st.strategy_id === selectedStrategyId)
                 || _relStrats.find((st: any) => data.recommended_strategy?.strategy_id === st.strategy_id)
                 || _relStrats[0];
