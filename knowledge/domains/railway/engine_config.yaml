@@ -58,6 +58,14 @@ feasibility:
       action: reject
       constraint_ref: max_work_time
 
+    # 체류시간 상한 (#15) — "가급적 12시간 이내" → soft
+    - type: max_value
+      field: span_minutes
+      limit_param: max_total_stay_minutes
+      limit: 720                            # fallback: 12시간
+      action: penalize
+      constraint_ref: max_total_stay_time
+
     # 식사 휴게시간 보장 (#17)
     - type: break_window
       windows:
