@@ -901,17 +901,15 @@ class DWaveCQMCompiler(BaseCompiler):
 
     def _try_fast_no_overlap(self, cqm, var_map, con_def, set_map, remaining: int) -> int:
         """
-        x[i1,j] + x[i2,j] <= 1 패턴 고속 처리.
+        no_overlap 집약 제약: Σ_j x[i1,j] + Σ_j x[i2,j] <= 1
+
+        trip_coverage (Σ_j x[i,j] == 1) 하에서 수학적으로 동치이므로,
+        pair별 × J개 제약 대신 pair별 1개 집약 제약으로 축소.
+        (예: 3,352 pairs × 160 J = 536K → 3,352 제약)
 
         감지 조건:
           - for_each에 'overlap_pairs' 포함
-          - lhs: {type:sum, terms: [{type:variable,id:X,indices:[a,c]}, {type:variable,id:X,indices:[b,c]}]}
-          - rhs: {type:constant, value:1}
           - operator: <=
-
-        build_constraint를 우회하여:
-          1. 변수맵을 string-key dict으로 전처리 (O(1) 조회)
-          2. overlap_pairs × J 순회, budget 초과 시 즉시 중단
         """
         if "overlap_pairs" not in con_def.get("for_each", ""):
             return 0
@@ -974,7 +972,7 @@ class DWaveCQMCompiler(BaseCompiler):
         if not isinstance(x_vars, dict) or not x_vars or not outer_set or not overlap_pairs:
             return 0
 
-        # string-key 전처리: O(1) 조회를 위해 모든 키를 str tuple로 변환
+        # string-key 전처리: O(1) 조회
         x_str_map = {}
         for key, var in x_vars.items():
             if isinstance(key, tuple):
@@ -986,30 +984,42 @@ class DWaveCQMCompiler(BaseCompiler):
         count = 0
         skipped = 0
 
+        # 집약 제약: Σ_j x[i1,j] + Σ_j x[i2,j] <= 1 (pair별 1개)
+        # trip_coverage (Σ_j x[i,j] == 1) 하에서 동치
         for pair in overlap_pairs:
             if count >= remaining:
                 break
             i1_str = str(pair[0])
             i2_str = str(pair[1])
+
+            # Σ_j x[i1,j]와 Σ_j x[i2,j] 수집
+            terms_i1 = []
+            terms_i2 = []
             for j_val in outer_set:
-                if count >= remaining:
-                    break
                 j_str = str(j_val)
                 x1 = x_str_map.get((i1_str, j_str))
                 x2 = x_str_map.get((i2_str, j_str))
-                if x1 is None or x2 is None:
-                    skipped += 1
-                    continue
-                try:
-                    cqm.add_constraint(x1 + x2 <= rhs_val, label=f"{cid}_{count}")
-                    count += 1
-                except Exception as e:
-                    logger.debug(f"no_overlap {cid}_{count} failed: {e}")
+                if x1 is not None:
+                    terms_i1.append(x1)
+                if x2 is not None:
+                    terms_i2.append(x2)
 
-        total_possible = len(overlap_pairs) * len(outer_set)
+            if not terms_i1 or not terms_i2:
+                skipped += 1
+                continue
+
+            try:
+                from dimod import quicksum
+                expr = quicksum(terms_i1) + quicksum(terms_i2)
+                cqm.add_constraint(expr <= rhs_val, label=f"{cid}_{count}")
+                count += 1
+            except Exception as e:
+                logger.debug(f"no_overlap aggregate {cid}_{count} failed: {e}")
+
         logger.info(
-            f"no_overlap fast-path: {count}/{total_possible} constraints "
-            f"(pairs={len(overlap_pairs)}, J={len(outer_set)}, skipped={skipped})"
+            f"no_overlap aggregate: {count}/{len(overlap_pairs)} pair constraints "
+            f"(was {len(overlap_pairs)}×{len(outer_set)}={len(overlap_pairs)*len(outer_set)} expanded, "
+            f"skipped={skipped})"
         )
         return count
 
