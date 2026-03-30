@@ -313,7 +313,115 @@ class TestYAMLSideConstraints:
         assert isinstance(result, list)
 
     def test_load_railway_domain(self):
-        """railway 도메인에서 side_constraints 로딩 (현재 미정의 → 빈 목록)"""
+        """railway 도메인에서 side_constraints 로딩"""
         from engine.config_loader import load_side_constraints
         result = load_side_constraints(domain="railway")
         assert isinstance(result, list)
+        # aggregate_avg 2건이 활성화되어 있어야 함
+        assert len(result) >= 2
+        types = [c.get("type") for c in result]
+        assert "aggregate_avg" in types
+
+
+# ============================================================
+# Soft Constraint 테스트
+# ============================================================
+
+class TestSoftConstraint:
+    """is_soft + penalty_weight 동작 검증"""
+
+    def test_action_penalize_creates_soft(self):
+        """action: penalize → is_soft=True"""
+        from engine.constraints.builtin import CardinalityConstraint
+        handler = CardinalityConstraint()
+
+        cols = _make_columns([{"training_eligible": True}] * 5)
+        config = {
+            "column_attribute": "training_eligible",
+            "operator": ">=",
+            "value": 2,
+            "action": "penalize",
+            "penalty_weight": 5.0,
+        }
+        result = handler.build(cols, {}, config)
+        assert result is not None
+        assert result.constraint.is_soft is True
+        assert result.constraint.penalty_weight == 5.0
+
+    def test_action_reject_creates_hard(self):
+        """action: reject → is_soft=False"""
+        from engine.constraints.builtin import CardinalityConstraint
+        handler = CardinalityConstraint()
+
+        cols = _make_columns([{"training_eligible": True}] * 5)
+        config = {
+            "column_attribute": "training_eligible",
+            "operator": ">=",
+            "value": 2,
+            "action": "reject",
+        }
+        result = handler.build(cols, {}, config)
+        assert result is not None
+        assert result.constraint.is_soft is False
+
+    def test_default_action_is_hard(self):
+        """action 미지정 → hard (기본값)"""
+        from engine.constraints.builtin import AggregateAvgConstraint
+        handler = AggregateAvgConstraint()
+
+        cols = _make_columns([{"active_minutes": 300}])
+        config = {"column_field": "active_minutes", "operator": "<=", "value": 350}
+        result = handler.build(cols, {}, config)
+        assert result is not None
+        assert result.constraint.is_soft is False
+
+    def test_action_param_override(self):
+        """고객이 action_param으로 hard→soft 전환"""
+        from engine.constraints.builtin import CardinalityConstraint
+        handler = CardinalityConstraint()
+
+        cols = _make_columns([{"training_eligible": True}] * 5)
+        config = {
+            "column_attribute": "training_eligible",
+            "operator": ">=",
+            "value": 2,
+            "action": "reject",                 # 도메인 기본: hard
+            "action_param": "training_action",  # 고객 override
+        }
+        # 고객이 penalize로 override
+        params = {"training_action": "penalize"}
+        result = handler.build(cols, params, config)
+        assert result is not None
+        assert result.constraint.is_soft is True
+
+    def test_aggregate_avg_soft(self):
+        """aggregate_avg with soft"""
+        from engine.constraints.builtin import AggregateAvgConstraint
+        handler = AggregateAvgConstraint()
+
+        cols = _make_columns([{"active_minutes": 350}, {"active_minutes": 280}])
+        config = {
+            "column_field": "active_minutes",
+            "operator": "<=",
+            "value": 300,
+            "action": "penalize",
+            "penalty_weight": 10.0,
+        }
+        result = handler.build(cols, {}, config)
+        assert result is not None
+        assert result.constraint.is_soft is True
+        assert result.constraint.penalty_weight == 10.0
+
+    def test_sp_constraint_soft_fields(self):
+        """SPConstraint soft 필드 기본값"""
+        from engine.compiler.sp_problem import SPConstraint
+        c = SPConstraint(name="test", column_ids=[1], operator="<=", rhs=10)
+        assert c.is_soft is False
+        assert c.penalty_weight == 1.0
+
+        c_soft = SPConstraint(
+            name="test_soft", column_ids=[1], operator="<=", rhs=10,
+            is_soft=True, penalty_weight=5.0,
+        )
+        assert c_soft.is_soft is True
+        assert c_soft.penalty_weight == 5.0

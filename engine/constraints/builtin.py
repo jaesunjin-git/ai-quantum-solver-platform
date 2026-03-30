@@ -22,6 +22,15 @@ from engine.feasibility.base import resolve_param
 logger = logging.getLogger(__name__)
 
 
+def _resolve_soft(config: dict, params: dict) -> tuple:
+    """YAML action + penalty_weight → (is_soft, penalty_weight) 해석.
+    action_param으로 고객별 override 가능."""
+    action = resolve_param(config, "action", params, default="reject")
+    is_soft = (action == "penalize")
+    weight = resolve_param(config, "penalty_weight", params, default=1.0)
+    return is_soft, float(weight)
+
+
 # ── cardinality: 속성 조건 column 수 제약 ───────────────────
 
 class CardinalityConstraint(SideConstraintHandler):
@@ -88,6 +97,8 @@ class CardinalityConstraint(SideConstraintHandler):
             )
             return None
 
+        is_soft, penalty_weight = _resolve_soft(config, params)
+
         constraint = SPConstraint(
             name=f"cardinality_{attr_name}",
             column_ids=eligible_ids,
@@ -95,11 +106,13 @@ class CardinalityConstraint(SideConstraintHandler):
             rhs=value,
             label=f"Cardinality: {attr_name} {operator} {value} ({len(eligible_ids)} eligible)",
             constraint_ref=config.get("constraint_ref", ""),
+            is_soft=is_soft,
+            penalty_weight=penalty_weight,
         )
 
         return ConstraintResult(
             constraint=constraint,
-            description=f"{attr_name} {operator} {value} ({len(eligible_ids)} eligible columns)",
+            description=f"{attr_name} {operator} {value} ({len(eligible_ids)} eligible, {'soft' if is_soft else 'hard'})",
         )
 
 
@@ -156,6 +169,8 @@ class AggregateAvgConstraint(SideConstraintHandler):
             )
             return None
 
+        is_soft, penalty_weight = _resolve_soft(config, params)
+
         constraint = SPConstraint(
             name=f"aggregate_avg_{field_name}",
             column_ids=column_ids,
@@ -163,15 +178,17 @@ class AggregateAvgConstraint(SideConstraintHandler):
             rhs=0.0,  # 선형화 후 rhs = 0
             label=(
                 f"AggregateAvg: avg({field_name}) {operator} {value} "
-                f"({len(column_ids)} columns)"
+                f"({len(column_ids)} columns, {'soft' if is_soft else 'hard'})"
             ),
             coefficients=coefficients,
             constraint_ref=config.get("constraint_ref", ""),
+            is_soft=is_soft,
+            penalty_weight=penalty_weight,
         )
 
         return ConstraintResult(
             constraint=constraint,
-            description=f"avg({field_name}) {operator} {value} ({len(column_ids)} columns)",
+            description=f"avg({field_name}) {operator} {value} ({len(column_ids)} columns, {'soft' if is_soft else 'hard'})",
         )
 
 
@@ -212,14 +229,18 @@ class AggregateSumConstraint(SideConstraintHandler):
         if not column_ids:
             return None
 
+        is_soft, penalty_weight = _resolve_soft(config, params)
+
         constraint = SPConstraint(
             name=f"aggregate_sum_{field_name}",
             column_ids=column_ids,
             operator=operator,
             rhs=value,
-            label=f"AggregateSum: sum({field_name}) {operator} {value} ({len(column_ids)} columns)",
+            label=f"AggregateSum: sum({field_name}) {operator} {value} ({len(column_ids)} columns, {'soft' if is_soft else 'hard'})",
             coefficients=coefficients,
             constraint_ref=config.get("constraint_ref", ""),
+            is_soft=is_soft,
+            penalty_weight=penalty_weight,
         )
 
         return ConstraintResult(

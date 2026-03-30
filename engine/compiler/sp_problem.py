@@ -81,16 +81,20 @@ class SPConstraint:
     기본: Σ z[k] op rhs  (k ∈ column_ids)
     확장: Σ coeff[k] * z[k] op rhs  (coefficients가 있을 때)
 
+    hard: solver 제약으로 강제 (위반 시 INFEASIBLE)
+    soft: slack 변수 + objective penalty (위반 시 penalty 부과, 해는 feasible)
+
     coefficients가 None이면 기존 동작 (모든 coeff = 1).
-    backward compatible 확장.
     """
     name: str
     column_ids: List[int]       # 대상 column id
     operator: str               # "==", "<=", ">="
-    rhs: float                  # 우변 값 (int → float 확장, aggregate_avg 지원)
+    rhs: float                  # 우변 값
     label: str = ""             # 로그/디버깅용
     coefficients: Optional[Dict[int, float]] = None  # column_id → coeff (None=모두 1)
     constraint_ref: str = ""    # constraints.yaml 제약 ID (추적성)
+    is_soft: bool = False       # True면 slack + penalty로 처리
+    penalty_weight: float = 1.0 # soft일 때 objective penalty 가중치 (score 스케일 대비)
 
 
 @dataclass

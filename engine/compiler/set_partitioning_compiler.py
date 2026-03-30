@@ -75,49 +75,76 @@ class SetPartitioningCompiler(BaseSPCompiler):
             model.add(sum(z[cid] for cid in col_ids) == 1)
             coverage_count += 1
 
-        # ── 3. 추가 제약 (SP problem에서 정의) ──
+        # ── 3. 추가 제약 (hard) + soft slack 변수 수집 ──
         extra_count = 0
+        soft_count = 0
+        slack_penalty_terms = []  # soft constraint의 penalty term (objective에 추가)
+
         for constraint in problem.extra_constraints:
-            # coefficient 지원: Σ coeff[k] * z[k] op rhs
+            # 3-1. 표현식 구축 (coefficient 유무에 따라)
             if constraint.coefficients:
                 expr_terms = []
                 for cid, coeff in constraint.coefficients.items():
                     if cid in z:
-                        expr_terms.append(int(coeff * 1000) * z[cid])  # CP-SAT int64
+                        expr_terms.append(int(coeff * 1000) * z[cid])
                 if not expr_terms:
-                    return CompileResult(
-                        success=False,
-                        error=f"Constraint '{constraint.name}' has no applicable columns — infeasible",
-                    )
+                    if not constraint.is_soft:
+                        return CompileResult(
+                            success=False,
+                            error=f"Constraint '{constraint.name}' has no applicable columns — infeasible",
+                        )
+                    continue
                 rhs_scaled = int(constraint.rhs * 1000)
-                expr = sum(expr_terms)
+                use_scaled = True
+            else:
+                col_vars = [z[cid] for cid in constraint.column_ids if cid in z]
+                if not col_vars:
+                    if not constraint.is_soft:
+                        return CompileResult(
+                            success=False,
+                            error=f"Constraint '{constraint.name}' ({constraint.label}) has no applicable columns — infeasible",
+                        )
+                    continue
+                expr_terms = col_vars
+                rhs_scaled = int(constraint.rhs)
+                use_scaled = False
+
+            expr = sum(expr_terms)
+
+            # 3-2. soft: slack 변수 + 완화된 제약 + penalty term
+            if constraint.is_soft:
+                # slack bound: coefficient 사용 시 스케일링 고려
+                if use_scaled:
+                    slack_ub = max(abs(rhs_scaled), 1000000)  # 충분히 큰 상한
+                else:
+                    slack_ub = max(int(constraint.rhs) * 2, 1000)
+
+                slack = model.new_int_var(0, slack_ub, f"slack_{constraint.name}")
+
+                if constraint.operator == "<=":
+                    model.add(expr <= rhs_scaled + slack)
+                elif constraint.operator == ">=":
+                    model.add(expr >= rhs_scaled - slack)
+                elif constraint.operator == "==":
+                    model.add(expr <= rhs_scaled + slack)
+                    model.add(expr >= rhs_scaled - slack)
+
+                slack_penalty_terms.append((slack, constraint.penalty_weight, constraint.name))
+                soft_count += 1
+                logger.info(f"SP (soft): {constraint.label} [weight={constraint.penalty_weight}]")
+            else:
+                # 3-3. hard: 기존 동작
                 if constraint.operator == "==":
                     model.add(expr == rhs_scaled)
                 elif constraint.operator == "<=":
                     model.add(expr <= rhs_scaled)
                 elif constraint.operator == ">=":
                     model.add(expr >= rhs_scaled)
-            else:
-                # 기존 동작: Σ z[k] op rhs (coeff = 1)
-                col_vars = [z[cid] for cid in constraint.column_ids if cid in z]
-                missing = [cid for cid in constraint.column_ids if cid not in z]
-                if missing:
-                    logger.warning(f"SP: constraint '{constraint.name}' has {len(missing)} missing columns")
-                if not col_vars:
-                    return CompileResult(
-                        success=False,
-                        error=f"Constraint '{constraint.name}' ({constraint.label}) has no applicable columns — infeasible",
-                    )
-                if constraint.operator == "==":
-                    model.add(sum(col_vars) == int(constraint.rhs))
-                elif constraint.operator == "<=":
-                    model.add(sum(col_vars) <= int(constraint.rhs))
-                elif constraint.operator == ">=":
-                    model.add(sum(col_vars) >= int(constraint.rhs))
-            extra_count += 1
-            logger.info(f"SP: {constraint.label}")
+                logger.info(f"SP (hard): {constraint.label}")
 
-        # ── 4. 목적함수: ObjectiveBuilder (solver-independent) ──
+            extra_count += 1
+
+        # ── 4. 목적함수: column score + soft penalty ──
         from engine.compiler.objective_builder import ObjectiveBuilder, ObjectiveConfig, extract_objective_type
 
         objective_type = extract_objective_type(math_model)
@@ -145,10 +172,24 @@ class SetPartitioningCompiler(BaseSPCompiler):
                 score = penalty
                 missing_count += 1
             cost_terms.append(score * z[col.id])
+
+        # soft constraint penalty: weight * slack (score 스케일에 맞춤)
+        # penalty_weight=1.0은 "max_score와 동등한 중요도"
+        for slack_var, weight, name in slack_penalty_terms:
+            # 스케일링: penalty_weight * max_score로 score 스케일에 비례
+            scaled_weight = int(weight * max_score)
+            cost_terms.append(scaled_weight * slack_var)
+            logger.info(
+                f"SP objective: +{scaled_weight} * slack_{name} "
+                f"(weight={weight}, max_score={max_score})"
+            )
+
         model.minimize(sum(cost_terms))
 
         if missing_count > 0:
             logger.warning(f"SP: {missing_count} columns missing scores (fallback penalty applied)")
+        if soft_count > 0:
+            logger.info(f"SP: {soft_count} soft constraints with slack variables")
 
         total_constraints = coverage_count + extra_count
 

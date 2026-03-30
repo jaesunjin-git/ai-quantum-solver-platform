@@ -245,8 +245,13 @@ class CQMCompiler(BaseSPCompiler):
         extra_count = 0
         for constraint in problem.extra_constraints:
             con_kwargs = {"label": constraint.name}
-            if structural_weight is not None:
+
+            # soft constraint: D-Wave native weight 사용
+            if constraint.is_soft:
+                con_kwargs["weight"] = constraint.penalty_weight
+            elif structural_weight is not None:
                 con_kwargs["weight"] = structural_weight
+            # else: hard (no weight → CQM treats as hard)
 
             # coefficient 지원: Σ coeff[k] * z[k] op rhs
             if constraint.coefficients:
@@ -271,7 +276,8 @@ class CQMCompiler(BaseSPCompiler):
             elif constraint.operator == ">=":
                 cqm.add_constraint(expr >= constraint.rhs, **con_kwargs)
             extra_count += 1
-            logger.info(f"CQM: {constraint.label}")
+            _mode = "soft" if constraint.is_soft else "hard"
+            logger.info(f"CQM ({_mode}): {constraint.label}")
 
         logger.info(
             f"CQM constraints: mode={constraint_mode}, "
