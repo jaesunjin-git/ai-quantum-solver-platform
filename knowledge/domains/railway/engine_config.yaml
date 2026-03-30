@@ -82,10 +82,29 @@ feasibility:
 # objective:
 #   idle_penalty_weight: 0.005
 
-# ── SP Side Constraints (Phase 2) ─────────────────────────
-# side_constraints:
-#   - type: cardinality
-#     column_attribute: training_eligible
-#     operator: ">="
-#     value: 10
-#     constraint_ref: post_shift_training
+# ── SP Side Constraints ───────────────────────────────────
+side_constraints:
+  # #2 사업평균 운전시간 제약 (soft — 선형화: Σ((active-target)*z) <= 0)
+  - type: aggregate_avg
+    column_field: active_minutes
+    operator: "<="
+    value_param: avg_driving_target_minutes
+    value: 300                              # fallback: 5시간
+    action: penalize
+    constraint_ref: avg_driving_time_target
+
+  # #11 사업 평균 실대기시간 제약 (soft)
+  - type: aggregate_avg
+    column_field: idle_minutes
+    operator: "<="
+    value_param: avg_wait_target_minutes
+    value: 180                              # fallback: 3시간
+    action: penalize
+    constraint_ref: avg_wait_time_target
+
+  # #16 교육시간 확보 — column 속성 태깅 구현 후 활성화
+  # - type: cardinality
+  #   column_attribute: training_eligible
+  #   operator: ">="
+  #   value: 10
+  #   constraint_ref: post_shift_training
