@@ -87,6 +87,7 @@ def convert_crew_result(
     objective_type: str = "minimize_duties",
     best_bound: Optional[float] = None,
     extra_constraints: Optional[list] = None,
+    pool_stats: Optional[Dict] = None,
     # 하위 호환
     duty_map: Optional[Dict[int, FeasibleColumn]] = None,
     trips: Optional[List[TaskItem]] = None,
@@ -114,6 +115,7 @@ def convert_crew_result(
         objective_value=objective_value,
         best_bound=best_bound,
         extra_constraints=extra_constraints,
+        pool_stats=pool_stats,
     )
 
     # ── crew 전용 보강 ──
@@ -155,7 +157,11 @@ def convert_crew_result(
 
     # constraint status (crew domain) — params 기반 실제 검증
     result["constraint_status"] = _build_crew_constraint_status(selected, len(_tasks), params=params)
-    result["soft_constraint_status"] = _build_crew_soft_status(selected)
+
+    # soft constraint: generic의 side constraint 결과를 보존 + crew 전용 추가
+    generic_soft = result.get("soft_constraint_status", [])
+    crew_soft = _build_crew_soft_status(selected)
+    result["soft_constraint_status"] = generic_soft + crew_soft
 
     return result
 

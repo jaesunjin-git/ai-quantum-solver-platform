@@ -55,6 +55,7 @@ def convert_sp_result(
     objective_type: str = "minimize_duties",
     best_bound: Optional[float] = None,
     extra_constraints: Optional[List] = None,
+    pool_stats: Optional[Dict] = None,
     # 하위 호환
     duty_map: Optional[Dict[int, FeasibleColumn]] = None,
     trips: Optional[List[TaskItem]] = None,
@@ -112,7 +113,33 @@ def convert_sp_result(
             "is_optimal": gap_pct < 0.01,
         }
 
-    # ── 7. Interpretation dict ──
+    # ── 7. Pool Quality (사후 진단용) ──
+    pool_quality = pool_stats  # 외부에서 전달된 경우 사용
+    if pool_quality is None and _column_map:
+        # column_map에서 기본 통계 계산
+        all_cols = list(_column_map.values())
+        if all_cols:
+            from collections import Counter
+            task_coverage = Counter()
+            for c in all_cols:
+                for tid in c.trips:
+                    task_coverage[tid] += 1
+            coverage_values = list(task_coverage.values())
+            source_dist = Counter(c.source for c in all_cols)
+            pool_quality = {
+                "total_columns": len(all_cols),
+                "total_tasks": len(task_coverage),
+                "coverage_rate": round(len(task_coverage) / len(_tasks) * 100, 1) if _tasks else 0,
+                "min_coverage": min(coverage_values) if coverage_values else 0,
+                "avg_coverage": round(sum(coverage_values) / len(coverage_values), 1) if coverage_values else 0,
+                "max_coverage": max(coverage_values) if coverage_values else 0,
+                "source_distribution": dict(source_dist),
+                "avg_trips_per_column": round(
+                    sum(len(c.trips) for c in all_cols) / len(all_cols), 1
+                ),
+            }
+
+    # ── 8. Interpretation dict ──
     interpretation = {
         "objective_type": "minimize",
         "objective_label": "Column 수 최소화 (Set Partitioning)",
@@ -127,6 +154,7 @@ def convert_sp_result(
         "constraint_status": [],
         "soft_constraint_status": side_constraint_status,
         "optimality_gap": gap_info,
+        "pool_quality": pool_quality,
         "warnings": [],
     }
 
