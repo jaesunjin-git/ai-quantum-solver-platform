@@ -155,9 +155,7 @@ export function SolverView({
     const effectiveStrategy = strategy || selectedStrategyType || undefined;
     // 전략에 따른 표시 이름 결정
     const relatedStrategies = data.execution_strategies?.filter((st: any) => {
-      // 전략의 주체 solver에만 표시 (중복 방지)
-      // single: 해당 solver만 포함
-      // multi-step: 첫 번째 step 또는 main_solver role인 solver만
+      if (st.strategy_type === 'parallel_comparison') return false;
       const steps = st.steps || [];
       if (steps.length <= 1) {
         return steps.some((s: any) => s.solver_name === solver.solver_name);
@@ -507,6 +505,7 @@ export function SolverView({
             ) : (() => {
               // 현재 선택된 전략명 계산
               const _relStrats = data.execution_strategies?.filter((st: any) => {
+                if (st.strategy_type === 'parallel_comparison') return false;
                 const steps = st.steps || [];
                 if (steps.length <= 1) {
                   return steps.some((s: any) => s.solver_name === selectedSolverData?.solver_name);

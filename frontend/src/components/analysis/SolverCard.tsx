@@ -60,8 +60,9 @@ export function SolverCard({
   onSelect, onStrategySelect,
 }: SolverCardProps) {
 
-  // 이 솔버와 관련된 전략들 (주체 solver에만 표시 — 중복 방지)
+  // 이 솔버와 관련된 전략들 (비교 전략 제외 — 하단 비교 실행 UI로 제공)
   const relatedStrategies = strategies?.filter((st: any) => {
+    if (st.strategy_type === 'parallel_comparison') return false;
     const steps = st.steps || [];
     if (steps.length <= 1) {
       return steps.some((s: any) => s.solver_name === svr.solver_name);
