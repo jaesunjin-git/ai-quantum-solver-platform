@@ -85,6 +85,8 @@ def convert_crew_result(
     objective_value: Optional[float] = None,
     params: Optional[Dict] = None,
     objective_type: str = "minimize_duties",
+    best_bound: Optional[float] = None,
+    extra_constraints: Optional[list] = None,
     # 하위 호환
     duty_map: Optional[Dict[int, FeasibleColumn]] = None,
     trips: Optional[List[TaskItem]] = None,
@@ -110,6 +112,8 @@ def convert_crew_result(
         solver_name=solver_name,
         project_dir=project_dir,
         objective_value=objective_value,
+        best_bound=best_bound,
+        extra_constraints=extra_constraints,
     )
 
     # ── crew 전용 보강 ──

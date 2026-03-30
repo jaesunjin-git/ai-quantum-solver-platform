@@ -53,6 +53,8 @@ def convert_sp_result(
     objective_value: Optional[float] = None,
     params: Optional[Dict] = None,
     objective_type: str = "minimize_duties",
+    best_bound: Optional[float] = None,
+    extra_constraints: Optional[List] = None,
     # 하위 호환
     duty_map: Optional[Dict[int, FeasibleColumn]] = None,
     trips: Optional[List[TaskItem]] = None,
@@ -94,20 +96,37 @@ def convert_sp_result(
     # ── 4. Column 상세 (interpretation용) ──
     columns_detail = _build_columns_detail(selected, task_map)
 
-    # ── 5. Interpretation dict ──
+    # ── 5. Side Constraint 결과 ──
+    side_constraint_status = _build_side_constraint_status(
+        selected, extra_constraints or []
+    )
+
+    # ── 6. Optimality Gap ──
+    gap_info = None
+    if best_bound is not None and objective_value is not None and objective_value > 0:
+        gap_pct = abs(objective_value - best_bound) / objective_value * 100
+        gap_info = {
+            "best_bound": round(best_bound, 2),
+            "objective_value": round(objective_value, 2),
+            "gap_percent": round(gap_pct, 2),
+            "is_optimal": gap_pct < 0.01,
+        }
+
+    # ── 7. Interpretation dict ──
     interpretation = {
         "objective_type": "minimize",
         "objective_label": "Column 수 최소화 (Set Partitioning)",
         "objective_value": objective_value,
         "solver_id": solver_id,
         "solver_name": solver_name,
-        "status": "OPTIMAL",
+        "status": "OPTIMAL" if (gap_info and gap_info["is_optimal"]) else "FEASIBLE",
         "model_type": "SetPartitioning",
         "kpi": kpi,
         "duties": columns_detail,
         "schedule_summary": kpi,
         "constraint_status": [],
-        "soft_constraint_status": [],
+        "soft_constraint_status": side_constraint_status,
+        "optimality_gap": gap_info,
         "warnings": [],
     }
 
@@ -268,6 +287,100 @@ def _build_columns_detail(
         })
 
     return details
+
+
+# ── Side Constraint 결과 표시 ────────────────────────────────
+
+def _build_side_constraint_status(
+    selected: List[FeasibleColumn],
+    extra_constraints: List,
+) -> List[Dict]:
+    """Side Constraint (aggregate_avg, cardinality 등)의 충족 상태를 계산."""
+    if not extra_constraints or not selected:
+        return []
+
+    results = []
+    selected_ids = {c.id for c in selected}
+
+    for con in extra_constraints:
+        # SPConstraint 객체의 필드 확인
+        name = getattr(con, "name", "")
+        constraint_ref = getattr(con, "constraint_ref", "")
+        is_soft = getattr(con, "is_soft", False)
+        coefficients = getattr(con, "coefficients", None)
+        operator = getattr(con, "operator", "<=")
+        rhs = getattr(con, "rhs", 0)
+        column_ids = getattr(con, "column_ids", [])
+
+        # 선택된 column 기준으로 실제 값 계산
+        if coefficients:
+            # aggregate_avg/sum: Σ coeff[k] * z[k]
+            actual = sum(
+                coefficients.get(cid, 0) for cid in selected_ids
+                if cid in coefficients
+            )
+            # aggregate_avg의 경우 rhs=0이고 coeff=field-target
+            # 실제 위반량 = actual (>0이면 위반)
+            satisfied = _check_op(actual, operator, rhs)
+
+            # 사용자 친화적 표시: 평균값 역산
+            if "aggregate_avg" in name:
+                # 선택된 column 수
+                n_selected = len(selected)
+                # coeff = field_value - target → actual = Σ(field-target) = Σfield - n*target
+                # → avg_field = (actual + n*target) / n ... 이건 원래 target을 모름
+                # 단순히 satisfied/violated + actual 표시
+                entry = {
+                    "name": name,
+                    "constraint_ref": constraint_ref,
+                    "type": "aggregate_avg",
+                    "is_soft": is_soft,
+                    "satisfied": satisfied,
+                    "violation_amount": round(actual, 1) if not satisfied else 0,
+                    "description": f"{'충족' if satisfied else '위반'} (편차합={actual:.1f})",
+                }
+            else:
+                entry = {
+                    "name": name,
+                    "constraint_ref": constraint_ref,
+                    "type": "aggregate",
+                    "is_soft": is_soft,
+                    "satisfied": satisfied,
+                    "actual": round(actual, 1),
+                    "rhs": rhs,
+                    "operator": operator,
+                }
+        else:
+            # cardinality: Σ z[k] (eligible)
+            actual = sum(1 for cid in column_ids if cid in selected_ids)
+            satisfied = _check_op(actual, operator, rhs)
+
+            entry = {
+                "name": name,
+                "constraint_ref": constraint_ref,
+                "type": "cardinality",
+                "is_soft": is_soft,
+                "satisfied": satisfied,
+                "actual": actual,
+                "required": rhs,
+                "operator": operator,
+                "description": f"{'충족' if satisfied else '위반'} ({actual}/{rhs})",
+            }
+
+        results.append(entry)
+
+    return results
+
+
+def _check_op(lhs: float, operator: str, rhs: float) -> bool:
+    """연산자 기반 충족 여부 판정."""
+    if operator == "<=":
+        return lhs <= rhs + 0.001  # float 오차 허용
+    elif operator == ">=":
+        return lhs >= rhs - 0.001
+    elif operator == "==":
+        return abs(lhs - rhs) < 0.001
+    return True
 
 
 # ── 파일 저장 ────────────────────────────────────────────────

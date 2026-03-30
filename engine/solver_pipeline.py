@@ -53,7 +53,8 @@ class PipelineContext:
     gate3_result: Optional[Dict[str, Any]] = None
     stage5_validation: Optional[Dict[str, Any]] = None
     sp_duty_map: Optional[Dict[int, Any]] = None
-    sp_duties: Optional[list] = None  # 전체 생성 column (현재 미사용, 향후 확장용)
+    sp_duties: Optional[list] = None
+    sp_problem: Optional[Any] = None  # SetPartitioningProblem (side constraint 결과 표시용)
 
 
 # ============================================================
@@ -465,6 +466,11 @@ class SolverPipeline:
         from engine.compiler.objective_builder import extract_objective_type
         _obj_type = extract_objective_type(math_model)
 
+        # SP problem의 extra_constraints (side constraint 상태 표시용)
+        _extra_constraints = []
+        if ctx and ctx.sp_problem and hasattr(ctx.sp_problem, 'extra_constraints'):
+            _extra_constraints = ctx.sp_problem.extra_constraints
+
         interpretation = converter_fn(
             solution=execute_result.solution,
             column_map=column_map,
@@ -475,6 +481,8 @@ class SolverPipeline:
             objective_value=execute_result.objective_value,
             params=_params,
             objective_type=_obj_type,
+            best_bound=execute_result.best_bound,
+            extra_constraints=_extra_constraints,
         )
 
         # 기존 summary 포맷과 호환
@@ -1038,10 +1046,11 @@ class SolverPipeline:
             sp_problem = sp_problem  # 현재 attempt의 최종 SP problem
             break  # compile은 호출자가 수행
 
-        # column_map 저장
+        # column_map + sp_problem 저장
         if ctx:
             ctx.sp_duties = all_columns
             ctx.sp_duty_map = {d.id: d for d in all_columns}
+            ctx.sp_problem = sp_problem
 
         return sp_problem, all_columns, params, all_task_ids, objective_type
 
