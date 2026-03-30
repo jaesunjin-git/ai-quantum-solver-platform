@@ -110,9 +110,15 @@ side_constraints:
     action: penalize
     constraint_ref: avg_wait_time_target
 
-  # #16 교육시간 확보 — column 속성 태깅 구현 후 활성화
-  # - type: cardinality
-  #   column_attribute: training_eligible
-  #   operator: ">="
-  #   value: 10
-  #   constraint_ref: post_shift_training
+  # #16 교육시간 확보 — 13시 이전 강차 duty가 10개 이상
+  # last_trip_arr <= 780 (13:00) → 13~15시 교육 가능
+  - type: cardinality
+    column_attribute: last_trip_arr
+    threshold_param: post_trip_training_cutoff
+    threshold: 780                          # fallback: 13:00
+    threshold_operator: "<="
+    operator: ">="
+    value_param: min_training_duties
+    value: 10                               # fallback: 10개
+    action: penalize
+    constraint_ref: post_shift_training
