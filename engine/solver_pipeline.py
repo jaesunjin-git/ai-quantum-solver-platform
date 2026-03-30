@@ -797,6 +797,44 @@ class SolverPipeline:
         from engine.compiler.objective_builder import extract_objective_type
         objective_type = extract_objective_type(math_model)
 
+        # ── Solver 입력 캐시: Column Gen 결과 재사용 ──
+        # solver 변경 재실행 시 Column Gen 스킵 (30초 → 즉시)
+        reuse_pool = kwargs.get("reuse_pool", True)  # 기본: 캐시 재사용
+        if reuse_pool:
+            from engine.cache.solver_input_cache import (
+                FileSolverInputCache, build_cache_key, hash_params, CacheMetadata
+            )
+            from engine.config_loader import _resolve_problem_type
+
+            _cache = FileSolverInputCache()
+            _problem_type = _resolve_problem_type(params.get("_domain"))
+            _cache_key = build_cache_key(
+                _problem_type,
+                model_version_id=kwargs.get("model_version_id"),
+                data_version_id=kwargs.get("data_version_id"),
+                params_hash=hash_params(params),
+            )
+
+            cached = _cache.load(project_id, _cache_key)
+            if cached is not None:
+                logger.info(f"SP: Column Gen SKIPPED — cache hit (key={_cache_key})")
+                _all_columns = cached["all_columns"]
+                _all_task_ids_cached = cached["all_task_ids"]
+                _objective_type = cached["objective_type"]
+                _params = cached["params"]
+                # params에 _domain 재주입 (캐시에서 제외했을 수 있음)
+                _params["_domain"] = params.get("_domain")
+
+                # SP problem은 캐시에 포함하지 않음 (extra_constraints는 compile 시점 재생성)
+                sp_problem = build_sp_problem(
+                    _all_columns, _params, _all_task_ids_cached, _objective_type
+                )
+                if ctx:
+                    ctx.sp_duties = _all_columns
+                    ctx.sp_duty_map = {d.id: d for d in _all_columns}
+                    ctx.sp_problem = sp_problem
+                return sp_problem, _all_columns, _params, _all_task_ids_cached, _objective_type
+
         enable_acg = os.environ.get("ENABLE_ADAPTIVE_CG", "true").lower() == "true"
         max_attempts = int(os.environ.get("ACG_MAX_ATTEMPTS", "3")) if enable_acg else 1
 
@@ -1051,6 +1089,38 @@ class SolverPipeline:
             ctx.sp_duties = all_columns
             ctx.sp_duty_map = {d.id: d for d in all_columns}
             ctx.sp_problem = sp_problem
+
+        # ── 캐시 저장: Column Gen 결과 ──
+        try:
+            from engine.cache.solver_input_cache import (
+                FileSolverInputCache, build_cache_key, hash_params, CacheMetadata
+            )
+            from engine.config_loader import _resolve_problem_type
+            import time as _time
+
+            _cache = FileSolverInputCache()
+            _problem_type = _resolve_problem_type(params.get("_domain"))
+            _cache_key = build_cache_key(
+                _problem_type,
+                model_version_id=kwargs.get("model_version_id"),
+                data_version_id=kwargs.get("data_version_id"),
+                params_hash=hash_params(params),
+            )
+            _payload = {
+                "all_columns": all_columns,
+                "all_task_ids": all_task_ids,
+                "objective_type": objective_type,
+                "params": {k: v for k, v in params.items() if k != "_task_map"},
+            }
+            _meta = CacheMetadata(
+                cache_key=_cache_key,
+                problem_type=_problem_type,
+                created_at=_time.time(),
+                payload_type="sp_columns",
+            )
+            _cache.save(project_id, _cache_key, _payload, _meta)
+        except Exception as _ce:
+            logger.warning(f"SP cache save failed (non-blocking): {_ce}")
 
         return sp_problem, all_columns, params, all_task_ids, objective_type
 
