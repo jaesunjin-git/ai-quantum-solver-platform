@@ -216,6 +216,26 @@ parameters:
     aliases: []
     related_constraints: [meal_break_guarantee]
 
+  meal_window_start:
+    family: time_of_day
+    semantic_role: shift_boundary
+    type: scalar
+    unit: minutes_from_midnight
+    valid_range: [600, 780]
+    aliases: []
+    related_constraints: [meal_break_guarantee]
+    description: 식사시간대 시작 (기본 11:00=660)
+
+  meal_window_end:
+    family: time_of_day
+    semantic_role: shift_boundary
+    type: scalar
+    unit: minutes_from_midnight
+    valid_range: [720, 900]
+    aliases: []
+    related_constraints: [meal_break_guarantee]
+    description: 식사시간대 종료 (기본 14:00=840)
+
   # ── Duration: 야간/숙박 ──
   min_night_sleep_minutes:
     family: duration

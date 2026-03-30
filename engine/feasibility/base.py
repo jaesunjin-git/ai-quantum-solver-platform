@@ -159,8 +159,8 @@ class FeasibilityPipeline:
                 )
                 continue
 
-            action = cfg.get("action", "reject")  # 'reject' | 'penalize'
-            self._checks.append((handler_cls(), cfg, action))
+            default_action = cfg.get("action", "reject")  # 'reject' | 'penalize'
+            self._checks.append((handler_cls(), cfg, default_action))
 
         if self._load_errors:
             for err in self._load_errors:
@@ -181,9 +181,12 @@ class FeasibilityPipeline:
         checks_run = 0
         checks_passed = 0
 
-        for handler, cfg, action in self._checks:
+        for handler, cfg, default_action in self._checks:
             checks_run += 1
             result = handler.check(column, cfg, params)
+
+            # action: 고객별 override 가능 (action_param → params 조회)
+            action = resolve_param(cfg, "action", params, default=default_action)
 
             if result.feasible:
                 checks_passed += 1

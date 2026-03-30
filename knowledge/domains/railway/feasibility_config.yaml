@@ -1,48 +1,59 @@
 # ============================================================
-# Railway 도메인 Column Feasibility Check Override
+# Railway 도메인 Column Feasibility Check (도메인 카탈로그)
 # ============================================================
-# configs/feasibility_defaults.yaml의 범용 checks를 도메인에 맞게 대체.
-# 이 파일이 존재하면 defaults의 checks를 완전히 대체함 (merge 아님).
+# "어떤 check가 존재하는가" + "어떤 파라미터를 참조하는가"를 선언.
+# 파라미터 값은 고객 데이터(params)에서 주입됨.
 #
-# 우선순위: 이 파일 > feasibility_defaults.yaml
+# action 정책:
+#   - action: 도메인 기본값 (reject = hard, penalize = soft)
+#   - action_param: 고객별 override 가능 (constraint_policy 연동 시)
+#   - 고객별로 Hard↔Soft 전환 필요 시 confirmed_problem에서 action을 override
+#
+# 우선순위: 이 파일 > feasibility_defaults.yaml (완전 대체)
 # ============================================================
 
 feasibility_checks:
-  # ── 기존 engine 하드코딩 → YAML 선언 전환 ──────────────────
+  # ── 시간 상한 (Column Gen validation) ───────────────────────
 
-  # 유휴 대기시간 상한 (대기시간 최대 5시간 이내)
+  # 유휴 대기시간 상한
   - type: max_value
     field: idle_minutes
     limit_param: max_idle_time
     action: reject
+    constraint_ref: max_wait_time_day
 
-  # 활동시간(운전시간) 상한 (운전시간 6시간 이내)
+  # 활동시간(운전시간) 상한
   - type: max_value
     field: active_minutes
     limit_param: max_active_time
     action: reject
+    constraint_ref: max_driving_time
 
-  # 실근무 경과시간 상한 (근무시간 11시간 이내)
+  # 실근무 경과시간 상한
   - type: max_value
     field: elapsed_minutes
     limit_param: max_span_time
     action: reject
+    constraint_ref: max_work_time
 
-  # ── 신규 — #17 식사 휴게시간 보장 ──────────────────────────
-  # 11:00~14:00 사이에 최소 30분 연속 공백
-  # TODO: 고객 정의 확인 후 시간대/분수 조정
-  # - type: break_window
-  #   windows:
-  #     - start: 660          # 11:00
-  #       end: 840            # 14:00
-  #       min_gap_param: min_meal_break_minutes
-  #       min_gap: 30         # fallback
-  #   action: reject
+  # ── 식사 휴게시간 보장 (#17) ────────────────────────────────
+  # 지정 시간대 내 최소 연속 공백 확보
+  # 시간대/분수: 파라미터에서 주입 (고객별 노사협의에 따라 상이)
+  - type: break_window
+    windows:
+      - start_param: meal_window_start
+        start: 660                        # fallback: 11:00
+        end_param: meal_window_end
+        end: 840                          # fallback: 14:00
+        min_gap_param: min_meal_break_minutes
+        min_gap: 30                       # fallback: 30분
+    action: reject
+    constraint_ref: meal_break_guarantee
 
-  # ── 신규 — #14 강차 후 휴양시간 ────────────────────────────
-  # 연속 trip 간 최소 60분 간격
-  # TODO: 고객 정의 확인 후 활성화
-  # - type: min_turnaround
-  #   min_gap_param: post_arrival_rest_minutes_min
-  #   min_gap: 60             # fallback
-  #   action: reject
+  # ── 강차 후 휴양시간 (#14) ──────────────────────────────────
+  # 연속 trip 간 최소 간격
+  - type: min_turnaround
+    min_gap_param: post_arrival_rest_minutes_min
+    min_gap: 60                           # fallback: 60분
+    action: penalize
+    constraint_ref: post_arrival_rest
