@@ -126,11 +126,14 @@ class SolverPipeline:
 
         #  Phase 2: Compile
         try:
-            # ── Set Partitioning 경로 판단 (SolverInfo 기반 — 하드코딩 제거) ──
-            # crew scheduling 등 assignment 문제는 SP가 구조적으로 올바름.
-            # DutyGenerator가 시간 검증 전부 수행 → solver는 coverage만 결정.
+            # ── Set Partitioning 경로 판단: solver × problem_type 2축 ──
+            # SP 경로: solver에 SP backend 있음 + problem_type이 Column Generation 사용
+            # IR 경로: 그 외 (Column Generation 불가능한 problem type 등)
             from engine.compiler.compiler_registry import supports_set_partitioning
-            _use_sp = supports_set_partitioning(solver_id)
+            from engine.config_loader import _resolve_problem_type
+            _domain = math_model.get("domain")
+            _problem_type = _resolve_problem_type(_domain)
+            _use_sp = supports_set_partitioning(solver_id, _problem_type)
 
             if _use_sp:
                 compile_start = time.time()

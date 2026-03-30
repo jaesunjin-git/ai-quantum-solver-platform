@@ -27,21 +27,35 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SolverInfo:
-    """solver_id별 메타 정보 — solver_pipeline 등에서 참조"""
+    """solver_id별 메타 정보 — solver_pipeline 등에서 참조
+
+    has_sp_backend: 이 solver의 backend에 SP compiler가 등록되어 있는가
+    (problem_type이 Column Generation을 사용하는지와는 독립된 축)
+    """
     solver_id: str
     backend: str
-    supports_sp: bool = True
+    has_sp_backend: bool = False     # SP compiler 등록 여부
     display_name: str = ""
 
 
 _SOLVER_INFO: Dict[str, SolverInfo] = {
-    "classical_cpu": SolverInfo("classical_cpu", "ortools_cp", supports_sp=True, display_name="CP-SAT"),
-    "nvidia_cuopt": SolverInfo("nvidia_cuopt", "ortools_cp", supports_sp=True, display_name="cuOpt (CP-SAT compile → cuOpt exec)"),
-    "dwave_hybrid_cqm": SolverInfo("dwave_hybrid_cqm", "dwave_cqm", supports_sp=False, display_name="D-Wave CQM"),
-    "dwave_hybrid_bqm": SolverInfo("dwave_hybrid_bqm", "dwave_bqm", supports_sp=False, display_name="D-Wave BQM"),
-    "dwave_nl": SolverInfo("dwave_nl", "dwave_nl", supports_sp=False, display_name="D-Wave NL"),
-    "dwave_advantage_qpu": SolverInfo("dwave_advantage_qpu", "dwave_bqm", supports_sp=False, display_name="D-Wave Advantage QPU"),
-    "dwave_advantage2_qpu": SolverInfo("dwave_advantage2_qpu", "dwave_bqm", supports_sp=False, display_name="D-Wave Advantage2 QPU"),
+    "classical_cpu": SolverInfo("classical_cpu", "ortools_cp", has_sp_backend=True, display_name="CP-SAT"),
+    "nvidia_cuopt": SolverInfo("nvidia_cuopt", "ortools_cp", has_sp_backend=True, display_name="cuOpt"),
+    "dwave_hybrid_cqm": SolverInfo("dwave_hybrid_cqm", "dwave_cqm", has_sp_backend=True, display_name="D-Wave CQM"),
+    "dwave_hybrid_bqm": SolverInfo("dwave_hybrid_bqm", "dwave_bqm", has_sp_backend=False, display_name="D-Wave BQM"),
+    "dwave_nl": SolverInfo("dwave_nl", "dwave_nl", has_sp_backend=False, display_name="D-Wave NL"),
+    "dwave_advantage_qpu": SolverInfo("dwave_advantage_qpu", "dwave_bqm", has_sp_backend=False, display_name="D-Wave Advantage QPU"),
+    "dwave_advantage2_qpu": SolverInfo("dwave_advantage2_qpu", "dwave_bqm", has_sp_backend=False, display_name="D-Wave Advantage2 QPU"),
+}
+
+# ── Problem Type: Column Generation 사용 여부 ────────────────
+# SP 경로는 두 조건이 모두 충족될 때만 사용:
+#   1. solver가 SP backend를 가짐 (has_sp_backend)
+#   2. problem_type이 Column Generation을 사용 (uses_column_generation)
+_COLUMN_GEN_PROBLEM_TYPES = {
+    "crew_scheduling",
+    # 향후:
+    # "vehicle_routing",  # Column Generation 기반 VRP
 }
 
 
@@ -53,10 +67,24 @@ def get_solver_backend(solver_id: str) -> str:
     return info.backend
 
 
-def supports_set_partitioning(solver_id: str) -> bool:
-    """solver_pipeline.py에서 SP 경로 판단에 사용 (하드코딩 _use_sp 대체)"""
+def supports_set_partitioning(solver_id: str, problem_type: str = None) -> bool:
+    """SP 경로 사용 가능 여부: solver × problem_type 2축 판단.
+
+    두 조건 모두 충족 시 SP 경로:
+      1. solver에 SP backend가 등록되어 있음
+      2. problem_type이 Column Generation을 사용함
+
+    problem_type이 None이면 solver 축만 확인 (하위 호환).
+    """
     info = _SOLVER_INFO.get(solver_id)
-    return info.supports_sp if info else False
+    if not info or not info.has_sp_backend:
+        return False
+
+    if problem_type is None:
+        # 하위 호환: problem_type 미제공 시 solver 축만 확인
+        return info.has_sp_backend
+
+    return problem_type in _COLUMN_GEN_PROBLEM_TYPES
 
 
 # ── Compiler Registry ─────────────────────────────────────────
