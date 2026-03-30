@@ -1,0 +1,86 @@
+# ============================================================
+# Engine 설정 기본값 (플랫폼 공통)
+# ============================================================
+# engine이 도메인에 무관하게 사용하는 기본 설정.
+# 도메인별 override: knowledge/domains/{name}/engine_config.yaml
+#
+# 구조:
+#   generator:       Column Generator 튜닝 파라미터
+#   feasibility:     Column Feasibility Check 파이프라인
+#   objective:       Objective Builder 가중치
+#   side_constraints: SP Side Constraint (Phase 2에서 추가)
+#
+# 우선순위: params(고객) > domain YAML > 이 파일 > dataclass 기본값
+# ============================================================
+
+# ── Column Generator ───────────────────────────────────────
+generator:
+  # Beam Search
+  beam_width: 50
+  max_columns_target: 100000
+  time_group_minutes: 120
+  span_estimate_multiplier: 1.5
+
+  # Beam Score 가중치
+  task_count_score_weight: 100
+  depth_bonus_score: 50
+
+  # Cost 가중치
+  idle_cost_weight: 0.02
+  overhead_cost_weight: 0.01
+  short_column_cost_weight: 0.05
+  depth_penalty_cost_weight: 0.3
+  greedy_cost_multiplier: 1.5
+  fallback_cost: 10.0
+
+  # Diversity (Adaptive CG)
+  diversity_weight: 100.0
+  min_per_diversity_bucket: 5
+  min_task_coverage: 10
+
+  # Block Combine (block-gap-block)
+  block_combine_enabled: false
+  block_combine_max_gap: 0
+  block_combine_per_block: 5
+  block_combine_score_penalty: 0.7
+  block_combine_top_k: 0
+  block_combine_max_active_ratio: 0.5
+  block_combine_min_trips: 2
+
+  # Single Task Fallback
+  single_task_max_windows: 1
+  fallback_include_pause: true
+
+  # 시간 상수
+  day_minutes: 1440
+
+# ── Column Feasibility Check ──────────────────────────────
+# 도메인 YAML에 feasibility.checks가 있으면 이 섹션을 완전 대체.
+# 파라미터 참조: _param 접미사 → params에서 조회, 없으면 직접 값 사용.
+feasibility:
+  checks:
+    - type: max_value
+      field: idle_minutes
+      limit_param: max_idle_time
+      action: reject
+
+    - type: max_value
+      field: active_minutes
+      limit_param: max_active_time
+      action: reject
+
+    - type: max_value
+      field: elapsed_minutes
+      limit_param: max_span_time
+      action: reject
+
+# ── Objective Builder ─────────────────────────────────────
+objective:
+  duty_weight: 1.0
+  short_penalty_weight: 0.05
+  idle_penalty_weight: 0.01
+  balance_penalty_weight: 0.5
+  short_threshold: 8
+
+# ── SP Side Constraints (Phase 2) ─────────────────────────
+side_constraints: []

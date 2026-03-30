@@ -1,10 +1,14 @@
 domain:
   name: railway
   name_ko: 철도
-  version: '2.0'
-  description: '철도 승무원 스케줄링 도메인 지식. 도시철도(지하철), 고속철도(KTX), 일반철도, 화물 등 하위 도메인을 포함.
+  version: '2.1'
+  description: '철도 승무원 스케줄링 도메인 지식. 도시철도(지하철), 고속철도(KTX), 일반철도, 화물 등 하위 도메인을 포함.'
 
-    '
+  # 코드 모듈 매핑: "railway"는 산업 도메인, "crew"는 문제 유형(승무원 스케줄링)
+  # 같은 crew scheduling 로직이 bus, airline 등 다른 산업에서도 재사용 가능
+  problem_type: crew_scheduling
+  code_module: domains.crew
+  registry_ref: engine/domain_registry.py
   detection_keywords:
   - 철도
   - 열차

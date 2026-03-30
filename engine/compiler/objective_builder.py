@@ -53,10 +53,11 @@ class ObjectiveConfig:
         """
         cfg = cls()  # 3순위: dataclass 기본값
 
-        # 2순위: YAML config (범용 + 도메인별)
-        from engine.config_loader import load_yaml_into_dataclass, get_objective_yaml_paths
-        yaml_paths = get_objective_yaml_paths(domain)
-        load_yaml_into_dataclass(cfg, *yaml_paths)
+        # 2순위: YAML config (통합 engine_config.yaml의 objective 섹션)
+        from engine.config_loader import load_objective_config, _apply_dict_to_dataclass
+        obj_values = load_objective_config(domain)
+        if obj_values:
+            _apply_dict_to_dataclass(cfg, obj_values)
 
         # 1순위: params → objective_ prefix로 override
         for attr in ['duty_weight', 'short_penalty_weight', 'idle_penalty_weight',

@@ -1,0 +1,91 @@
+# ============================================================
+# Railway 도메인 Engine 설정 Override
+# ============================================================
+# configs/engine_defaults.yaml의 플랫폼 공통 설정을 도메인에 맞게 override.
+# 파라미터 값은 고객 데이터(params)에서 주입됨.
+#
+# 코드 모듈: domains.crew (crew scheduling 문제 유형)
+# 지식팩: knowledge/domains/railway/
+#
+# 우선순위: params(고객) > 이 파일 > engine_defaults.yaml > dataclass 기본값
+# ============================================================
+
+# ── Column Generator ───────────────────────────────────────
+generator:
+  # Depot 인접역
+  depot_suffixes:
+    - "기지"
+
+  # 야간 연결 마진
+  evening_margin_minutes: 60
+  evening_search_margin: 120
+  rest_gap_margin_minutes: 30
+  overnight_max_chain_ratio: 0.5
+
+  # 야간 Cost 가중치
+  night_idle_cost_weight: 0.015
+  night_overhead_cost_weight: 0.005
+  night_short_penalty_ratio: 0.5
+
+  # Block Combine
+  block_combine_enabled: false   # trip 밀도 낮은 노선에서 활성화
+  block_combine_exclude_types:
+    - overnight
+
+# ── Column Feasibility Check ──────────────────────────────
+# 도메인 카탈로그: "어떤 check가 존재하는가" + "어떤 파라미터를 참조하는가"
+# action: 도메인 기본값. 고객별 Hard↔Soft 전환은 action_param으로 override.
+feasibility:
+  checks:
+    # 유휴 대기시간 상한
+    - type: max_value
+      field: idle_minutes
+      limit_param: max_idle_time
+      action: reject
+      constraint_ref: max_wait_time_day
+
+    # 활동시간(운전시간) 상한
+    - type: max_value
+      field: active_minutes
+      limit_param: max_active_time
+      action: reject
+      constraint_ref: max_driving_time
+
+    # 실근무 경과시간 상한
+    - type: max_value
+      field: elapsed_minutes
+      limit_param: max_span_time
+      action: reject
+      constraint_ref: max_work_time
+
+    # 식사 휴게시간 보장 (#17)
+    - type: break_window
+      windows:
+        - start_param: meal_window_start
+          start: 660                        # fallback: 11:00
+          end_param: meal_window_end
+          end: 840                          # fallback: 14:00
+          min_gap_param: min_meal_break_minutes
+          min_gap: 30                       # fallback: 30분
+      action: reject
+      constraint_ref: meal_break_guarantee
+
+    # 강차 후 휴양시간 (#14)
+    - type: min_turnaround
+      min_gap_param: post_arrival_rest_minutes_min
+      min_gap: 60                           # fallback: 60분
+      action: penalize
+      constraint_ref: post_arrival_rest
+
+# ── Objective Builder ─────────────────────────────────────
+# 현재: 플랫폼 기본값 사용 (override 없음)
+# objective:
+#   idle_penalty_weight: 0.005
+
+# ── SP Side Constraints (Phase 2) ─────────────────────────
+# side_constraints:
+#   - type: cardinality
+#     column_attribute: training_eligible
+#     operator: ">="
+#     value: 10
+#     constraint_ref: post_shift_training
