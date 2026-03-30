@@ -32,8 +32,12 @@ export function ConstraintCheckTab({
 
         {/* Soft 제약 */}
         {(() => {
-          const softTotal = interpreted.soft_constraint_status?.length ?? 0;
-          const softApplied = interpreted.soft_constraint_status?.filter(s => s.status === 'applied').length ?? 0;
+          const softAll = interpreted.soft_constraint_status || [];
+          const softTotal = softAll.length;
+          // side constraint: satisfied 기반, crew soft: status 기반
+          const softApplied = softAll.filter((s: any) =>
+            s.satisfied === true || s.status === 'applied'
+          ).length;
           const hasSkipped = softTotal > 0 && softApplied < softTotal;
           return (
             <div className={`rounded-xl p-3 border text-center ${hasSkipped ? 'bg-yellow-500/5 border-yellow-500/20' : 'bg-slate-800/50 border-slate-700'}`}>
@@ -110,15 +114,47 @@ export function ConstraintCheckTab({
         <div className="bg-slate-800/30 rounded-xl border border-slate-700 p-4">
           <h3 className="text-[12px] font-bold text-slate-400 mb-2 flex items-center gap-2">
             <AlertTriangle size={13} className="text-yellow-500" />
-            소프트 제약 ({interpreted.soft_constraint_status.length}개) — 목적함수에 간접 반영
+            소프트 제약 ({interpreted.soft_constraint_status.length}개)
           </h3>
-          <div className="grid grid-cols-2 gap-1.5">
-            {interpreted.soft_constraint_status.map((sc, i) => (
-              <div key={i} className="flex items-center gap-1.5 text-[11px] text-slate-500">
-                <span className="w-1.5 h-1.5 rounded-full bg-yellow-500/50 shrink-0" />
-                {sc.name}
-              </div>
-            ))}
+          <div className="space-y-1.5">
+            {interpreted.soft_constraint_status.map((sc: any, i: number) => {
+              // Side Constraint (solver 실제 동작 기반)
+              if (sc.type === 'aggregate_avg' || sc.type === 'cardinality' || sc.type === 'aggregate') {
+                const satisfied = sc.satisfied;
+                return (
+                  <div key={i} className={`flex items-center justify-between p-2 rounded-lg text-[11px] ${
+                    satisfied ? 'bg-green-500/5 border border-green-500/15' : 'bg-amber-500/5 border border-amber-500/15'
+                  }`}>
+                    <div className="flex items-center gap-1.5">
+                      {satisfied
+                        ? <CheckCircle size={12} className="text-green-400" />
+                        : <AlertTriangle size={12} className="text-amber-400" />}
+                      <span className="text-slate-300">{sc.constraint_ref || sc.name}</span>
+                      <span className="text-[9px] text-slate-600 bg-slate-700 px-1 rounded">{sc.type}</span>
+                    </div>
+                    <span className={`font-mono ${satisfied ? 'text-green-400' : 'text-amber-400'}`}>
+                      {sc.description || (satisfied ? '충족' : '위반')}
+                    </span>
+                  </div>
+                );
+              }
+              // Crew 전용 soft (기존 표시)
+              return (
+                <div key={i} className={`flex items-center justify-between p-2 rounded-lg text-[11px] ${
+                  sc.status === 'applied' ? 'bg-slate-800/50' : 'bg-amber-500/5 border border-amber-500/15'
+                }`}>
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-yellow-500/50 shrink-0" />
+                    <span className="text-slate-400">{sc.name}</span>
+                  </div>
+                  {sc.actual && (
+                    <span className={`font-mono text-[10px] ${sc.status === 'applied' ? 'text-green-400' : 'text-amber-400'}`}>
+                      {sc.actual} / {sc.target}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

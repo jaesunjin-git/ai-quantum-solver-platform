@@ -60,6 +60,37 @@ export function KPIDashboard({
         </div>
       </div>
 
+      {/* Optimality Gap */}
+      {(interpreted as any).optimality_gap && !(interpreted as any).optimality_gap.is_optimal && (
+        <div className="bg-blue-900/20 rounded-xl p-3 border border-blue-700/30 flex items-center gap-3">
+          <div className="text-xs text-blue-400 font-bold whitespace-nowrap">Optimality Gap</div>
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <div className="flex-1 h-2 bg-slate-700 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-blue-500 transition-all"
+                  style={{ width: `${Math.max(0, 100 - ((interpreted as any).optimality_gap.gap_percent || 0))}%` }}
+                />
+              </div>
+              <span className="text-sm font-bold text-blue-300">
+                {(interpreted as any).optimality_gap.gap_percent}%
+              </span>
+            </div>
+            <div className="text-[10px] text-slate-500 mt-0.5">
+              현재 해는 최적해 대비 최대 {(interpreted as any).optimality_gap.gap_percent}% 이내입니다.
+              {(interpreted as any).optimality_gap.gap_percent < 3 && ' 추가 시간으로 개선 가능성 낮음.'}
+              {(interpreted as any).optimality_gap.gap_percent >= 10 && ' 시간을 더 주면 개선될 가능성이 있습니다.'}
+            </div>
+          </div>
+        </div>
+      )}
+      {(interpreted as any).optimality_gap?.is_optimal && (
+        <div className="bg-green-900/20 rounded-xl p-2 border border-green-700/30 flex items-center gap-2">
+          <span className="text-xs text-green-400 font-bold">✓ Optimal</span>
+          <span className="text-[11px] text-slate-400">최적해가 증명되었습니다.</span>
+        </div>
+      )}
+
       {/* Hybrid Info (CQM → CP-SAT) */}
       {data?.hybrid_info && (
         <div className="bg-gradient-to-r from-purple-900/20 to-indigo-900/20 rounded-xl p-3 border border-purple-700/30">
@@ -190,6 +221,41 @@ export function KPIDashboard({
           </div>
         </div>
       </div>
+
+      {/* Pool 품질 (사후 진단) */}
+      {(interpreted as any).pool_quality && (
+        <div className="bg-slate-800/30 rounded-xl p-4 border border-slate-700">
+          <h3 className="text-sm font-bold text-slate-300 mb-2">Column Pool 품질</h3>
+          <div className="grid grid-cols-3 gap-2 text-[12px]">
+            <div>
+              <span className="text-slate-500">총 columns</span>
+              <div className="text-white font-mono mt-0.5">{((interpreted as any).pool_quality.total_columns || 0).toLocaleString()}</div>
+            </div>
+            <div>
+              <span className="text-slate-500">Task 커버리지</span>
+              <div className="text-white font-mono mt-0.5">{(interpreted as any).pool_quality.coverage_rate}%</div>
+            </div>
+            <div>
+              <span className="text-slate-500">평균 trip/column</span>
+              <div className="text-white font-mono mt-0.5">{(interpreted as any).pool_quality.avg_trips_per_column}</div>
+            </div>
+            <div>
+              <span className="text-slate-500">최소 선택지</span>
+              <div className={`font-mono mt-0.5 ${(interpreted as any).pool_quality.min_coverage < 10 ? 'text-amber-400' : 'text-white'}`}>
+                {(interpreted as any).pool_quality.min_coverage}
+              </div>
+            </div>
+            <div>
+              <span className="text-slate-500">평균 선택지</span>
+              <div className="text-white font-mono mt-0.5">{(interpreted as any).pool_quality.avg_coverage}</div>
+            </div>
+            <div>
+              <span className="text-slate-500">최대 선택지</span>
+              <div className="text-white font-mono mt-0.5">{((interpreted as any).pool_quality.max_coverage || 0).toLocaleString()}</div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 경고 */}
       {interpreted.warnings.length > 0 && (
