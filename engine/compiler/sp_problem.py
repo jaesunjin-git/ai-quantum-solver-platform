@@ -76,12 +76,21 @@ class GenerationHint:
 
 @dataclass
 class SPConstraint:
-    """추가 제약 (crew count, capacity 등)"""
+    """추가 제약 (crew count, capacity, cardinality, aggregate 등)
+
+    기본: Σ z[k] op rhs  (k ∈ column_ids)
+    확장: Σ coeff[k] * z[k] op rhs  (coefficients가 있을 때)
+
+    coefficients가 None이면 기존 동작 (모든 coeff = 1).
+    backward compatible 확장.
+    """
     name: str
     column_ids: List[int]       # 대상 column id
     operator: str               # "==", "<=", ">="
-    rhs: int                    # 우변 값
+    rhs: float                  # 우변 값 (int → float 확장, aggregate_avg 지원)
     label: str = ""             # 로그/디버깅용
+    coefficients: Optional[Dict[int, float]] = None  # column_id → coeff (None=모두 1)
+    constraint_ref: str = ""    # constraints.yaml 제약 ID (추적성)
 
 
 @dataclass
@@ -406,8 +415,13 @@ def build_sp_problem(
     # ── degree_1 진단: forced selection 분석 ──
     degree_1 = [tid for tid, cids in task_to_columns.items() if len(cids) == 1]
 
-    # ── 추가 제약 생성 (params 기반) ──
+    # ── 추가 제약 생성 (params 기반 — 기존 crew count 등) ──
     extra = _build_extra_constraints(columns, params, objective_type)
+
+    # ── YAML Side Constraint Pipeline ──
+    domain = params.get("_domain")
+    yaml_constraints = _build_yaml_side_constraints(columns, params, domain)
+    extra.extend(yaml_constraints)
 
     # ── 제약 검증 → infeasibility_reasons 수집 ──
     infeasibility_reasons = _validate_constraints(extra, columns, params)
@@ -444,6 +458,26 @@ def build_sp_problem(
             logger.error(f"SP known infeasible: {reason}")
 
     return problem
+
+
+def _build_yaml_side_constraints(
+    columns: List[FeasibleColumn], params: Dict, domain: Optional[str] = None
+) -> List[SPConstraint]:
+    """YAML engine_config.yaml의 side_constraints 섹션에서 제약 생성."""
+    try:
+        from engine.config_loader import load_side_constraints
+        from engine.constraints.builtin import register_builtin_handlers  # noqa — 자동 등록
+        from engine.constraints.base import SideConstraintPipeline
+
+        config_list = load_side_constraints(domain)
+        if not config_list:
+            return []
+
+        pipeline = SideConstraintPipeline(config_list)
+        return pipeline.build_all(columns, params)
+    except Exception as e:
+        logger.warning(f"YAML side constraints build failed: {e}")
+        return []
 
 
 def _estimate_duty_upper_bound(columns: List[FeasibleColumn], params: Dict) -> int:

@@ -780,6 +780,8 @@ class SolverPipeline:
         all_task_ids = {t.id for t in tasks}
 
         params = bound_data.get("parameters", {})
+        # domain 정보를 params에 주입 (side constraint pipeline에서 사용)
+        params["_domain"] = math_model.get("domain")
 
         from engine.compiler.objective_builder import extract_objective_type
         objective_type = extract_objective_type(math_model)

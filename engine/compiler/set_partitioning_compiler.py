@@ -78,21 +78,42 @@ class SetPartitioningCompiler(BaseSPCompiler):
         # ── 3. 추가 제약 (SP problem에서 정의) ──
         extra_count = 0
         for constraint in problem.extra_constraints:
-            col_vars = [z[cid] for cid in constraint.column_ids if cid in z]
-            missing = [cid for cid in constraint.column_ids if cid not in z]
-            if missing:
-                logger.warning(f"SP: constraint '{constraint.name}' has {len(missing)} missing columns")
-            if not col_vars:
-                return CompileResult(
-                    success=False,
-                    error=f"Constraint '{constraint.name}' ({constraint.label}) has no applicable columns — infeasible",
-                )
-            if constraint.operator == "==":
-                model.add(sum(col_vars) == constraint.rhs)
-            elif constraint.operator == "<=":
-                model.add(sum(col_vars) <= constraint.rhs)
-            elif constraint.operator == ">=":
-                model.add(sum(col_vars) >= constraint.rhs)
+            # coefficient 지원: Σ coeff[k] * z[k] op rhs
+            if constraint.coefficients:
+                expr_terms = []
+                for cid, coeff in constraint.coefficients.items():
+                    if cid in z:
+                        expr_terms.append(int(coeff * 1000) * z[cid])  # CP-SAT int64
+                if not expr_terms:
+                    return CompileResult(
+                        success=False,
+                        error=f"Constraint '{constraint.name}' has no applicable columns — infeasible",
+                    )
+                rhs_scaled = int(constraint.rhs * 1000)
+                expr = sum(expr_terms)
+                if constraint.operator == "==":
+                    model.add(expr == rhs_scaled)
+                elif constraint.operator == "<=":
+                    model.add(expr <= rhs_scaled)
+                elif constraint.operator == ">=":
+                    model.add(expr >= rhs_scaled)
+            else:
+                # 기존 동작: Σ z[k] op rhs (coeff = 1)
+                col_vars = [z[cid] for cid in constraint.column_ids if cid in z]
+                missing = [cid for cid in constraint.column_ids if cid not in z]
+                if missing:
+                    logger.warning(f"SP: constraint '{constraint.name}' has {len(missing)} missing columns")
+                if not col_vars:
+                    return CompileResult(
+                        success=False,
+                        error=f"Constraint '{constraint.name}' ({constraint.label}) has no applicable columns — infeasible",
+                    )
+                if constraint.operator == "==":
+                    model.add(sum(col_vars) == int(constraint.rhs))
+                elif constraint.operator == "<=":
+                    model.add(sum(col_vars) <= int(constraint.rhs))
+                elif constraint.operator == ">=":
+                    model.add(sum(col_vars) >= int(constraint.rhs))
             extra_count += 1
             logger.info(f"SP: {constraint.label}")
 

@@ -244,13 +244,25 @@ class CQMCompiler(BaseSPCompiler):
         # ── 4. 추가 제약: 단독=hard, Hybrid=soft ──
         extra_count = 0
         for constraint in problem.extra_constraints:
-            col_vars = [z[cid] for cid in constraint.column_ids if cid in z]
-            if not col_vars:
-                continue
-            expr = quicksum(col_vars)
             con_kwargs = {"label": constraint.name}
             if structural_weight is not None:
                 con_kwargs["weight"] = structural_weight
+
+            # coefficient 지원: Σ coeff[k] * z[k] op rhs
+            if constraint.coefficients:
+                terms = [
+                    coeff * z[cid]
+                    for cid, coeff in constraint.coefficients.items()
+                    if cid in z
+                ]
+                if not terms:
+                    continue
+                expr = quicksum(terms)
+            else:
+                col_vars = [z[cid] for cid in constraint.column_ids if cid in z]
+                if not col_vars:
+                    continue
+                expr = quicksum(col_vars)
 
             if constraint.operator == "==":
                 cqm.add_constraint(expr == constraint.rhs, **con_kwargs)
