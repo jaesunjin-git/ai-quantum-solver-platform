@@ -818,11 +818,23 @@ class DataBinder:
                 bound["parameter_warnings"].append(msg)
                 logger.warning(msg)
 
-        # ── F11b: Catalog-based range validation (매직 넘버 없음) ──
+        # ── F11b: String 파싱 + Catalog-based validation (GR-4) ──
         if _catalog and _catalog.has_catalog():
-            for pid, val in bound["parameters"].items():
+            from engine.gates.gate2_model_validate import _parse_value_string
+
+            for pid in list(bound["parameters"].keys()):
+                val = bound["parameters"][pid]
                 if val is None or isinstance(val, (dict, list, tuple)):
                     continue
+
+                # string 파싱: "6시간"→360, "225:33"→225.55 등
+                if isinstance(val, str):
+                    parsed = _parse_value_string(val)
+                    if parsed is not None:
+                        bound["parameters"][pid] = parsed
+                        val = parsed
+                        logger.info(f"Parameter parsed: '{pid}' = '{bound['parameters'][pid]}' (was string)")
+
                 err = _catalog.validate_value(pid, val)
                 if err:
                     bound.setdefault("parameter_errors", []).append(err)

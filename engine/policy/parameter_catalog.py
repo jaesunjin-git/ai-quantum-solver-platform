@@ -126,33 +126,51 @@ class ParameterCatalog:
         return (name_a, name_b) in self._not_alias_pairs
 
     def validate_value(self, name: str, value: Any) -> Optional[str]:
-        """Validate a parameter value against catalog valid_range.
+        """Validate a parameter value against catalog type + valid_range.
 
         Returns error message if invalid, None if OK.
+
+        GR-4: L3 진입 시 catalog 등록 + type 일치 + range 통과 필수.
+        미검증 값이 L4(컴파일) 도달 시 즉시 차단.
         """
         entry = self.resolve(name)
-        if not entry or entry.valid_range is None:
-            return None
+        if not entry:
+            # 미등록 파라미터: 검증 불가 — 경고 반환
+            return f"Parameter '{name}': catalog 미등록 (검증 불가)"
 
+        # boolean 타입 검증
         if entry.type == "boolean":
-            return None  # booleans don't have numeric range
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, str) and value.lower() in ("true", "false", "yes", "no", "1", "0"):
+                return None
+            return f"Parameter '{name}' = {value}: boolean 타입 기대 (true/false)"
 
-        try:
-            v = float(value)
-        except (ValueError, TypeError):
+        # scalar 타입: 숫자 변환 필수
+        if entry.type == "scalar":
+            try:
+                v = float(value)
+            except (ValueError, TypeError):
+                return (
+                    f"Parameter '{name}' = '{value}': 숫자 변환 실패 "
+                    f"(family={entry.family}, type={entry.type})"
+                )
+
+            # range 검증
+            vr = entry.valid_range
+            if vr and len(vr) >= 2:
+                try:
+                    lo, hi = float(vr[0]), float(vr[1])
+                except (ValueError, TypeError):
+                    return None  # valid_range 정의 오류는 skip
+                if v < lo or v > hi:
+                    return (
+                        f"Parameter '{name}' = {v}: valid_range [{lo}, {hi}] 벗어남 "
+                        f"(family={entry.family}, role={entry.semantic_role})"
+                    )
             return None
 
-        vr = entry.valid_range
-        if len(vr) >= 2:
-            try:
-                lo, hi = float(vr[0]), float(vr[1])
-            except (ValueError, TypeError):
-                return None  # valid_range 원소가 숫자가 아닌 경우 검증 skip
-            if v < lo or v > hi:
-                return (
-                    f"Parameter '{name}' = {v}: valid_range [{lo}, {hi}] 벗어남 "
-                    f"(family={entry.family}, role={entry.semantic_role})"
-                )
+        # 기타 타입 (array 등): 현재는 pass
         return None
 
     def get_entry(self, name: str) -> Optional[CatalogEntry]:

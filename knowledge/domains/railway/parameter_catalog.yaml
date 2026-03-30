@@ -280,6 +280,16 @@ parameters:
     aliases: []
     related_constraints: [post_arrival_rest]
 
+  post_trip_training_minutes:
+    family: duration
+    semantic_role: rest
+    type: scalar
+    unit: minutes
+    valid_range: [60, 180]
+    aliases: []
+    related_constraints: [post_shift_training]
+    description: 강차 후 교육시간 (13~15시 2시간 확보)
+
   # ── Time of Day: 주야간 시각 ──
   day_duty_start_earliest:
     family: time_of_day
