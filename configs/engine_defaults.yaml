@@ -1,16 +1,20 @@
 # ============================================================
-# Engine 설정 기본값 (플랫폼 공통)
+# Engine 설정 기본값 — crew_scheduling problem type
 # ============================================================
-# engine이 도메인에 무관하게 사용하는 기본 설정.
+# 이 파일은 crew scheduling (승무원 스케줄링) 문제 유형의 engine 기본값입니다.
+# 플랫폼 공통 설정이 아닙니다. 다른 problem type (material_optimization 등)은
+# 별도의 engine_defaults를 가집니다.
+#
 # 도메인별 override: knowledge/domains/{name}/engine_config.yaml
+#   예: railway 도메인은 railway/engine_config.yaml에서 이 값을 override
+#
+# 로딩 계층: problem_type 기본값 → 산업 도메인 override → 고객(tenant) override
 #
 # 구조:
 #   generator:       Column Generator 튜닝 파라미터
 #   feasibility:     Column Feasibility Check 파이프라인
 #   objective:       Objective Builder 가중치
-#   side_constraints: SP Side Constraint (Phase 2에서 추가)
-#
-# 우선순위: params(고객) > domain YAML > 이 파일 > dataclass 기본값
+#   side_constraints: SP Side Constraint
 # ============================================================
 
 # ── Column Generator ───────────────────────────────────────

@@ -1,7 +1,7 @@
 # ============================================================
-# Parameter → Config Field 매핑 (범용)
+# Parameter → Config Field 매핑 — crew_scheduling problem type
 # ============================================================
-# 사용자 파라미터 이름을 BaseColumnConfig 필드에 매핑.
+# crew scheduling 사용자 파라미터를 BaseColumnConfig 필드에 매핑.
 # 도메인별 override: knowledge/domains/{domain}/param_field_mapping.yaml
 
 param_field_mapping:

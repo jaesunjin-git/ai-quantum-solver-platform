@@ -8,8 +8,8 @@ YAML config → dataclass 필드 로딩 유틸리티.
   3순위: dataclass 기본값 (최후 fallback)
 
 Engine 설정 통합 파일 구조:
-  configs/engine_defaults.yaml              — 플랫폼 공통
-  knowledge/domains/{name}/engine_config.yaml — 도메인별 override
+  configs/engine_defaults.yaml              — problem type 기본값 (현재: crew_scheduling)
+  knowledge/domains/{name}/engine_config.yaml — 산업 도메인별 override
 
   각 파일 내부 섹션:
     generator:        Column Generator 튜닝
@@ -27,11 +27,44 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
+# ── Problem Type → Engine Config 경로 매핑 ──────────────────
+# problem type마다 engine이 다르므로, 기본값 경로도 다름.
+# 현재: crew_scheduling 1개. 향후 problem type 추가 시 이 매핑에 1줄 추가.
+_PROBLEM_TYPE_ENGINE_DEFAULTS: Dict[str, str] = {
+    "crew_scheduling": "configs/engine_defaults.yaml",
+    # 향후:
+    # "material_optimization": "configs/material_engine_defaults.yaml",
+    # "vehicle_routing": "configs/routing_engine_defaults.yaml",
+}
+
+# domain → problem_type 매핑 (domain_registry.py와 일관)
+_DOMAIN_PROBLEM_TYPE: Dict[str, str] = {
+    "railway": "crew_scheduling",
+    "bus": "crew_scheduling",
+    "airline": "crew_scheduling",
+    # 향후:
+    # "battery_materials": "material_optimization",
+}
+
+
+def _resolve_problem_type(domain: Optional[str] = None) -> str:
+    """domain에서 problem_type을 해석. 미등록 시 crew_scheduling fallback."""
+    if domain:
+        return _DOMAIN_PROBLEM_TYPE.get(domain, "crew_scheduling")
+    return "crew_scheduling"
+
+
 # ── 통합 Engine Config 로딩 ─────────────────────────────────
 
 def _get_engine_yaml_paths(domain: Optional[str] = None) -> list:
-    """Engine config YAML 경로 목록 (탐색 순서대로)."""
-    paths = ["configs/engine_defaults.yaml"]
+    """Engine config YAML 경로 목록 (탐색 순서대로).
+    로딩 계층: problem_type 기본값 → 산업 도메인 override"""
+    problem_type = _resolve_problem_type(domain)
+    defaults_path = _PROBLEM_TYPE_ENGINE_DEFAULTS.get(problem_type)
+
+    paths = []
+    if defaults_path:
+        paths.append(defaults_path)
     if domain:
         paths.append(f"knowledge/domains/{domain}/engine_config.yaml")
     return paths
@@ -43,7 +76,7 @@ def _load_engine_section(section: str, domain: Optional[str] = None) -> dict:
 
     Args:
         section: 'generator', 'feasibility', 'objective', 'side_constraints'
-        domain: 도메인명 (None이면 플랫폼 공통만)
+        domain: 도메인명
 
     Returns:
         해당 섹션의 dict (없으면 빈 dict)
@@ -120,22 +153,8 @@ def load_yaml_into_dataclass(instance: Any, *yaml_paths: str) -> None:
 
 
 def get_generator_yaml_paths(domain: Optional[str] = None) -> list:
-    """Generator config YAML 파일 경로 목록.
-    통합 파일과 개별 파일 모두 탐색 (통합 우선)."""
-    paths = []
-
-    # 통합 파일
-    for p in _get_engine_yaml_paths(domain):
-        if os.path.exists(p):
-            paths.append(p)
-
-    # 개별 파일 fallback (하위 호환)
-    if not paths:
-        paths.append("configs/generator_defaults.yaml")
-        if domain:
-            paths.append(f"knowledge/domains/{domain}/generator_config.yaml")
-
-    return paths
+    """Generator config YAML 파일 경로 목록 (통합 engine_config 기반)."""
+    return _get_engine_yaml_paths(domain)
 
 
 # ── Objective Config 로딩 ───────────────────────────────────
@@ -150,15 +169,8 @@ def load_objective_config(domain: Optional[str] = None) -> dict:
 
 
 def get_objective_yaml_paths(domain: Optional[str] = None) -> list:
-    """Objective config YAML 경로 (하위 호환용).
-    통합 파일이 있으면 통합, 없으면 개별 파일."""
-    paths = _get_engine_yaml_paths(domain)
-    # 개별 파일 fallback
-    if not any(os.path.exists(p) for p in paths):
-        paths = ["configs/objective_defaults.yaml"]
-        if domain:
-            paths.append(f"knowledge/domains/{domain}/objective_config.yaml")
-    return paths
+    """Objective config YAML 경로 (통합 engine_config 기반)."""
+    return _get_engine_yaml_paths(domain)
 
 
 # ── Feasibility Config 로딩 ─────────────────────────────────
@@ -183,9 +195,10 @@ def load_feasibility_checks(domain: Optional[str] = None) -> list:
             except Exception as e:
                 logger.warning(f"Feasibility config load failed: {domain_path}: {e}")
 
-    # 플랫폼 공통 통합 파일
-    defaults_path = "configs/engine_defaults.yaml"
-    if os.path.exists(defaults_path):
+    # problem_type 기본값 파일
+    problem_type = _resolve_problem_type(domain)
+    defaults_path = _PROBLEM_TYPE_ENGINE_DEFAULTS.get(problem_type)
+    if defaults_path and os.path.exists(defaults_path):
         try:
             with open(defaults_path, 'r', encoding='utf-8') as f:
                 data = yaml.safe_load(f) or {}
