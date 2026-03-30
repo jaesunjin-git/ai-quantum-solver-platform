@@ -59,6 +59,42 @@ def get_generator_yaml_paths(domain: Optional[str] = None) -> list:
     return paths
 
 
+def get_objective_yaml_paths(domain: Optional[str] = None) -> list:
+    """Objective config YAML 파일 경로 목록 (탐색 순서대로).
+    뒤의 파일이 앞의 파일을 override."""
+    paths = ["configs/objective_defaults.yaml"]
+    if domain:
+        paths.append(f"knowledge/domains/{domain}/objective_config.yaml")
+    return paths
+
+
+def load_feasibility_checks(domain: Optional[str] = None) -> list:
+    """Feasibility check 목록을 YAML에서 로딩.
+    도메인 YAML이 존재하면 defaults를 완전히 대체 (merge 아님).
+    반환: [{type, field, limit_param, action, ...}, ...]"""
+    import yaml
+
+    paths = ["configs/feasibility_defaults.yaml"]
+    if domain:
+        domain_path = f"knowledge/domains/{domain}/feasibility_config.yaml"
+        if os.path.exists(domain_path):
+            paths = [domain_path]  # 도메인 YAML이 defaults를 완전 대체
+
+    for path in paths:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f) or {}
+            checks = data.get("feasibility_checks", [])
+            logger.info(f"Feasibility checks loaded: {path} ({len(checks)} checks)")
+            return checks
+        except Exception as e:
+            logger.warning(f"Feasibility config load failed: {path}: {e}")
+
+    return []
+
+
 def load_param_field_mapping(domain: Optional[str] = None) -> dict:
     """params 키 → config 필드 매핑을 YAML에서 로딩.
     반환 형식: {config_field: {priority: [param_key1, param_key2, ...]}}

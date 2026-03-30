@@ -1422,8 +1422,8 @@ class ProblemDefinitionSkill:
             "text": f"✅ 문제 정의가 확정되었습니다.{change_text}\n\n데이터 정규화 단계로 진행합니다.",
             "data": {
                 "view_mode": "problem_defined",
-                "proposal": pd,
-                "confirmed_problem": pd,
+                "proposal": pdef,
+                "confirmed_problem": pdef,
                 "auto_next": "data_normalization",
             },
             "options": [],
@@ -2932,8 +2932,8 @@ Soft 제약조건:
             "text": text,
             "data": {
                 "view_mode": "problem_defined",
-                "proposal": pd,
-                "confirmed_problem": pd,
+                "proposal": pdef,
+                "confirmed_problem": pdef,
                 "agent_status": "problem_defined",
                 "clarification_applied": True,
                 "auto_next": "data_normalization",

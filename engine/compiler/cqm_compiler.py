@@ -197,7 +197,10 @@ class CQMCompiler(BaseSPCompiler):
 
         math_model = kwargs.get("math_model", {})
         objective_type = extract_objective_type(math_model)
-        obj_config = ObjectiveConfig.from_params(kwargs.get("params", {}))
+        obj_config = ObjectiveConfig.from_params(
+            kwargs.get("params", {}),
+            domain=math_model.get("domain"),
+        )
 
         builder = ObjectiveBuilder(columns, obj_config)
         scores = builder.build(objective_type, kwargs.get("params", {}))

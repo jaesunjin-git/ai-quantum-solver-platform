@@ -1,0 +1,33 @@
+# ============================================================
+# Column Feasibility Check 기본값 (도메인 무관)
+# ============================================================
+# engine이 column 생성 시 적용하는 feasibility 검증 목록.
+# 도메인별 override는 knowledge/domains/{name}/feasibility_config.yaml에서 설정.
+#
+# 우선순위: domain YAML이 이 파일의 checks를 완전히 대체 (merge 아님)
+# 즉 도메인 YAML에 checks가 정의되면 이 파일의 checks는 무시됨.
+#
+# 파라미터 참조 규칙:
+#   _param 접미사 → params/config에서 값 조회 (limit_param: max_idle_time)
+#   접미사 없음 → 직접 값 사용 (limit: 360)
+#   둘 다 있으면 _param 우선, 직접 값은 fallback
+# ============================================================
+
+feasibility_checks:
+  # 유휴 대기시간 상한
+  - type: max_value
+    field: idle_minutes
+    limit_param: max_idle_time
+    action: reject
+
+  # 활동시간(운전시간) 상한
+  - type: max_value
+    field: active_minutes
+    limit_param: max_active_time
+    action: reject
+
+  # 실근무 경과시간 상한
+  - type: max_value
+    field: elapsed_minutes
+    limit_param: max_span_time
+    action: reject

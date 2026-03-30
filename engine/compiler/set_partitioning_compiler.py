@@ -100,7 +100,8 @@ class SetPartitioningCompiler(BaseSPCompiler):
         from engine.compiler.objective_builder import ObjectiveBuilder, ObjectiveConfig, extract_objective_type
 
         objective_type = extract_objective_type(math_model)
-        obj_config = ObjectiveConfig.from_params(params)
+        obj_config = ObjectiveConfig.from_params(
+            params, domain=math_model.get("domain"))
 
         builder = ObjectiveBuilder(problem.columns, obj_config)
         scores = builder.build(objective_type, params)

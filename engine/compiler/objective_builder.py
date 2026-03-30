@@ -44,9 +44,21 @@ class ObjectiveConfig:
     short_threshold: int = 8           # 이 trip 수 미만이면 penalty
 
     @classmethod
-    def from_params(cls, params: Dict[str, Any]) -> "ObjectiveConfig":
-        """파라미터에서 로딩 (향후 YAML config 지원)"""
-        cfg = cls()
+    def from_params(cls, params: Dict[str, Any],
+                    domain: str = None) -> "ObjectiveConfig":
+        """3계층 설정 로딩:
+        1순위: params (사용자 운영 제약, objective_ prefix)
+        2순위: YAML config (도메인별/범용 튜닝, 코드 변경 없이 수정 가능)
+        3순위: dataclass 기본값 (최후 fallback)
+        """
+        cfg = cls()  # 3순위: dataclass 기본값
+
+        # 2순위: YAML config (범용 + 도메인별)
+        from engine.config_loader import load_yaml_into_dataclass, get_objective_yaml_paths
+        yaml_paths = get_objective_yaml_paths(domain)
+        load_yaml_into_dataclass(cfg, *yaml_paths)
+
+        # 1순위: params → objective_ prefix로 override
         for attr in ['duty_weight', 'short_penalty_weight', 'idle_penalty_weight',
                       'balance_penalty_weight', 'short_threshold']:
             val = params.get(f'objective_{attr}')
@@ -55,6 +67,15 @@ class ObjectiveConfig:
                     setattr(cfg, attr, float(val))
                 except (ValueError, TypeError):
                     pass  # 잘못된 값은 기본값 유지
+
+        logger.info(
+            f"ObjectiveConfig: domain={domain}, "
+            f"duty_weight={cfg.duty_weight}, "
+            f"short_penalty={cfg.short_penalty_weight}, "
+            f"idle_penalty={cfg.idle_penalty_weight}, "
+            f"balance_penalty={cfg.balance_penalty_weight}, "
+            f"short_threshold={cfg.short_threshold}"
+        )
         return cfg
 
 
@@ -120,6 +141,21 @@ class ObjectiveBuilder:
         logger.info(f"Objective '{objective_type}': "
                      f"score range [{min(int_scores.values())}..{max(int_scores.values())}], "
                      f"{len(int_scores)} columns")
+
+        # source별 score 분포 (재진단 시 DEBUG→INFO로 변경)
+        from collections import defaultdict
+        _by_source: dict = defaultdict(list)
+        for col in self.columns:
+            if col.id in int_scores:
+                _by_source[col.source].append(int_scores[col.id])
+        for src, src_scores in sorted(_by_source.items()):
+            if src_scores:
+                _avg = sum(src_scores) / len(src_scores)
+                logger.debug(
+                    f"Objective score by source '{src}': "
+                    f"n={len(src_scores)}, "
+                    f"min={min(src_scores)}, avg={_avg:.0f}, max={max(src_scores)}"
+                )
 
         return int_scores
 

@@ -129,6 +129,9 @@ class CrewDutyConfig(BaseColumnConfig):
         if cfg.block_combine_top_k == 0:
             cfg.block_combine_top_k = int(cfg.max_columns_target * 0.3)
 
+        # domain 저장 (feasibility pipeline YAML 로딩용)
+        cfg._domain = domain
+
         return cfg
 
 

@@ -1,0 +1,17 @@
+# ============================================================
+# Objective Builder 가중치 기본값 (도메인 무관)
+# ============================================================
+# 이 파일은 코드 변경 없이 목적함수 가중치를 튜닝할 수 있게 합니다.
+# 도메인별 override는 knowledge/domains/{name}/objective_config.yaml에서 설정합니다.
+#
+# 우선순위: params(사용자) > domain YAML > 이 파일 > dataclass 기본값
+# ============================================================
+
+# ── 기본 가중치 ────────────────────────────────────────────────
+duty_weight: 1.0                # duty 수 최소화 가중치
+short_penalty_weight: 0.05      # 짧은 duty 억제 (trip 수 미달 시)
+idle_penalty_weight: 0.01       # idle 시간 억제
+balance_penalty_weight: 0.5     # 워크로드 균형 (balance_workload 전용)
+
+# ── 짧은 duty 기준 ────────────────────────────────────────────
+short_threshold: 8              # 이 trip 수 미만이면 short penalty 적용

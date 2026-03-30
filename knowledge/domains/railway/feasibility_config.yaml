@@ -1,0 +1,48 @@
+# ============================================================
+# Railway 도메인 Column Feasibility Check Override
+# ============================================================
+# configs/feasibility_defaults.yaml의 범용 checks를 도메인에 맞게 대체.
+# 이 파일이 존재하면 defaults의 checks를 완전히 대체함 (merge 아님).
+#
+# 우선순위: 이 파일 > feasibility_defaults.yaml
+# ============================================================
+
+feasibility_checks:
+  # ── 기존 engine 하드코딩 → YAML 선언 전환 ──────────────────
+
+  # 유휴 대기시간 상한 (대기시간 최대 5시간 이내)
+  - type: max_value
+    field: idle_minutes
+    limit_param: max_idle_time
+    action: reject
+
+  # 활동시간(운전시간) 상한 (운전시간 6시간 이내)
+  - type: max_value
+    field: active_minutes
+    limit_param: max_active_time
+    action: reject
+
+  # 실근무 경과시간 상한 (근무시간 11시간 이내)
+  - type: max_value
+    field: elapsed_minutes
+    limit_param: max_span_time
+    action: reject
+
+  # ── 신규 — #17 식사 휴게시간 보장 ──────────────────────────
+  # 11:00~14:00 사이에 최소 30분 연속 공백
+  # TODO: 고객 정의 확인 후 시간대/분수 조정
+  # - type: break_window
+  #   windows:
+  #     - start: 660          # 11:00
+  #       end: 840            # 14:00
+  #       min_gap_param: min_meal_break_minutes
+  #       min_gap: 30         # fallback
+  #   action: reject
+
+  # ── 신규 — #14 강차 후 휴양시간 ────────────────────────────
+  # 연속 trip 간 최소 60분 간격
+  # TODO: 고객 정의 확인 후 활성화
+  # - type: min_turnaround
+  #   min_gap_param: post_arrival_rest_minutes_min
+  #   min_gap: 60             # fallback
+  #   action: reject

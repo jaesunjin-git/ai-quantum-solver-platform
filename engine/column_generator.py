@@ -210,6 +210,9 @@ class BaseColumnConfig:
         if cfg.block_combine_top_k == 0:
             cfg.block_combine_top_k = int(cfg.max_columns_target * 0.3)
 
+        # domain 저장 (feasibility pipeline YAML 로딩용)
+        cfg._domain = domain
+
         return cfg
 
 
@@ -281,6 +284,33 @@ class BaseColumnGenerator:
             self._location_departures.setdefault(t.start_location, []).append(t)
         for k in self._location_departures:
             self._location_departures[k].sort(key=lambda t: t.dep_time)
+
+        # Feasibility Pipeline 초기화 (YAML 기반)
+        self._feasibility_pipeline = self._init_feasibility_pipeline()
+
+    # ── Feasibility Pipeline 초기화 ────────────────────────────
+
+    def _init_feasibility_pipeline(self):
+        """YAML에서 feasibility check 목록을 읽어 pipeline 생성."""
+        from engine.feasibility.builtin import register_builtin_handlers  # noqa: F401 — 자동 등록
+        from engine.feasibility.base import FeasibilityPipeline
+        from engine.config_loader import load_feasibility_checks
+
+        domain = getattr(self.config, '_domain', None)
+        checks = load_feasibility_checks(domain)
+        return FeasibilityPipeline(checks)
+
+    def _get_feasibility_params(self) -> Dict[str, Any]:
+        """feasibility pipeline에 전달할 파라미터 dict 구축.
+        config 필드 + _task_map을 병합."""
+        params: Dict[str, Any] = {}
+        # config의 모든 필드를 params로 노출
+        for attr in vars(self.config):
+            if not attr.startswith('_'):
+                params[attr] = getattr(self.config, attr)
+        # task_map 주입 (break_window, min_turnaround에서 사용)
+        params["_task_map"] = self._task_map
+        return params
 
     # ── 탐색 대상 필터링 훅 (override 가능) ──────────────────
 
@@ -498,7 +528,14 @@ class BaseColumnGenerator:
             remaining.sort(key=lambda c: c.cost)
             result.extend(remaining[:target - len(result)])
 
+        # source별 diversity cap 통계 (재진단 시 DEBUG→INFO로 변경)
         logger.info(f"Diversity cap: {len(columns)} → {len(result)} ({len(buckets)} buckets)")
+        _src_before = Counter(c.source for c in columns)
+        _src_after = Counter(c.source for c in result)
+        logger.debug(
+            f"Diversity cap source detail: "
+            f"before={dict(_src_before)}, after={dict(_src_after)}"
+        )
 
         # ── coverage 보호: under-covered task의 column을 추가 보장 ──
         result_ids = {c.id for c in result}
@@ -754,16 +791,9 @@ class BaseColumnGenerator:
         wait = span - driving - full_prep - cleanup - break_minutes - inactive_gap
         if wait < 0:
             wait = 0
-        if wait > cfg.max_idle_time:
-            return None
 
-        if driving > self._get_max_active_time(state):
-            return None
-        # span 체크: 비활동(수면 등)을 제외한 실근무 span ≤ max_span_time
-        # overnight duty는 수면시간이 span에 포함되지만 근무가 아님
+        # span 체크: 비활동(수면 등)을 제외한 실근무 span
         effective_work = work - inactive_gap
-        if effective_work > cfg.max_span_time:
-            return None
 
         # cost: full prep 기준 보정 + short column penalty + discrimination 강화
         full_prep = self._get_full_prep()
@@ -799,7 +829,15 @@ class BaseColumnGenerator:
             cost=cost,
         )
 
-        # 도메인별 추가 검증 (column 수정 금지 — 순수 검증)
+        # YAML 기반 feasibility pipeline (Validation — 확정적 판정)
+        if self._feasibility_pipeline.check_count > 0:
+            feas_result = self._feasibility_pipeline.run(
+                column, self._get_feasibility_params()
+            )
+            if not feas_result.feasible:
+                return None
+
+        # 도메인별 추가 검증 (복잡 로직 hook — YAML로 표현 어려운 조건부 로직)
         if not self._check_domain_feasibility(column):
             return None
 
@@ -960,6 +998,13 @@ class BaseColumnGenerator:
         count = 0
         attempts = 0
         seen: set = set()
+        # 진단 통계 수집용
+        _diag_gaps: list = []
+        _diag_idle_internals: list = []
+        _diag_idle_totals: list = []
+        _diag_costs: list = []
+        _diag_trips: list = []
+        _diag_fail = 0
 
         for i, block_a in enumerate(top_blocks):
             combines_for_a = 0
@@ -1019,15 +1064,49 @@ class BaseColumnGenerator:
                     count += 1
                     combines_for_a += 1
 
+                    # 진단 통계 수집 (개별 로그 → DEBUG, 요약만 INFO)
+                    idle_internal = block_a.idle_minutes + block_b.idle_minutes
+                    _diag_gaps.append(gap)
+                    _diag_idle_internals.append(idle_internal)
+                    _diag_idle_totals.append(col.idle_minutes)
+                    _diag_costs.append(col.cost)
+                    _diag_trips.append(len(col.trips))
+                    logger.debug(
+                        f"[DIAG] combined #{col.id}: "
+                        f"trips={len(col.trips)}, idle_int={idle_internal}, "
+                        f"gap={gap}, idle_tot={col.idle_minutes}, cost={col.cost:.2f}"
+                    )
+                else:
+                    _diag_fail += 1
+
                 if combines_for_a >= cfg.block_combine_per_block:
                     break
 
         elapsed = time.time() - t0
         rate = count / max(attempts, 1)
-        logger.info(
-            f"[BLOCK COMBINE] attempts={attempts}, success={count}, "
-            f"rate={rate:.3f}, elapsed={elapsed:.2f}s"
-        )
+
+        # 진단 요약 (INFO)
+        if _diag_gaps:
+            _avg_gap = sum(_diag_gaps) / len(_diag_gaps)
+            _avg_idle_int = sum(_diag_idle_internals) / len(_diag_idle_internals)
+            _avg_idle_tot = sum(_diag_idle_totals) / len(_diag_idle_totals)
+            _avg_cost = sum(_diag_costs) / len(_diag_costs)
+            _avg_trips = sum(_diag_trips) / len(_diag_trips)
+            logger.info(
+                f"[BLOCK COMBINE] success={count}, fail={_diag_fail}, "
+                f"attempts={attempts}, rate={rate:.3f}, elapsed={elapsed:.2f}s | "
+                f"avg: trips={_avg_trips:.1f}, gap={_avg_gap:.0f}min, "
+                f"idle_internal={_avg_idle_int:.0f}min, idle_total={_avg_idle_tot:.0f}min, "
+                f"cost={_avg_cost:.2f} | "
+                f"ranges: gap=[{min(_diag_gaps)}..{max(_diag_gaps)}], "
+                f"idle_tot=[{min(_diag_idle_totals)}..{max(_diag_idle_totals)}], "
+                f"cost=[{min(_diag_costs):.2f}..{max(_diag_costs):.2f}]"
+            )
+        else:
+            logger.info(
+                f"[BLOCK COMBINE] success=0, fail={_diag_fail}, "
+                f"attempts={attempts}, rate={rate:.3f}, elapsed={elapsed:.2f}s"
+            )
         return count
 
     # ── Gap 기반 break 계산 ───────────────────────────────────
@@ -1118,7 +1197,17 @@ class BaseColumnGenerator:
             result.extend(frontier)
 
         elapsed = time.time() - t0
+
+        # source별 제거 통계 (재진단 시 DEBUG→INFO로 변경)
+        _src_before = Counter(c.source for c in columns)
+        _src_after = Counter(c.source for c in result)
+        _src_removed = {s: _src_before[s] - _src_after.get(s, 0) for s in _src_before}
         logger.info(f"dominance: {len(columns)} → {len(result)} columns ({elapsed:.3f}s)")
+        logger.debug(
+            f"dominance source detail: "
+            f"before={dict(_src_before)}, after={dict(_src_after)}, "
+            f"removed={dict(_src_removed)}"
+        )
 
         return result
 
