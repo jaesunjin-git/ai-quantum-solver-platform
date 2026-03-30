@@ -442,7 +442,7 @@ class TestYAMLLoading:
     """config_loader.load_feasibility_checks 검증"""
 
     def test_defaults_load(self):
-        """기본 YAML(feasibility_defaults.yaml)이 로딩됨"""
+        """problem type 기본 YAML(engine_defaults.yaml)이 로딩됨"""
         from engine.config_loader import load_feasibility_checks
         checks = load_feasibility_checks(domain=None)
         assert len(checks) >= 3  # max_idle, max_active, max_span

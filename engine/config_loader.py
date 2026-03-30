@@ -8,8 +8,8 @@ YAML config → dataclass 필드 로딩 유틸리티.
   3순위: dataclass 기본값 (최후 fallback)
 
 Engine 설정 통합 파일 구조:
-  configs/engine_defaults.yaml              — problem type 기본값 (현재: crew_scheduling)
-  knowledge/domains/{name}/engine_config.yaml — 산업 도메인별 override
+  problem_types/{type}/engine_defaults.yaml     — problem type 기본값
+  knowledge/domains/{name}/engine_config.yaml   — 산업 도메인별 override
 
   각 파일 내부 섹션:
     generator:        Column Generator 튜닝
@@ -31,10 +31,9 @@ logger = logging.getLogger(__name__)
 # problem type마다 engine이 다르므로, 기본값 경로도 다름.
 # 현재: crew_scheduling 1개. 향후 problem type 추가 시 이 매핑에 1줄 추가.
 _PROBLEM_TYPE_ENGINE_DEFAULTS: Dict[str, str] = {
-    "crew_scheduling": "configs/engine_defaults.yaml",
+    "crew_scheduling": "problem_types/crew_scheduling/engine_defaults.yaml",
     # 향후:
-    # "material_optimization": "configs/material_engine_defaults.yaml",
-    # "vehicle_routing": "configs/routing_engine_defaults.yaml",
+    # "material_optimization": "problem_types/material_optimization/engine_defaults.yaml",
 }
 
 # domain → problem_type 매핑 (domain_registry.py와 일관)
@@ -232,7 +231,10 @@ def load_param_field_mapping(domain: Optional[str] = None) -> dict:
     또는 legacy 형식: {param_key: config_field}"""
     mapping = {}
 
-    paths = ["configs/param_field_mapping.yaml"]
+    # problem_type 기본 매핑 + 도메인별 override
+    problem_type = _resolve_problem_type(domain)
+    pt_path = f"problem_types/{problem_type}/param_field_mapping.yaml"
+    paths = [pt_path]
     if domain:
         paths.append(f"knowledge/domains/{domain}/param_field_mapping.yaml")
 
