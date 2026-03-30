@@ -162,8 +162,7 @@ export function SolverView({
       if (steps.length <= 1) {
         return steps.some((s: any) => s.solver_name === solver.solver_name);
       }
-      const mainStep = steps.find((s: any) => s.role === 'main_solver') || steps[0];
-      return mainStep?.solver_name === solver.solver_name;
+      return steps[0]?.solver_name === solver.solver_name;
     }) || [];
     const matchedStrategy = relatedStrategies.find((st: any) =>
       st.strategy_type === effectiveStrategy || st.strategy_id === selectedStrategyId
@@ -512,8 +511,7 @@ export function SolverView({
                 if (steps.length <= 1) {
                   return steps.some((s: any) => s.solver_name === selectedSolverData?.solver_name);
                 }
-                const mainStep = steps.find((s: any) => s.role === 'main_solver') || steps[0];
-                return mainStep?.solver_name === selectedSolverData?.solver_name;
+                return steps[0]?.solver_name === selectedSolverData?.solver_name;
               }) || [];
               const _activeStrat = _relStrats.find((st: any) => st.strategy_id === selectedStrategyId)
                 || _relStrats.find((st: any) => data.recommended_strategy?.strategy_id === st.strategy_id)

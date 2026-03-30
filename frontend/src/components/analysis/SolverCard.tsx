@@ -66,8 +66,7 @@ export function SolverCard({
     if (steps.length <= 1) {
       return steps.some((s: any) => s.solver_name === svr.solver_name);
     }
-    const mainStep = steps.find((s: any) => s.role === 'main_solver') || steps[0];
-    return mainStep?.solver_name === svr.solver_name;
+    return steps[0]?.solver_name === svr.solver_name;
   }) || [];
   const bestStrategy = relatedStrategies.find((st: any) =>
     recommendedStrategy?.strategy_id === st.strategy_id
