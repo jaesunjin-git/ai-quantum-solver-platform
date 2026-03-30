@@ -37,6 +37,18 @@ class JobSubmitRequest(BaseModel):
     strategy: str = "single"  # "single" | "quantum_warmstart"
 
 
+class CompareSubmitRequest(BaseModel):
+    """비교 실행: Column Gen 1회 + solver별 독립 실행"""
+    project_id: int
+    solver_ids: list  # ["classical_cpu", "dwave_hybrid_cqm"]
+    solver_names: dict = {}  # {solver_id: display_name}
+
+
+class CompareSubmitResponse(BaseModel):
+    compare_group_id: str
+    jobs: list  # [{job_id, solver_id, solver_name, status}]
+
+
 class JobStatusResponse(BaseModel):
     job_id: int
     status: str
@@ -176,6 +188,85 @@ async def submit_job(
         logger.info(f"Job {job.id} started in background thread")
 
     return _job_to_response(job)
+
+
+@router.post("/compare", response_model=CompareSubmitResponse, status_code=202)
+async def submit_compare(
+    body: CompareSubmitRequest,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """비교 실행: Column Gen 1회 + solver별 독립 실행.
+
+    동일한 column pool을 보장하여 공정한 비교.
+    1. Column Gen 선행 실행 → 캐시 저장
+    2. solver별 job 생성 (reuse_pool=True → 캐시 hit → Column Gen 스킵)
+    """
+    import uuid
+
+    if len(body.solver_ids) < 2:
+        raise HTTPException(status_code=400, detail="비교 실행은 2개 이상의 solver가 필요합니다")
+
+    compare_group_id = str(uuid.uuid4())[:8]
+
+    # solver별 job 생성
+    jobs_info = []
+    for solver_id in body.solver_ids:
+        solver_name = body.solver_names.get(solver_id, solver_id)
+        job = JobDB(
+            project_id=body.project_id,
+            solver_id=solver_id,
+            solver_name=solver_name,
+            compare_group_id=compare_group_id,
+            backend="celery",
+            status="PENDING",
+            progress="비교 실행 대기 중",
+            progress_pct=0,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        jobs_info.append({
+            "job_id": job.id,
+            "solver_id": solver_id,
+            "solver_name": solver_name,
+            "status": job.status,
+        })
+
+    # 백그라운드에서 순차 실행: 첫 번째 solver → 캐시 생성, 이후 solver → 캐시 재사용
+    import threading
+
+    def _run_compare_group(project_id, group_id, solver_jobs):
+        """비교 그룹 순차 실행.
+        첫 번째 job: Column Gen + 캐시 저장 (reuse_pool=False 강제 → 새 pool)
+        이후 job: 캐시 재사용 (reuse_pool=True)
+        """
+        from engine.tasks import _run_solver_sync
+        for idx, job_info in enumerate(solver_jobs):
+            try:
+                _run_solver_sync(
+                    job_id=job_info["job_id"],
+                    project_id=project_id,
+                    solver_id=job_info["solver_id"],
+                    solver_name=job_info["solver_name"],
+                    strategy="single",
+                    reuse_pool=(idx > 0),  # 첫 번째: 새 생성, 이후: 캐시 재사용
+                )
+            except Exception as e:
+                logger.error(f"Compare job {job_info['job_id']} failed: {e}")
+
+    t = threading.Thread(
+        target=_run_compare_group,
+        args=(body.project_id, compare_group_id, jobs_info),
+        daemon=True,
+    )
+    t.start()
+    logger.info(f"Compare group {compare_group_id} started: {[j['solver_id'] for j in jobs_info]}")
+
+    return CompareSubmitResponse(
+        compare_group_id=compare_group_id,
+        jobs=jobs_info,
+    )
 
 
 @router.get("/{job_id}", response_model=JobStatusResponse)

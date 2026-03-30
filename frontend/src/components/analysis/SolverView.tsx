@@ -229,36 +229,38 @@ export function SolverView({
   const handleCompareRun = useCallback(async () => {
     if (compareSelection.size < 2 || !projectId) return;
     const indices = Array.from(compareSelection);
-    const groupId = crypto.randomUUID();
-    compareDispatch({ type: 'INIT', groupId, indices });
+    compareDispatch({ type: 'INIT', groupId: 'pending', indices });
 
-    for (const idx of indices) {
-      const solver = solvers[idx];
-      if (!solver) continue;
-      try {
-        const res = await authFetch(`/api/jobs/submit`, {
-          method: 'POST',
-          body: JSON.stringify({
-            project_id: Number(projectId),
-            solver_id: solver.solver_id,
-            solver_name: `${solver.provider} ${solver.solver_name}`.trim(),
-            compare_group_id: groupId,
-          }),
+    try {
+      // 단일 compare API: 백엔드가 Column Gen 1회 + solver별 순차 실행 (동일 pool 보장)
+      const selectedSolvers = indices.map(i => solvers[i]).filter(Boolean);
+      const solverIds = selectedSolvers.map(s => s.solver_id);
+      const solverNames: Record<string, string> = {};
+      selectedSolvers.forEach(s => { solverNames[s.solver_id] = `${s.provider} ${s.solver_name}`.trim(); });
+
+      const res = await authFetch(`/api/jobs/compare`, {
+        method: 'POST',
+        body: JSON.stringify({
+          project_id: Number(projectId),
+          solver_ids: solverIds,
+          solver_names: solverNames,
+        }),
+      });
+
+      if (res.ok) {
+        const d = await res.json();
+        // 각 job에 대해 폴링 시작
+        d.jobs.forEach((jobInfo: any, i: number) => {
+          const idx = indices[i];
+          compareDispatch({ type: 'SUBMIT', idx, jobId: jobInfo.job_id });
+          const iv = setInterval(() => pollCompareJob(idx, jobInfo.job_id), 2000);
+          compareIntervalsRef.current.set(idx, iv);
         });
-        if (res.ok) {
-          const d = await res.json();
-          compareDispatch({ type: 'SUBMIT', idx, jobId: d.job_id });
-          // 터미널 상태가 아니면 폴링 시작
-          if (!['COMPLETE', 'FAILED', 'CANCELLED'].includes(d.status)) {
-            const iv = setInterval(() => pollCompareJob(idx, d.job_id), 2000);
-            compareIntervalsRef.current.set(idx, iv);
-          } else {
-            compareDispatch({ type: 'UPDATE', idx, status: d.status, result: d.result, error: d.error });
-          }
-        }
-      } catch (err: any) {
-        compareDispatch({ type: 'UPDATE', idx, status: 'FAILED', error: err.message });
       }
+    } catch (err: any) {
+      indices.forEach(idx => {
+        compareDispatch({ type: 'UPDATE', idx, status: 'FAILED', error: err.message });
+      });
     }
   }, [compareSelection, solvers, projectId, authFetch, pollCompareJob]);
 
