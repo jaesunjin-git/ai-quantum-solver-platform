@@ -82,6 +82,15 @@ def _run_solver_sync(
 
         math_model = state.math_model
 
+        # 실행 시점의 모델/데이터 버전 고정 (문제 정의 변경에 영향 안 받음)
+        _model_version_id = getattr(state, "current_model_version_id", None)
+        _dataset_version_id = getattr(state, "current_dataset_version_id", None)
+        if job:
+            job.model_version_id = _model_version_id
+            job.dataset_version_id = _dataset_version_id
+            db.commit()
+            logger.info(f"Job {job_id}: pinned model_v={_model_version_id}, data_v={_dataset_version_id}")
+
         # solver_name: SolverRegistry가 단일 진실 공급원
         # 프론트엔드에서 전달받은 solver_name은 무시하고 registry에서 resolve
         from engine.solver_registry import SolverRegistry
@@ -224,6 +233,7 @@ def _run_solver_sync(
                     status=result.execute_result.status if result.execute_result else "UNKNOWN",
                     objective_value=result.execute_result.objective_value if result.execute_result else None,
                     db=db,
+                    job_id=job_id,
                     is_compare=is_compare,
                 )
             except Exception as pp_err:

@@ -26,6 +26,7 @@ def post_process_solve_result(
     status: str = "UNKNOWN",
     objective_value: Optional[float] = None,
     db=None,
+    job_id: int = None,
     *,
     is_compare: bool = False,
 ) -> Optional[int]:
@@ -47,7 +48,19 @@ def post_process_solve_result(
     try:
         from core.platform.session import load_session_state
         state = load_session_state(str(project_id))
-        model_version_id = getattr(state, "current_model_version_id", None) if state else None
+
+        # model_version_id: JobDB에서 고정된 값 우선, fallback으로 SessionState
+        model_version_id = None
+        dataset_version_id = None
+        if job_id and db:
+            from core.models import JobDB as _JDB
+            _job = db.query(_JDB).filter(_JDB.id == job_id).first()
+            if _job:
+                model_version_id = _job.model_version_id
+                dataset_version_id = _job.dataset_version_id
+        if model_version_id is None:
+            model_version_id = getattr(state, "current_model_version_id", None) if state else None
+
         domain_type = getattr(state, "detected_domain", None) if state else None
 
         from core.version import create_run_result

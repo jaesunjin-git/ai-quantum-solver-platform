@@ -88,6 +88,8 @@ class JobDB(Base):
     backend = Column(String)
     solver_id = Column(String, nullable=True)
     solver_name = Column(String, nullable=True)
+    model_version_id = Column(Integer, nullable=True)  # 실행 시점의 모델 버전 (고정)
+    dataset_version_id = Column(Integer, nullable=True)  # 실행 시점의 데이터 버전 (고정)
     progress = Column(String, nullable=True)     # 진행 상태 메시지
     progress_pct = Column(Integer, nullable=True)  # 0~100 진행률
     error = Column(Text, nullable=True)
