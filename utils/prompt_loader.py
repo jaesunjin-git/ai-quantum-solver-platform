@@ -29,7 +29,9 @@ def load_prompt(domain: str, filename: str) -> Optional[str]:
 
 @lru_cache()
 def load_yaml_prompt(domain: str, filename: str) -> Dict[str, Any]:
-    """도메인별 프롬프트 YAML 파일 로드. 도메인 하위 디렉토리 우선 → 루트 fallback."""
+    """도메인별 프롬프트 YAML 파일 로드. 도메인 하위 디렉토리 우선 → 루트 fallback.
+
+    주의: lru_cache 적용 — 반환값 수정 시 캐시 오염. copy.deepcopy() 후 사용할 것."""
     domain_path = os.path.join(PROMPT_DIR, domain, f"{filename}.yaml")
     root_path = os.path.join(PROMPT_DIR, f"{filename}.yaml")
     for file_path in [domain_path, root_path]:
@@ -47,6 +49,7 @@ def load_yaml_prompt(domain: str, filename: str) -> Dict[str, Any]:
 
 @lru_cache()
 def load_schema(filename: str) -> Dict[str, Any]:
+    """스키마 YAML 로드. lru_cache 적용 — 반환값 수정 금지."""
     file_path = os.path.join(BASE_DIR, "schemas", f"{filename}.yaml")
     try:
         with open(file_path, "r", encoding="utf-8") as f:
