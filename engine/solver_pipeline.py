@@ -802,7 +802,7 @@ class SolverPipeline(BaseSolverPipeline):
         )
 
     def _prepare_sp_columns(
-        self, math_model, bound_data, project_id, ctx: PipelineContext = None,
+        self, math_model, bound_data, project_id, ctx: PipelineContext = None, **kwargs,
     ):
         """Column generation + Balance cap + SP problem 구축 (solver-agnostic).
 
@@ -1178,7 +1178,7 @@ class SolverPipeline(BaseSolverPipeline):
         from engine.compiler.sp_problem import build_sp_problem
 
         sp_problem, all_columns, params, all_task_ids, objective_type = \
-            self._prepare_sp_columns(math_model, bound_data, project_id, ctx=ctx)
+            self._prepare_sp_columns(math_model, bound_data, project_id, ctx=ctx, **kwargs)
 
         if sp_problem is None:
             from engine.compiler.base import CompileResult
