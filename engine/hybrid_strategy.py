@@ -184,14 +184,27 @@ def compute_time_budget(
 ) -> Dict[str, int]:
     """CQM/CP-SAT 시간 배분 계산.
 
+    CQM 시간은 DB solver 설정값을 참조 (단일 진실 공급원).
+    CP-SAT 시간 = 총 시간 - CQM 시간 - 경과 시간.
+
     Returns:
         {"cqm": int, "cpsat": int, "viable": bool}
     """
+    # CQM 시간: DB solver 설정값 참조 (하드코딩/비율 방식 제거)
+    from engine.solver_registry import get_solver_time_limit
+    try:
+        from core.database import SessionLocal
+        _db = SessionLocal()
+        try:
+            cqm_config_time = get_solver_time_limit("dwave_hybrid_cqm", _db)
+        finally:
+            _db.close()
+    except Exception:
+        cqm_config_time = config.cqm_min_time_sec  # fallback
+
     remaining = total_time_sec - elapsed_sec
-    cqm_time = max(
-        config.cqm_min_time_sec,
-        int(remaining * config.cqm_time_fraction)
-    )
+    cqm_time = min(cqm_config_time, int(remaining))
+    cqm_time = max(cqm_time, config.cqm_min_time_sec)  # 최소 보장
     cpsat_time = int(remaining - cqm_time)
 
     viable = cpsat_time >= config.cpsat_min_time_sec
