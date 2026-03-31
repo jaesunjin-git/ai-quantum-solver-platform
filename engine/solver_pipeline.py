@@ -3,11 +3,19 @@ import os
 # engine/solver_pipeline.py
 # ============================================================
 # Solver Pipeline: 수학 모델 IR -> 컴파일 -> 실행 -> 결과 통합
+#
+# 구조:
+#   BaseSolverPipeline (ABC) — problem type 무관 공통 흐름
+#     └── SolverPipeline    — crew scheduling (SP/IR + Hybrid)
+#
+# Material Science 등 새 problem type은 BaseSolverPipeline을 상속하여
+# _compile()과 _convert_result()만 구현하면 됨.
 # ============================================================
 
 
 import logging
 import time
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -60,16 +68,60 @@ class PipelineContext:
 # ============================================================
 # Pipeline Runner
 # ============================================================
-class SolverPipeline:
+# Base Pipeline (problem type 무관)
+# ============================================================
+class BaseSolverPipeline(ABC):
+    """problem type에 무관한 solver 파이프라인 기반 클래스.
+
+    공통 흐름:
+      1. _bind_data()      — 데이터 바인딩 (공통)
+      2. _compile()        — 모델 컴파일 (problem type별 구현)
+      3. Gate 3 + Stage 5  — 검증 (공통)
+      4. Execute           — solver 실행 (공통)
+      5. _convert_result() — 결과 변환 (problem type별 구현)
+      6. Post-process      — 저장/로깅 (공통)
+
+    새 problem type 추가 시:
+      BaseSolverPipeline을 상속하고 _compile(), _convert_result()만 구현.
+      See docs/adding_new_problem_type.md
     """
-    수학 모델 IR을 선택된 솔버로 컴파일하고 실행하는 파이프라인.
+
+    def _bind_data(self, math_model: Dict, project_id: str, solver_id: str = "") -> tuple:
+        """데이터 바인딩. 성공 시 (bound_data, None), 실패 시 (None, PipelineResult)."""
+        try:
+            binder = DataBinder(project_id)
+            bound_data = binder.bind_all(math_model)
+            logger.info(
+                f"DataBinder: sets={list(bound_data['set_sizes'].items())}, "
+                f"params={len(bound_data['parameters'])}"
+            )
+            for pw in bound_data.get("parameter_warnings", []):
+                logger.warning(f"ParamValidation: {pw}")
+            return bound_data, None
+        except Exception as e:
+            logger.error(f"DataBinding failed: {e}", exc_info=True)
+            return None, PipelineResult(
+                success=False, phase="bind", solver_id=solver_id,
+                error=f"Data binding failed: {str(e)}"
+            )
+
+
+# ============================================================
+# Crew Scheduling Pipeline (SP + IR + Hybrid)
+# ============================================================
+class SolverPipeline(BaseSolverPipeline):
+    """
+    crew scheduling용 solver 파이프라인.
+
+    SP 경로: Column Generation → Set Partitioning → solver
+    IR 경로: 수학모델 IR → compiler → solver
+    Hybrid: CQM → CP-SAT warm start
 
     GR-1: engine은 domain을 직접 import하지 않음.
     도메인별 generator/converter는 외부에서 주입.
 
     Usage:
         pipeline = SolverPipeline()
-        # 도메인 adapter 주입 (agent/app 계층에서)
         pipeline.set_domain_adapter(
             generator_factory=lambda trips, params: CrewDutyGenerator(trips, CrewDutyConfig.from_params(params)),
             result_converter=convert_crew_result,
@@ -93,6 +145,8 @@ class SolverPipeline:
         if result_converter:
             self._sp_result_converter = result_converter
 
+    # ── Main entry point ───────────────────────────────────
+
     async def run(
         self,
         math_model: Dict,
@@ -107,23 +161,10 @@ class SolverPipeline:
         ctx = PipelineContext(project_id=project_id)
         logger.info(f"Pipeline: solver={solver_id}, project={project_id}")
 
-        #  Phase 1: Data Binding 
-        try:
-            binder = DataBinder(project_id)
-            bound_data = binder.bind_all(math_model)
-            logger.info(
-                f"DataBinder: sets={list(bound_data['set_sizes'].items())}, "
-                f"params={len(bound_data['parameters'])}"
-            )
-            # F8: log parameter warnings from validation
-            for pw in bound_data.get("parameter_warnings", []):
-                logger.warning(f"ParamValidation: {pw}")
-        except Exception as e:
-            logger.error(f"DataBinding failed: {e}", exc_info=True)
-            return PipelineResult(
-                success=False, phase="bind", solver_id=solver_id,
-                error=f"Data binding failed: {str(e)}"
-            )
+        #  Phase 1: Data Binding
+        bound_data, bind_error = self._bind_data(math_model, project_id, solver_id)
+        if bind_error:
+            return bind_error
 
         #  Phase 2: Compile
         try:
@@ -567,15 +608,10 @@ class SolverPipeline:
 
         logger.info(f"Hybrid pipeline: project={project_id}, mode={config.mode}")
 
-        # ── Phase 1: Data Binding ──
-        try:
-            binder = DataBinder(project_id)
-            bound_data = binder.bind_all(math_model)
-        except Exception as e:
-            logger.error(f"DataBinding failed: {e}", exc_info=True)
-            return PipelineResult(
-                success=False, phase="bind", error=f"Data binding failed: {e}"
-            )
+        # ── Phase 1: Data Binding (공통 메서드 재사용) ──
+        bound_data, bind_error = self._bind_data(math_model, project_id)
+        if bind_error:
+            return bind_error
 
         # ── Phase 2: Column Generation + SP Problem (공유) ──
         sp_problem, all_columns, params, all_task_ids, objective_type = \
