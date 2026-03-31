@@ -338,3 +338,55 @@ async def list_jobs(
         query = query.filter(JobDB.status.in_(status_list))
     jobs = query.order_by(JobDB.created_at.desc()).limit(20).all()
     return [_job_to_response(j, include_result=True) for j in jobs]
+
+
+@router.get("/recent-completions", response_model=list)
+async def recent_completions(
+    since_minutes: int = 5,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """현재 사용자의 최근 완료 job 목록 (멀티 프로젝트 알림용).
+    since_minutes 이내에 완료된 job만 반환."""
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=since_minutes)
+
+    # 사용자의 프로젝트 ID 목록
+    user_projects = db.query(ProjectDB.id).filter(
+        ProjectDB.owner == current_user.username
+    ).all()
+    project_ids = [p.id for p in user_projects]
+
+    if not project_ids:
+        return []
+
+    jobs = (
+        db.query(JobDB)
+        .filter(
+            JobDB.project_id.in_(project_ids),
+            JobDB.status.in_(["COMPLETE", "FAILED"]),
+            JobDB.completed_at >= cutoff,
+        )
+        .order_by(JobDB.completed_at.desc())
+        .limit(10)
+        .all()
+    )
+
+    # 프로젝트 이름 조회
+    project_names = {}
+    if jobs:
+        pids = list(set(j.project_id for j in jobs))
+        projects = db.query(ProjectDB).filter(ProjectDB.id.in_(pids)).all()
+        project_names = {p.id: p.title for p in projects}
+
+    return [
+        {
+            "job_id": j.id,
+            "project_id": j.project_id,
+            "project_name": project_names.get(j.project_id, f"Project {j.project_id}"),
+            "solver_id": j.solver_id,
+            "solver_name": j.solver_name,
+            "status": j.status,
+            "completed_at": str(j.completed_at) if j.completed_at else None,
+        }
+        for j in jobs
+    ]
