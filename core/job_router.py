@@ -327,15 +327,14 @@ async def cancel_job(
 @router.get("", response_model=list[JobStatusResponse])
 async def list_jobs(
     project_id: int,
+    status: Optional[str] = None,
     current_user: UserDB = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """프로젝트별 Job 목록."""
-    jobs = (
-        db.query(JobDB)
-        .filter(JobDB.project_id == project_id)
-        .order_by(JobDB.created_at.desc())
-        .limit(20)
-        .all()
-    )
-    return [_job_to_response(j) for j in jobs]
+    """프로젝트별 Job 목록. status 필터 가능 (쉼표 구분: RUNNING,PENDING)."""
+    query = db.query(JobDB).filter(JobDB.project_id == project_id)
+    if status:
+        status_list = [s.strip().upper() for s in status.split(",")]
+        query = query.filter(JobDB.status.in_(status_list))
+    jobs = query.order_by(JobDB.created_at.desc()).limit(20).all()
+    return [_job_to_response(j, include_result=True) for j in jobs]

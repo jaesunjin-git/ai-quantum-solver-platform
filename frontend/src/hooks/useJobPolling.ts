@@ -25,6 +25,7 @@ export interface JobPollState {
 
 interface UseJobPollingReturn extends JobPollState {
   submitJob: (projectId: string, solverId: string, solverName: string, compareGroupId?: string, strategy?: string, timeLimitOverride?: number) => Promise<number | null>;
+  resumeJob: (jobId: number) => void;
   cancelJob: () => Promise<void>;
   reset: () => void;
 }
@@ -230,5 +231,12 @@ export function useJobPolling(
     setState(INITIAL_STATE);
   }, [stopPolling]);
 
-  return { ...state, submitJob, cancelJob, reset };
+  // resumeJob: 기존 실행 중 job에 폴링 재시작 (프로젝트 재진입 시)
+  const resumeJob = useCallback((jobId: number) => {
+    jobIdRef.current = jobId;
+    setState(prev => ({ ...prev, status: 'executing', jobId }));
+    startPolling(jobId);
+  }, [startPolling]);
+
+  return { ...state, submitJob, cancelJob, reset, resumeJob };
 }

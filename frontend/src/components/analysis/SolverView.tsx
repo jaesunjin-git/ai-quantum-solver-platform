@@ -85,6 +85,39 @@ export function SolverView({
   const [timeLimitOverride, setTimeLimitOverride] = useState<string>(''); // 런타임 시간 오버라이드
   const [selectedStrategyType, setSelectedStrategyType] = useState<string>('');
 
+  // ── 프로젝트 진입 시: 실행 중 job 자동 감지 + 폴링 재시작 ──
+  useEffect(() => {
+    if (!projectId || jobPoll.status === 'executing') return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        // RUNNING/PENDING job 조회
+        const res = await authFetch(`/api/jobs?project_id=${projectId}&status=RUNNING,PENDING`);
+        if (!res.ok || cancelled) return;
+        const jobs = await res.json();
+
+        if (!cancelled && jobs.length > 0) {
+          // 실행 중 job 발견 → 자동 폴링 재시작
+          const latestJob = jobs[0];
+          jobPoll.resumeJob(latestJob.job_id);
+          return;
+        }
+
+        // 실행 중 job 없음 → 최근 완료 job 결과 확인 (이전에 못 본 결과)
+        const resComplete = await authFetch(`/api/jobs?project_id=${projectId}&status=COMPLETE`);
+        if (resComplete.ok && !cancelled) {
+          const completeJobs = await resComplete.json();
+          if (completeJobs.length > 0 && completeJobs[0].result) {
+            onResultReady?.(completeJobs[0].result);
+          }
+        }
+      } catch { /* silent */ }
+    })();
+
+    return () => { cancelled = true; };
+  }, [projectId]);
+
   // Compare mode state
   const [compareState, compareDispatch] = useReducer(compareReducer, { jobs: {}, groupId: null });
   const compareIntervalsRef = useRef<Map<number, ReturnType<typeof setInterval>>>(new Map());
