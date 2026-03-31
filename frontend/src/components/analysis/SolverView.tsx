@@ -391,18 +391,19 @@ export function SolverView({
   // 전략별 시간 계산 (추천 전략 fallback 포함)
   const effectiveStrategyForTime = selectedStrategyType || data.recommended_strategy?.strategy_type || '';
   const isHybridStrategy = effectiveStrategyForTime === 'quantum_warmstart';
-  const CQM_FIXED_TIME = 120; // D-Wave CQM 고정 시간 (초)
-  const cpSatSolver = solvers.find(s => s.category?.startsWith('classical'));
-  const cqmSolver = solvers.find(s => s.solver_id === 'dwave_hybrid_cqm');
+  const cpSatSolver = solvers.find((s: any) => s.category?.startsWith('classical'));
+  const cqmSolver = solvers.find((s: any) => s.solver_id === 'dwave_hybrid_cqm');
 
   let timeLimitSec: number | null;
   let timeDisplayInfo: { total: number; cqm?: number; cpsat?: number } | null = null;
 
   if (isHybridStrategy && cpSatSolver && cqmSolver) {
+    // Hybrid: CQM(DB) + CP-SAT(DB) 합산
+    const cqmTime = cqmSolver.time_limit_sec || 120;
     const cpSatTime = cpSatSolver.time_limit_sec || 900;
-    const totalTime = CQM_FIXED_TIME + cpSatTime;
+    const totalTime = cqmTime + cpSatTime;
     timeLimitSec = totalTime;
-    timeDisplayInfo = { total: totalTime, cqm: CQM_FIXED_TIME, cpsat: cpSatTime };
+    timeDisplayInfo = { total: totalTime, cqm: cqmTime, cpsat: cpSatTime };
   } else {
     timeLimitSec = selectedSolverData?.time_limit_sec || null;
   }
