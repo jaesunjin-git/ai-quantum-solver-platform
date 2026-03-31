@@ -968,6 +968,19 @@ def recommend_solvers(
     # v2.0: 문제 규모 기반 동적 가중치 조정
     weights = _get_dynamic_weights(priority, profile)
 
+    # 실행 경로 보정 점수 (configs/pre_decision/scoring.yaml)
+    _path_scoring = {}
+    try:
+        import yaml as _yaml
+        _ps_path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                                "configs", "pre_decision", "scoring.yaml")
+        if os.path.exists(_ps_path):
+            with open(_ps_path, "r", encoding="utf-8") as _f:
+                _ps_data = _yaml.safe_load(_f) or {}
+            _path_scoring = _ps_data.get("path_scoring", {})
+    except Exception:
+        pass
+
     scored = []
     for solver in solvers:
         result = score_solver(solver, profile)
@@ -977,6 +990,23 @@ def recommend_solvers(
             result["scores"][k] * weights.get(k, 0)
             for k in result["scores"]
         )
+
+        # 실행 경로(SP/IR) 보정: SP가 가능한 problem_type에서 IR을 타는 solver에 패널티
+        from engine.compiler.compiler_registry import supports_set_partitioning, _COLUMN_GEN_PROBLEM_TYPES
+        from engine.config_loader import _resolve_problem_type
+        _solver_id = solver.get("id", "")
+        _domain = profile.get("domain")
+        _pt = _resolve_problem_type(_domain)
+        _use_sp = supports_set_partitioning(_solver_id, _pt)
+
+        if _pt in _COLUMN_GEN_PROBLEM_TYPES:
+            if _use_sp:
+                total += _path_scoring.get("sp_bonus", 10)
+                result["reasons"].append(f"SP 경로 보너스 (+{_path_scoring.get('sp_bonus', 10)})")
+            else:
+                penalty = _path_scoring.get("ir_penalty_when_sp_available", 15)
+                total -= penalty
+                result["reasons"].append(f"IR 경로 패널티 (-{penalty}): SP 가능 problem type에서 IR 사용")
 
         scored.append({
             "solver_id": solver.get("id", ""),

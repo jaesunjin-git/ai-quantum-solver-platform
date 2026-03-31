@@ -404,8 +404,8 @@ class TestRecommendSolversV2:
         weights = _get_dynamic_weights("accuracy", profile)
         assert weights == DEFAULT_WEIGHTS["accuracy"]
 
-    def test_nl_ranks_high_for_scheduling_permutation(self):
-        """scheduling + permutation 문제에서 NL이 상위 추천"""
+    def test_nl_path_penalty_for_crew_scheduling(self):
+        """crew scheduling에서 NL은 IR 경로 패널티로 SP solver보다 낮은 순위"""
         from engine.solver_registry import recommend_solvers
         model = _make_math_model(
             problem_name="crew_scheduling_permutation",
@@ -426,11 +426,20 @@ class TestRecommendSolversV2:
             ],
             metadata={"estimated_variable_count": 5000, "estimated_constraint_count": 200},
         )
+        model["domain"] = "railway"  # crew_scheduling problem type
         result = recommend_solvers(model)
         recs = result["recommendations"]
-        # NL should be in top 3
-        top3_ids = [r["solver_id"] for r in recs[:3]]
-        assert "dwave_nl" in top3_ids, f"NL not in top 3: {top3_ids}"
+
+        # SP 가능 solver (classical_cpu, CQM)가 NL보다 높은 순위
+        nl_rec = next((r for r in recs if r["solver_id"] == "dwave_nl"), None)
+        cpsat_rec = next((r for r in recs if r["solver_id"] == "classical_cpu"), None)
+        if nl_rec and cpsat_rec:
+            assert cpsat_rec["total_score"] > nl_rec["total_score"], \
+                f"CP-SAT ({cpsat_rec['total_score']}) should rank higher than NL ({nl_rec['total_score']}) for crew scheduling"
+        # NL에 IR 패널티 reason이 포함되어 있는지
+        if nl_rec:
+            reasons = " ".join(nl_rec.get("reasons", []))
+            assert "IR" in reasons or "패널티" in reasons, f"NL should have IR penalty reason: {nl_rec.get('reasons', [])}"
 
 
 # ============================================================

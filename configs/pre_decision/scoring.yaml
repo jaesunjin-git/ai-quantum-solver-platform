@@ -1,0 +1,18 @@
+# ============================================================
+# Pre-Decision Scoring Configuration
+# ============================================================
+# solver 추천 시 실행 경로(SP/IR)에 따른 점수 보정.
+#
+# 핵심 구분:
+#   - IR 경로 자체가 나쁜 것이 아님
+#   - SP 경로가 있는 problem_type에서 굳이 IR로 가는 것이 비효율
+#   - SP 경로가 없는 problem_type (material_optimization)에서는 패널티 없음
+# ============================================================
+
+path_scoring:
+  # SP 경로를 탈 수 있는 solver에 보너스
+  sp_bonus: 10
+
+  # SP 경로가 존재하는 problem_type에서 IR로 가는 solver에 패널티
+  # (Column Gen 사전 검증, overlap 구조적 보장, 변수 수 감소 등의 이점을 놓치므로)
+  ir_penalty_when_sp_available: 15
