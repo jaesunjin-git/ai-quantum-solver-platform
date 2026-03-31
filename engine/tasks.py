@@ -82,6 +82,11 @@ def _run_solver_sync(
 
         math_model = state.math_model
 
+        # solver_name: SolverRegistry가 단일 진실 공급원
+        # 프론트엔드에서 전달받은 solver_name은 무시하고 registry에서 resolve
+        from engine.solver_registry import SolverRegistry
+        solver_name = SolverRegistry.resolve_display_name(solver_id) or solver_name
+
         # time_limit 조회: 런타임 오버라이드 > DB 설정 > YAML 기본값
         if time_limit_override and time_limit_override > 0:
             time_limit = time_limit_override
@@ -142,7 +147,7 @@ def _run_solver_sync(
                 coro = pipeline.run_hybrid(
                     math_model=math_model,
                     project_id=str(project_id),
-                    solver_name=solver_name or "Hybrid (CQM → CP-SAT)",
+                    solver_name=solver_name,
                     time_limit_sec=time_limit,
                     reuse_pool=reuse_pool,
                 )
