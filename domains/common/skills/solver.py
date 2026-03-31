@@ -227,12 +227,49 @@ async def skill_show_solver(session: CrewSession, project_id: str, message: str,
 
 async def skill_show_opt_result(session: CrewSession, project_id: str, message: str, params: Dict
 ) -> Dict:
+    import logging as _logging
+    _logger = _logging.getLogger(__name__)
+
     state = session.state
-    if state.last_optimization_result:
+    result = state.last_optimization_result
+    _logger.info(f"skill_show_opt_result: project={project_id}, session_has_result={result is not None}")
+
+    # 세션에 결과 없으면 최근 완료 Job에서 복원 (페이지 리프레시 등으로 유실 방어)
+    if not result:
+        try:
+            from core.database import SessionLocal
+            from core.models import JobDB
+            _db = SessionLocal()
+            try:
+                pid = int(project_id) if str(project_id).isdigit() else 0
+                job = (
+                    _db.query(JobDB)
+                    .filter(JobDB.project_id == pid, JobDB.status == "COMPLETE")
+                    .order_by(JobDB.completed_at.desc())
+                    .first()
+                )
+                _logger.info(f"skill_show_opt_result: Job DB fallback, job={job.id if job else None}, has_result={bool(job and job.result_json)}")
+                if job and job.result_json:
+                    import json
+                    job_result = json.loads(job.result_json) if isinstance(job.result_json, str) else job.result_json
+                    result = job_result.get("summary") or job_result
+                    # 세션에도 복원
+                    state.last_optimization_result = result
+                    state.optimization_done = True
+                    _logger.info(f"skill_show_opt_result: restored from Job {job.id}, keys={list(result.keys())[:5]}")
+            finally:
+                _db.close()
+        except Exception as e:
+            _logger.warning(f"skill_show_opt_result: Job DB fallback failed: {e}")
+
+    if result:
+        # 프론트엔드는 top-level에 status, objective_value 등이 있어야 함
+        # (SolverView.onResultReady가 ...result.summary로 spread하는 것과 동일 구조)
+        result_data = {"view_mode": "result", **result}
         return {
             "type": "analysis",
             "text": "📈 **이전 최적화 결과입니다.**",
-            "data": {"view_mode": "result", "result": state.last_optimization_result},
+            "data": result_data,
             "options": [
                 {"label": "📥 다운로드", "action": "download"},
                 {"label": "🔄 다시 실행", "action": "send", "message": "최적화 다시 실행해줘"},
