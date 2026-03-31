@@ -1264,8 +1264,8 @@ def run(math_model: Dict,
             return False
 
         if not _has_var(lhs) and not _has_var(rhs):
-            # template model: lhs/rhs가 없지만 expression에 변수 참조가 있으면 스킵
-            expr = con.get("expression", "")
+            # template model: lhs/rhs가 없지만 expression/expression_template에 변수 참조가 있으면 스킵
+            expr = con.get("expression", "") or con.get("expression_template", "")
             if expr and _var_ids and any(vid in expr for vid in _var_ids if vid):
                 continue
             warnings.append(
