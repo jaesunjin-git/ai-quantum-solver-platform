@@ -20,6 +20,7 @@ export function useJobNotifier(
   authFetch: (url: string, init?: RequestInit) => Promise<Response>,
   currentProjectId?: string,
   pollIntervalMs: number = 15000,
+  enabled: boolean = true,
 ) {
   const [notifications, setNotifications] = useState<JobNotification[]>([]);
   const seenJobIds = useRef<Set<number>>(new Set());
@@ -45,14 +46,18 @@ export function useJobNotifier(
     } catch { /* silent */ }
   }, [authFetch, currentProjectId]);
 
-  // 주기적 폴링
+  // 주기적 폴링 (인증 + enabled일 때만)
   useEffect(() => {
+    if (!enabled) {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      return;
+    }
     checkCompletions(); // 즉시 1회
     intervalRef.current = setInterval(checkCompletions, pollIntervalMs);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [checkCompletions, pollIntervalMs]);
+  }, [checkCompletions, pollIntervalMs, enabled]);
 
   // 알림 제거
   const dismissNotification = useCallback((jobId: number) => {

@@ -19,6 +19,8 @@ const App: React.FC = () => {
   const jobNotifier = useJobNotifier(
     authFetch,
     currentProject?.id?.toString(),
+    15000,
+    isAuthenticated,
   );
 
   // 로그아웃 시 settings 닫기
