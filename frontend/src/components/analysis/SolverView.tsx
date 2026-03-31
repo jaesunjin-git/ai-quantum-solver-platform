@@ -185,8 +185,9 @@ export function SolverView({
     const solver = solvers[selectedSolver];
     if (!solver || !projectId) return;
     setInfeasibilityInfo(null);
-    // 선택된 전략 사용 (없으면 인자로 전달된 strategy 사용)
-    const effectiveStrategy = strategy || selectedStrategyType || undefined;
+    // 선택된 전략 사용. 미선택 시 추천 전략 fallback (UI에서 추천이 기본 선택으로 보이므로)
+    const recommendedType = data.recommended_strategy?.strategy_type;
+    const effectiveStrategy = strategy || selectedStrategyType || recommendedType || undefined;
     // 전략에 따른 표시 이름 결정
     const relatedStrategies = data.execution_strategies?.filter((st: any) => {
       if (st.strategy_type === 'parallel_comparison') return false;
@@ -387,8 +388,9 @@ export function SolverView({
   const selectedSolverData = solvers[selectedSolver];
   const estimatedTime = selectedSolverData?.estimated_time;
 
-  // 전략별 시간 계산
-  const isHybridStrategy = selectedStrategyType === 'quantum_warmstart';
+  // 전략별 시간 계산 (추천 전략 fallback 포함)
+  const effectiveStrategyForTime = selectedStrategyType || data.recommended_strategy?.strategy_type || '';
+  const isHybridStrategy = effectiveStrategyForTime === 'quantum_warmstart';
   const CQM_FIXED_TIME = 120; // D-Wave CQM 고정 시간 (초)
   const cpSatSolver = solvers.find(s => s.category?.startsWith('classical'));
   const cqmSolver = solvers.find(s => s.solver_id === 'dwave_hybrid_cqm');
