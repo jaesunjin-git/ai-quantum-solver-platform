@@ -82,6 +82,7 @@ export function SolverView({
   const [compileInfo, setCompileInfo] = useState<any>(null);
   const [infeasibilityInfo, setInfeasibilityInfo] = useState<any>(null);
   const [selectedStrategyId, setSelectedStrategyId] = useState<string>('');
+  const [timeLimitOverride, setTimeLimitOverride] = useState<string>(''); // 런타임 시간 오버라이드
   const [selectedStrategyType, setSelectedStrategyType] = useState<string>('');
 
   // Compare mode state
@@ -168,14 +169,16 @@ export function SolverView({
     const displayName = matchedStrategy?.name
       || (effectiveStrategy === 'quantum_warmstart' ? 'CQM → CP-SAT Hybrid' : `${solver.provider} ${solver.solver_name}`.trim());
 
+    const timeOverride = timeLimitOverride ? parseInt(timeLimitOverride) : undefined;
     await jobPoll.submitJob(
       projectId,
       solver.solver_id,
       displayName,
       undefined,
       effectiveStrategy,
+      timeOverride,
     );
-  }, [selectedSolver, solvers, projectId, jobPoll, selectedStrategyType, selectedStrategyId, data.execution_strategies]);
+  }, [selectedSolver, solvers, projectId, jobPoll, selectedStrategyType, selectedStrategyId, data.execution_strategies, timeLimitOverride]);
 
   const handleStepRun = useCallback(async () => {
     if (stepPhase === 'select') {
@@ -541,14 +544,22 @@ export function SolverView({
                     <span className="text-cyan-400 font-medium">{selectedSolverData?.solver_name || '-'}</span>
                     {stratLabel && <span className="text-slate-500"> › {stratLabel}</span>}
                   </span>
-                  <span>
-                    {timeDisplayInfo ? (
-                      `총 ${timeDisplayInfo.total}초 (CQM: ${timeDisplayInfo.cqm}초 고정 / CP-SAT: ${timeDisplayInfo.cpsat}초)`
-                    ) : (
-                      timeLimitSec ? `최대 ${timeLimitSec}초` : ''
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      placeholder={String(timeLimitSec || 900)}
+                      value={timeLimitOverride}
+                      onChange={(e) => { if (e.target.value === '' || /^\d+$/.test(e.target.value)) setTimeLimitOverride(e.target.value); }}
+                      className="w-16 px-1.5 py-0.5 text-[11px] bg-slate-800 border border-slate-700 rounded text-white text-center font-mono focus:outline-none focus:border-cyan-500"
+                    />
+                    <span className="text-slate-500">초</span>
+                    {timeDisplayInfo && (
+                      <span className="text-slate-600 text-[10px]">
+                        (CQM: {timeDisplayInfo.cqm}초 고정 / CP-SAT: {(parseInt(timeLimitOverride) || timeDisplayInfo.total) - timeDisplayInfo.cqm}초)
+                      </span>
                     )}
-                    {!timeDisplayInfo && estimatedTime ? ` (예상 ${Array.isArray(estimatedTime) ? `${estimatedTime[0]}~${estimatedTime[1]}` : estimatedTime}초)` : ''}
-                  </span>
+                  </div>
                 </div>
               );
             })()}

@@ -35,6 +35,7 @@ class JobSubmitRequest(BaseModel):
     solver_name: str = ""
     compare_group_id: Optional[str] = None
     strategy: str = "single"  # "single" | "quantum_warmstart"
+    time_limit_override: Optional[int] = None  # 런타임 시간 오버라이드 (DB 미반영)
 
 
 class CompareSubmitRequest(BaseModel):
@@ -157,10 +158,10 @@ async def submit_job(
 
         import threading
 
-        def _run_in_background(jid, pid, sid, sname, strategy="single"):
+        def _run_in_background(jid, pid, sid, sname, strategy="single", time_limit_override=None):
             try:
                 from engine.tasks import _run_solver_sync
-                _run_solver_sync(jid, pid, sid, sname, strategy=strategy)
+                _run_solver_sync(jid, pid, sid, sname, strategy=strategy, time_limit_override=time_limit_override)
             except Exception as run_err:
                 logger.error(f"Background job {jid} failed: {run_err}")
                 from core.database import SessionLocal
@@ -181,7 +182,7 @@ async def submit_job(
 
         t = threading.Thread(
             target=_run_in_background,
-            args=(job.id, body.project_id, body.solver_id, body.solver_name, body.strategy),
+            args=(job.id, body.project_id, body.solver_id, body.solver_name, body.strategy, body.time_limit_override),
             daemon=True,
         )
         t.start()

@@ -49,6 +49,7 @@ def _run_solver_sync(
     solver_name: str,
     strategy: str = "single",
     reuse_pool: bool = True,
+    time_limit_override: int = None,
 ) -> dict:
     """동기 솔버 실행 (Celery 태스크 또는 fallback에서 호출)."""
     from core.database import SessionLocal
@@ -81,9 +82,13 @@ def _run_solver_sync(
 
         math_model = state.math_model
 
-        # time_limit 조회
-        from engine.solver_registry import get_solver_time_limit
-        time_limit = get_solver_time_limit(solver_id, db)
+        # time_limit 조회: 런타임 오버라이드 > DB 설정 > YAML 기본값
+        if time_limit_override and time_limit_override > 0:
+            time_limit = time_limit_override
+            logger.info(f"Time limit override: {time_limit}s (runtime)")
+        else:
+            from engine.solver_registry import get_solver_time_limit
+            time_limit = get_solver_time_limit(solver_id, db)
 
         # 컴파일 시작 progress
         _update_job_progress(db, job_id, "모델 컴파일 중", 20)
