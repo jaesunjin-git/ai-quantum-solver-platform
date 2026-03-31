@@ -84,6 +84,27 @@ export function SolverView({
   const [selectedStrategyId, setSelectedStrategyId] = useState<string>('');
   const [timeLimitOverride, setTimeLimitOverride] = useState<string>(''); // 런타임 시간 오버라이드
   const [selectedStrategyType, setSelectedStrategyType] = useState<string>('');
+  const [solverTimeLimits, setSolverTimeLimits] = useState<Record<string, number>>({});
+
+  // ── solver settings에서 현재 time_limit 실시간 조회 ──
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await authFetch('/api/settings/solvers');
+        if (!res.ok) return;
+        const settings = await res.json();
+        const limits: Record<string, number> = {};
+        settings.forEach((s: any) => {
+          if (s.time_limit_sec != null) {
+            limits[s.solver_id] = s.time_limit_sec;
+          } else if (s.time_limit_default != null) {
+            limits[s.solver_id] = s.time_limit_default;
+          }
+        });
+        setSolverTimeLimits(limits);
+      } catch { /* silent */ }
+    })();
+  }, [authFetch]);
 
   // ── 프로젝트 진입 시: 실행 중 job 자동 감지 + 폴링 재시작 ──
   useEffect(() => {
@@ -398,14 +419,16 @@ export function SolverView({
   let timeDisplayInfo: { total: number; cqm?: number; cpsat?: number } | null = null;
 
   if (isHybridStrategy && cpSatSolver && cqmSolver) {
-    // Hybrid: CQM(DB) + CP-SAT(DB) 합산
-    const cqmTime = cqmSolver.time_limit_sec || 120;
-    const cpSatTime = cpSatSolver.time_limit_sec || 900;
+    // Hybrid: CQM(설정) + CP-SAT(설정) 합산 — 실시간 settings에서 조회
+    const cqmTime = solverTimeLimits['dwave_hybrid_cqm'] || cqmSolver.time_limit_sec || 120;
+    const cpSatTime = solverTimeLimits['classical_cpu'] || cpSatSolver.time_limit_sec || 900;
     const totalTime = cqmTime + cpSatTime;
     timeLimitSec = totalTime;
     timeDisplayInfo = { total: totalTime, cqm: cqmTime, cpsat: cpSatTime };
   } else {
-    timeLimitSec = selectedSolverData?.time_limit_sec || null;
+    // 단일 solver: 실시간 settings 우선, pre-decision 캐시 fallback
+    const sid = selectedSolverData?.solver_id;
+    timeLimitSec = (sid && solverTimeLimits[sid]) || selectedSolverData?.time_limit_sec || null;
   }
 
   // Compare mode results for CompareResultsPanel
