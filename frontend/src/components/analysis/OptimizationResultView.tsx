@@ -113,15 +113,21 @@ export function OptimizationResultView({
         )}
 
         {/* Validation summary (오류/경고/안내) — 클릭 시 상세 펼치기 */}
+        {/* FEASIBLE/OPTIMAL 성공 시: validation 에러를 경고로 다운그레이드 (presolve 참고 정보) */}
         {data.validation && (data.validation.error_count > 0 || data.validation.warning_count > 0 || data.validation.info_count > 0) && (
           <div className="mb-2">
             <button
               onClick={() => setValidationExpanded(!validationExpanded)}
               className="flex items-center gap-2 text-[11px] w-full"
             >
-              {data.validation.error_count > 0 && (
+              {data.validation.error_count > 0 && !(status === 'FEASIBLE' || status === 'OPTIMAL') && (
                 <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-red-500/15 text-red-400">
                   <XCircle size={10} /> {data.validation.error_count} 오류
+                </span>
+              )}
+              {data.validation.error_count > 0 && (status === 'FEASIBLE' || status === 'OPTIMAL') && (
+                <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-slate-500/15 text-slate-400">
+                  <Info size={10} /> {data.validation.error_count} 참고 (presolve)
                 </span>
               )}
               {data.validation.warning_count > 0 && (
