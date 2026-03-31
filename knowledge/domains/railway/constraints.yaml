@@ -149,6 +149,9 @@ constraints:
     default_category: hard
     fixed_category: true
     constraint_class: hard_operational  # project-specific: override as needed
+    solver_auto_guarantee:
+      set_partitioning: true    # SP: each task covered exactly once (구조적)
+      assignment: false          # IR: 명시적 제약 필요
 
     linking: {group: structural, requires: [], conflicts_with: []}
     big_m_strategy: none
@@ -178,6 +181,9 @@ constraints:
     default_category: hard
     fixed_category: true
     constraint_class: hard_operational  # project-specific: override as needed
+    solver_auto_guarantee:
+      set_partitioning: true    # SP: z[k]=1이면 column의 trips 자동 포함
+      assignment: false
 
     linking: {group: structural, requires: [trip_coverage], conflicts_with: []}
     big_m_strategy: none
@@ -207,6 +213,9 @@ constraints:
     default_category: hard
     fixed_category: true
     constraint_class: hard_operational  # project-specific: override as needed
+    solver_auto_guarantee:
+      set_partitioning: true    # SP: column 선택 시 자동 보장
+      assignment: false
     linking: {group: structural, requires: [crew_activation_linking], conflicts_with: []}
     big_m_strategy: none
     detection_hints:
@@ -223,6 +232,9 @@ constraints:
     default_category: hard
     fixed_category: true
     constraint_class: hard_operational  # project-specific: override as needed
+    solver_auto_guarantee:
+      set_partitioning: true    # SP: column gen에서 feasible column만 생성 → overlap 불가
+      assignment: false          # IR: 명시적 제약 필요
 
     linking: {group: structural, requires: [], conflicts_with: []}
     big_m_strategy: none

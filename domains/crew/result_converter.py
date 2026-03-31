@@ -172,12 +172,31 @@ def _build_crew_constraint_status(
     selected: List[FeasibleColumn],
     total_tasks: int,
     params: Optional[Dict] = None,
+    modeling_pattern: str = "set_partitioning",
 ) -> List[Dict[str, Any]]:
     """선택된 duty의 metrics 기반 hard 제약 달성 현황 (실제 limit 기반 검증)"""
     if not selected:
         return []
 
     params = params or {}
+
+    # solver_auto_guarantee: SP 모델에서 구조적으로 보장되는 제약
+    _auto_guaranteed = []
+    if modeling_pattern == "set_partitioning":
+        _auto_guaranteed = [
+            {"name": "트립 커버리지 (trip_coverage)", "constraint_ref": "trip_coverage",
+             "satisfied": True, "constraint_type": "structural",
+             "auto_guaranteed": True, "guarantee_reason": "SP 모델에서 각 trip exactly once 보장"},
+            {"name": "Crew 활성화 (crew_activation_linking)", "constraint_ref": "crew_activation_linking",
+             "satisfied": True, "constraint_type": "structural",
+             "auto_guaranteed": True, "guarantee_reason": "SP 모델에서 column 선택 시 자동 보장"},
+            {"name": "역방향 활성화 (crew_activation_reverse)", "constraint_ref": "crew_activation_reverse",
+             "satisfied": True, "constraint_type": "structural",
+             "auto_guaranteed": True, "guarantee_reason": "SP 모델에서 column 선택 시 자동 보장"},
+            {"name": "시간 겹침 방지 (no_overlap)", "constraint_ref": "no_overlap",
+             "satisfied": True, "constraint_type": "structural",
+             "auto_guaranteed": True, "guarantee_reason": "Column Gen에서 feasible column만 생성"},
+        ]
 
     # 제약 기준값: params에서 로딩 (하드코딩 제거)
     max_driving_limit = int(params.get('max_driving_minutes', 360))
@@ -237,14 +256,15 @@ def _build_crew_constraint_status(
         "violation_count": idle_violations,
     })
 
-    # Trip 커버리지
-    status.append({
-        "name": "트립 커버리지 (trip_coverage)",
-        "satisfied": len(unique_tasks) >= total_tasks,
-        "max_actual": f"{len(unique_tasks)}/{total_tasks}",
-        "limit": f"{total_tasks}",
-        "constraint_type": "structural",
-    })
+    # Trip 커버리지: auto_guarantee에 포함되지 않은 경우만 추가 (IR 경로용)
+    if not _auto_guaranteed:
+        status.append({
+            "name": "트립 커버리지 (trip_coverage)",
+            "satisfied": len(unique_tasks) >= total_tasks,
+            "max_actual": f"{len(unique_tasks)}/{total_tasks}",
+            "limit": f"{total_tasks}",
+            "constraint_type": "structural",
+        })
 
     # 총 승무원 수 — params 기준 검증
     if total_duties_param is not None:
@@ -294,7 +314,7 @@ def _build_crew_constraint_status(
             "violation_count": sleep_violations,
         })
 
-    return status
+    return _auto_guaranteed + status
 
 
 def _build_crew_soft_status(

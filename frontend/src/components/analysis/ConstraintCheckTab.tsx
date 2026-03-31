@@ -66,7 +66,21 @@ export function ConstraintCheckTab({
 
       {/* 하드 제약별 상세 */}
       <div className="space-y-2">
-        {interpreted.constraint_status.map((cs, i) => {
+        {interpreted.constraint_status.map((cs: any, i: number) => {
+          // auto_guaranteed: 솔버가 구조적으로 보장하는 제약 (간결 표시)
+          if (cs.auto_guaranteed) {
+            return (
+              <div key={i} className="rounded-lg p-2.5 border bg-slate-800/30 border-slate-700/50 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <CheckCircle size={14} className="text-green-500/70" />
+                  <span className="text-[12px] text-slate-400">{cs.name}</span>
+                  <span className="text-[9px] text-green-600 bg-green-500/10 px-1.5 py-0.5 rounded">보장됨</span>
+                </div>
+                <span className="text-[10px] text-slate-600">{cs.guarantee_reason}</span>
+              </div>
+            );
+          }
+
           const isParametric = cs.constraint_type === 'parametric' || cs.constraint_type === undefined;
           const actualNum = parseFloat(cs.max_actual);
           const limitNum = parseFloat(cs.limit);
@@ -84,7 +98,7 @@ export function ConstraintCheckTab({
                     ? <CheckCircle size={16} className="text-green-400" />
                     : <XCircle size={16} className="text-red-400" />}
                   <span className="text-[13px] text-white font-medium">{cs.name}</span>
-                  {cs.constraint_type === 'structural' && (
+                  {cs.constraint_type === 'structural' && !cs.auto_guaranteed && (
                     <span className="text-[10px] text-slate-500 bg-slate-700 px-1.5 py-0.5 rounded">구조적</span>
                   )}
                 </div>
