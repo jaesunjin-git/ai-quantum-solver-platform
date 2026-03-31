@@ -349,8 +349,25 @@ export function SolverView({
   };
 
   const selectedSolverData = solvers[selectedSolver];
-  const timeLimitSec = selectedSolverData?.time_limit_sec || null;
   const estimatedTime = selectedSolverData?.estimated_time;
+
+  // 전략별 시간 계산
+  const isHybridStrategy = selectedStrategyType === 'quantum_warmstart';
+  const CQM_FIXED_TIME = 120; // D-Wave CQM 고정 시간 (초)
+  const cpSatSolver = solvers.find(s => s.category?.startsWith('classical'));
+  const cqmSolver = solvers.find(s => s.solver_id === 'dwave_hybrid_cqm');
+
+  let timeLimitSec: number | null;
+  let timeDisplayInfo: { total: number; cqm?: number; cpsat?: number } | null = null;
+
+  if (isHybridStrategy && cpSatSolver && cqmSolver) {
+    const cpSatTime = cpSatSolver.time_limit_sec || 900;
+    const totalTime = CQM_FIXED_TIME + cpSatTime;
+    timeLimitSec = totalTime;
+    timeDisplayInfo = { total: totalTime, cqm: CQM_FIXED_TIME, cpsat: cpSatTime };
+  } else {
+    timeLimitSec = selectedSolverData?.time_limit_sec || null;
+  }
 
   // Compare mode results for CompareResultsPanel
   const compareResults: Record<number, any> = {};
@@ -524,7 +541,14 @@ export function SolverView({
                     <span className="text-cyan-400 font-medium">{selectedSolverData?.solver_name || '-'}</span>
                     {stratLabel && <span className="text-slate-500"> › {stratLabel}</span>}
                   </span>
-                  <span>{timeLimitSec ? `최대 ${timeLimitSec}초` : ''}{estimatedTime ? ` (예상 ${Array.isArray(estimatedTime) ? `${estimatedTime[0]}~${estimatedTime[1]}` : estimatedTime}초)` : ''}</span>
+                  <span>
+                    {timeDisplayInfo ? (
+                      `총 ${timeDisplayInfo.total}초 (CQM: ${timeDisplayInfo.cqm}초 고정 / CP-SAT: ${timeDisplayInfo.cpsat}초)`
+                    ) : (
+                      timeLimitSec ? `최대 ${timeLimitSec}초` : ''
+                    )}
+                    {!timeDisplayInfo && estimatedTime ? ` (예상 ${Array.isArray(estimatedTime) ? `${estimatedTime[0]}~${estimatedTime[1]}` : estimatedTime}초)` : ''}
+                  </span>
                 </div>
               );
             })()}
