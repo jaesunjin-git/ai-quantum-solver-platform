@@ -216,10 +216,11 @@ async def skill_show_solver(session: CrewSession, project_id: str, message: str,
     state = session.state
     if state.last_pre_decision_result:
         return build_solver_response(state, state.last_pre_decision_result)
+    # 데이터 없어도 target_tab 포함 — 프론트엔드에 이미 캐시된 솔버 뷰로 전환
     return {
         "type": "warning",
         "text": "⚠️ 솔버 추천 결과가 없습니다.",
-        "data": None,
+        "data": {"target_tab": "solver"},
         "options": [{"label": "⚡ 솔버 추천", "action": "send", "message": "솔버 추천해줘"}],
     }
 
@@ -237,9 +238,10 @@ async def skill_show_opt_result(session: CrewSession, project_id: str, message: 
                 {"label": "🔄 다시 실행", "action": "send", "message": "최적화 다시 실행해줘"},
             ],
         }
+    # 데이터 없어도 target_tab 포함 — 프론트엔드에 이미 캐시된 결과 뷰로 전환
     return {
         "type": "warning",
         "text": "⚠️ 아직 최적화가 실행되지 않아 표시할 결과가 없습니다.",
-        "data": None,
+        "data": {"target_tab": "result"},
         "options": [{"label": "🚀 최적화 실행", "action": "send", "message": "최적화 실행해줘"}],
     }

@@ -74,11 +74,29 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
     // ★ 항상 새 객체 참조 생성 — React useEffect dependency 갱신 보장
     // 백엔드가 같은 state 객체를 반환해도 프론트엔드에서 변경 감지 가능
     const freshData = data ? structuredClone(data) : data;
-    setAnalysisDataRaw(freshData);
+
     // Auto-extract validation from incoming data (any stage can include it)
     if (freshData?.validation) {
       setStageValidation(freshData.validation);
     }
+
+    // target_tab만 있고 view_mode 없는 경우: 캐시된 데이터로 탭 전환만 수행
+    if (freshData && !freshData.view_mode && freshData.target_tab) {
+      const tabToStep: Record<string, StepId> = {
+        analysis: 'analysis', problem_def: 'problem_def', normalization: 'normalization',
+        math_model: 'math_model', solver: 'solver', result: 'result',
+      };
+      const targetStep = tabToStep[freshData.target_tab];
+      if (targetStep && stepCache[targetStep]) {
+        // 캐시된 데이터가 있으면 해당 탭으로 전환
+        setAnalysisDataRaw(stepCache[targetStep]);
+        return;
+      }
+      // 캐시 없으면 현재 뷰 유지 (무의미한 전환 방지)
+      return;
+    }
+
+    setAnalysisDataRaw(freshData);
     if (freshData && freshData.view_mode) {
       const mapped = viewModeToStepId(freshData.view_mode);
       if (mapped) {
@@ -98,7 +116,7 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
         }
       }
     }
-  }, []);
+  }, [stepCache]);
 
   // Bulk restore: history의 모든 card_data를 처리하여 completedSteps + stepCache 복원
   const restoreFromHistory = useCallback((cardDataList: any[]) => {

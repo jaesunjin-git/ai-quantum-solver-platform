@@ -19,6 +19,17 @@
 
 # ── Column Generator ───────────────────────────────────────
 generator:
+  # 운영 제약 (사용자 params가 1순위, 여기는 2순위 기본값)
+  max_active_time: 360          # 최대 활동시간 (분)
+  avg_active_target: 300        # 목표 평균 활동시간
+  max_span_time: 660            # 최대 경과시간 (시작~종료)
+  max_idle_time: 300            # 최대 유휴시간
+  setup_time: 60                # 준비시간
+  teardown_time: 40             # 정리시간
+  min_pause_time: 30            # 최소 휴식시간
+  max_gap: 60                   # task 간 최대 연결 간격
+  max_tasks: 10                 # column당 최대 task 수
+
   # Beam Search
   beam_width: 50
   max_columns_target: 100000

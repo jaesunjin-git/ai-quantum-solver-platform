@@ -151,6 +151,17 @@ class CrewAgent:
                     {"event_type": event_type, "event_data": event_data or {}},
                 )
 
+            if event_type == "OPTIMIZATION_COMPLETE":
+                # 솔버 실행 완료 이벤트 — classifier/StageManager를 거치지 않음
+                from domains.common.skills.solver import skill_show_opt_result
+                result = await skill_show_opt_result(session, project_id, message, {})
+                if isinstance(result, dict):
+                    if result.get("data") is None:
+                        result["data"] = {}
+                    if isinstance(result.get("data"), dict):
+                        result["data"]["target_tab"] = "result"
+                return result
+
             # ── 1차: 키워드 빠른 우선분류 ──
             quick_intent = InputClassifier.quick_classify(message, has_file=has_file, current_tab=current_tab)
             _cur_stage = stage_mgr.current_stage(session.state)

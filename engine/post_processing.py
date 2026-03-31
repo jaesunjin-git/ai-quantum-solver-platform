@@ -92,14 +92,24 @@ def post_process_solve_result(
 
     # ── 2. SessionState 업데이트 ──
     try:
-        from core.platform.session import load_session_state, save_session_state
+        from core.platform.session import (
+            load_session_state, save_session_state, merge_background_update,
+        )
+        # LRU 캐시 먼저 갱신 (agent의 save_session_state가 stale 값으로 덮어쓰지 않도록)
+        cache_updates = {
+            "optimization_done": True,
+            "solver_selected": solver_name or solver_id,
+            "last_optimization_result": summary,
+        }
+        if run_result_id:
+            cache_updates["current_run_id"] = run_result_id
+        merge_background_update(str(project_id), **cache_updates)
+
+        # DB에도 저장 (캐시 miss 시 DB에서 복원할 수 있도록)
         state = load_session_state(str(project_id))
         if state:
-            state.optimization_done = True
-            state.solver_selected = solver_name or solver_id
-            state.last_optimization_result = summary
-            if run_result_id:
-                state.current_run_id = run_result_id
+            for k, v in cache_updates.items():
+                setattr(state, k, v)
             save_session_state(str(project_id), state)
             logger.info(f"SessionState updated: project={project_id}, solver={solver_name}")
     except Exception as e:

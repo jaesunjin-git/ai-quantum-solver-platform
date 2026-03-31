@@ -995,7 +995,7 @@ class SolverPipeline(BaseSolverPipeline):
                 day_cols = (day_protected + day_rest)[:max(day_cap, len(day_protected))]
 
                 # Step 3b: Night — subtype 다양성 보존
-                # overnight/morning_only는 새벽 trip의 유일한 커버 수단
+                # overnight은 새벽 trip의 유일한 커버 수단
                 # → night_cap 내에서 전량 확보, 나머지 슬롯을 night으로 채움
                 night_pure = sorted(
                     [c for c in night_all if c.column_type == ColumnType.NIGHT],
@@ -1005,13 +1005,9 @@ class SolverPipeline(BaseSolverPipeline):
                     [c for c in night_all if c.column_type == ColumnType.OVERNIGHT],
                     key=lambda c: c.cost
                 )
-                morning_sorted = sorted(
-                    [c for c in night_all if c.column_type == ColumnType.MORNING_ONLY],
-                    key=lambda c: c.cost
-                )
 
                 # subtype 전량 확보 (night_cap << 총량이므로 여유 충분)
-                reserved_count = len(overnight_sorted) + len(morning_sorted)
+                reserved_count = len(overnight_sorted)
                 remaining_night_cap = max(0, night_cap - reserved_count)
                 night_capped = night_pure[:remaining_night_cap]
 
@@ -1021,7 +1017,7 @@ class SolverPipeline(BaseSolverPipeline):
                     if c.id in protected_night_ids and c.id not in night_capped_ids:
                         night_capped.append(c)
 
-                night_cols = overnight_sorted + morning_sorted + night_capped
+                night_cols = overnight_sorted + night_capped
 
                 before_cap = len(all_columns)
                 all_columns = day_cols + night_cols
@@ -1048,11 +1044,10 @@ class SolverPipeline(BaseSolverPipeline):
                         logger.info(f"Balance cap: restored {restored} columns for lost tasks")
 
                 logger.info(
-                    f"Balance column cap: {before_cap} → {len(all_columns)} "
+                    f"Balance column cap: {before_cap} -> {len(all_columns)} "
                     f"(day={len(day_cols)}/{day_cap}, "
                     f"night_pure={len(night_capped)}, "
                     f"overnight={len(overnight_sorted)}, "
-                    f"morning_only={len(morning_sorted)}, "
                     f"night_total={len(night_cols)}/{night_cap}, "
                     f"cap_per_rhs={cap_per_rhs}, "
                     f"protected: day={len(protected_day_ids)}, night={len(protected_night_ids)})"

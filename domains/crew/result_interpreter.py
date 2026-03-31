@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from core.config import settings
 from engine.result_interpreter_base import (
     GenericResultInterpreter,
     get_interpreter,
@@ -60,7 +61,7 @@ class RailwayResultInterpreter(GenericResultInterpreter):
     domain-specific solution parsing and KPI logic in code.
     """
 
-    def __init__(self, domain: str = "railway"):
+    def __init__(self, domain: str = settings.DEFAULT_DOMAIN):
         super().__init__(domain)
 
     # ── Hard constraint post-solve check ──
@@ -236,7 +237,7 @@ class RailwayResultInterpreter(GenericResultInterpreter):
         # Midnight correction — policy-aware inverse display (snapshot 재사용)
         try:
             from engine.policy import PolicyEngine, PolicyResolutionContext, ResolvedPolicies, TimeAxisPolicy, OvernightPolicy
-            _domain = math_model.get("domain", "railway")
+            _domain = math_model.get("domain", settings.DEFAULT_DOMAIN)
             _pe = PolicyEngine(_domain)
             if _pe.has_policies():
                 # snapshot이 있으면 재사용 (single resolve 원칙)
@@ -556,7 +557,7 @@ def interpret_result(
     Backward-compatible entry point.
     Dispatches to domain-specific interpreter based on math_model.domain.
     """
-    domain = math_model.get("domain", "railway")
+    domain = math_model.get("domain", settings.DEFAULT_DOMAIN)
     interp = get_interpreter(domain)
     return interp.interpret(
         solution=solution,
@@ -576,7 +577,7 @@ def save_artifacts(
     solution: Dict[str, Any],
     interpreted: Dict[str, Any],
     solver_id: str,
-    domain: str = "railway",
+    domain: str = settings.DEFAULT_DOMAIN,
 ) -> Dict[str, str]:
     """
     Backward-compatible entry point for artifact saving.

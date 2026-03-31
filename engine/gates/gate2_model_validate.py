@@ -938,7 +938,8 @@ def run(math_model: Dict,
             if not _domain and confirmed_problem:
                 _domain = confirmed_problem.get("domain", "")
             if not _domain:
-                _domain = "railway"  # legacy fallback
+                from core.config import settings as _settings
+                _domain = _settings.DEFAULT_DOMAIN  # legacy fallback
             _ref_path = _os.path.join(_base, "knowledge", "domains", _domain, "reference_ranges.yaml")
             if _os.path.isfile(_ref_path):
                 with open(_ref_path, "r", encoding="utf-8") as _rf:
@@ -1292,7 +1293,8 @@ def run(math_model: Dict,
         if _cp_params:
             try:
                 from engine.policy.parameter_catalog import get_catalog
-                _domain = confirmed_problem.get("domain", "railway")
+                from core.config import settings as _settings
+                _domain = confirmed_problem.get("domain", _settings.DEFAULT_DOMAIN)
                 _catalog = get_catalog(_domain)
                 for _pid, _pval in _cp_params.items():
                     _value = _pval.get("value") if isinstance(_pval, dict) else _pval

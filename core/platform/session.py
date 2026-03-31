@@ -440,6 +440,20 @@ def _restore_history_from_db(project_id: str, session: CrewSession):
         logger.warning(f"[{project_id}] Failed to restore history: {e}")
 
 
+def merge_background_update(project_id: str, **updates):
+    """Background thread에서 변경된 필드를 LRU 캐시 세션에 반영.
+
+    Background job(tasks.py → post_processing.py)은 별도 스레드에서
+    DB만 업데이트하므로, LRU 캐시의 세션 객체는 갱신되지 않는다.
+    이 함수로 캐시도 동기화하여, 이후 채팅 요청에서 최신 상태를 반환.
+    """
+    cached = _sessions.get(project_id)
+    if cached is not None:
+        for key, value in updates.items():
+            setattr(cached.state, key, value)
+        logger.info(f"[{project_id}] Merged background update into cache: {list(updates.keys())}")
+
+
 def get_session(project_id: str) -> CrewSession:
     cached = _sessions.get(project_id)
     if cached is not None:

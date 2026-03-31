@@ -35,7 +35,9 @@ class ColumnType:
     DEFAULT = "default"
 
     DAY_GROUP = (DAY, DEFAULT)
-    NIGHT_GROUP = (NIGHT, OVERNIGHT, MORNING_ONLY)
+    NIGHT_GROUP = (NIGHT, OVERNIGHT)
+    # MORNING_ONLY 제거: 새벽 trip은 overnight에서만 커버.
+    # 독립 morning_only는 생성되지 않으며, 야간 수 제약에 포함되면 안 됨.
 
 
 @dataclass

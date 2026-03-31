@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
+from core.config import settings
 from engine.column_generator import FeasibleColumn, TaskItem
 from engine.sp_result_converter import convert_sp_result as _generic_convert
 
@@ -30,7 +31,7 @@ def _load_objective_display() -> Dict:
     import yaml
     yaml_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-        "knowledge", "domains", "railway", "result_mapping.yaml"
+        "knowledge", "domains", settings.DEFAULT_DOMAIN, "result_mapping.yaml"
     )
     try:
         with open(yaml_path, "r", encoding="utf-8") as f:

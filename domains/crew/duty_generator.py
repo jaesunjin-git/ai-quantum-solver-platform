@@ -17,6 +17,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from core.config import settings
 from engine.column_generator import (
     BaseColumnConfig,
     BaseColumnGenerator,
@@ -99,7 +100,7 @@ class CrewDutyConfig(BaseColumnConfig):
     }
 
     @classmethod
-    def from_params(cls, params: Dict, domain: str = "railway") -> "CrewDutyConfig":
+    def from_params(cls, params: Dict, domain: str = settings.DEFAULT_DOMAIN) -> "CrewDutyConfig":
         """3계층 설정 로딩:
         1순위: params (사용자 운영 제약) — YAML param_field_mapping 기반 자동 매핑
         2순위: YAML config (엔진 튜닝)
@@ -383,12 +384,10 @@ class CrewDutyGenerator(BaseColumnGenerator):
                 columns, evening_chains, morning_chains, next_id
             )
 
-        # 2) morning-only column (coupling 해소)
-        if morning_chains:
-            morning_only = self._build_morning_only_columns(
-                columns, morning_chains, next_id + count
-            )
-            count += morning_only
+        # 2) morning-only column 생성 제거
+        # 새벽 trip은 반드시 overnight duty의 일부로만 커버.
+        # 독립 morning_only duty는 주간/야간 어디에도 해당하지 않는
+        # 유령 duty를 생성하고 night_crew_count 의미를 왜곡함.
 
         # 3) evening-only column (coupling 해소)
         if evening_chains:

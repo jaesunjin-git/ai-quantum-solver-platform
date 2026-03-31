@@ -203,8 +203,11 @@ def compute_time_budget(
         cqm_config_time = config.cqm_min_time_sec  # fallback
 
     remaining = total_time_sec - elapsed_sec
+    # CQM 시간 = 사용자 DB 설정값 (D-Wave 실행 시간)
+    # column generation 등 공유 오버헤드는 전체 예산(remaining)에서 차감되며,
+    # CQM 개별 할당에서 이중 차감하지 않음. CP-SAT이 잔여 시간을 가져감.
     cqm_time = min(cqm_config_time, int(remaining))
-    cqm_time = max(cqm_time, config.cqm_min_time_sec)  # 최소 보장
+    cqm_time = max(cqm_time, config.cqm_min_time_sec)
     cpsat_time = int(remaining - cqm_time)
 
     viable = cpsat_time >= config.cpsat_min_time_sec

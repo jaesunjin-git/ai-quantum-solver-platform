@@ -5,6 +5,8 @@ domain_registry.py ────────────────────�
 GR-1 준수: engine 계층이 domains/를 직접 import하지 않음.
 도메인명 → 모듈 경로 매핑으로 lazy import.
 
+설정: configs/domain_registry.yaml (코드 변경 없이 도메인 추가 가능)
+
 Usage:
     from engine.domain_registry import get_domain_adapter
     adapter = get_domain_adapter("railway")  # lazy import + cache
@@ -16,37 +18,56 @@ from __future__ import annotations
 
 import importlib
 import logging
-from typing import Any, Callable, Dict, Optional
+import os
+from typing import Any, Dict, Optional
+
+import yaml
 
 logger = logging.getLogger(__name__)
 
-# 도메인명 → 모듈 경로 + factory/converter 함수명 매핑
-# 새 도메인 추가 = 이 dict에 1줄 추가 (코드 변경 최소화)
-_DOMAIN_MODULES: Dict[str, Dict[str, str]] = {
-    "railway": {
-        "module": "domains.crew.duty_generator",
-        "generator_class": "CrewDutyGenerator",
-        "config_class": "CrewDutyConfig",
-        "converter_module": "domains.crew.result_converter",
-        "converter_func": "convert_crew_result",
-    },
-    # 향후 도메인 추가 예시:
-    # "logistics": {
-    #     "module": "domains.logistics.generator",
-    #     "generator_class": "LogisticsGenerator",
-    #     "config_class": "LogisticsConfig",
-    #     "converter_module": "domains.logistics.result_converter",
-    #     "converter_func": "convert_logistics_result",
-    # },
-}
 
-# 별칭 매핑 (동일 도메인의 다른 이름)
-_DOMAIN_ALIASES: Dict[str, str] = {
-    "crew": "railway",
-    "rail": "railway",
-}
+# ── YAML 로딩 (1회) ─────────────────────────────────────────
 
-# lazy import 캐시
+_REGISTRY_YAML = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    "configs", "domain_registry.yaml",
+)
+
+_domain_modules: Dict[str, Dict[str, str]] = {}
+_domain_aliases: Dict[str, str] = {}
+_loaded = False
+
+
+def _ensure_loaded():
+    """configs/domain_registry.yaml에서 도메인 매핑 로딩 (1회)."""
+    global _domain_modules, _domain_aliases, _loaded
+    if _loaded:
+        return
+    _loaded = True
+
+    try:
+        with open(_REGISTRY_YAML, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception as e:
+        logger.warning(f"domain_registry.yaml load failed: {e}")
+        return
+
+    domains = data.get("domains", {})
+    for domain_name, spec in domains.items():
+        _domain_modules[domain_name] = {
+            k: v for k, v in spec.items() if k != "aliases"
+        }
+        for alias in spec.get("aliases", []):
+            _domain_aliases[alias] = domain_name
+
+    logger.info(
+        f"DomainRegistry: {len(_domain_modules)} domains, "
+        f"{len(_domain_aliases)} aliases from {_REGISTRY_YAML}"
+    )
+
+
+# ── lazy import 캐시 ────────────────────────────────────────
+
 _adapter_cache: Dict[str, Optional[Dict[str, Any]]] = {}
 
 
@@ -60,13 +81,15 @@ def get_domain_adapter(domain_name: str) -> Optional[Dict[str, Any]]:
         {"generator_factory": callable, "result_converter": callable}
         또는 None (미등록 도메인)
     """
+    _ensure_loaded()
+
     # 별칭 해석
-    canonical = _DOMAIN_ALIASES.get(domain_name, domain_name)
+    canonical = _domain_aliases.get(domain_name, domain_name)
 
     if canonical in _adapter_cache:
         return _adapter_cache[canonical]
 
-    spec = _DOMAIN_MODULES.get(canonical)
+    spec = _domain_modules.get(canonical)
     if not spec:
         logger.warning(f"Domain '{domain_name}' not registered in domain_registry")
         _adapter_cache[canonical] = None
@@ -100,4 +123,11 @@ def get_domain_adapter(domain_name: str) -> Optional[Dict[str, Any]]:
 
 def list_registered_domains() -> list:
     """등록된 도메인 목록 반환."""
-    return list(_DOMAIN_MODULES.keys())
+    _ensure_loaded()
+    return list(_domain_modules.keys())
+
+
+def resolve_domain_alias(name: str) -> str:
+    """별칭 → canonical 도메인명 해석."""
+    _ensure_loaded()
+    return _domain_aliases.get(name, name)

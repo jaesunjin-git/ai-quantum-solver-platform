@@ -92,7 +92,7 @@ def convert_sp_result(
     schedule_rows = _build_schedule_rows(selected, task_map)
 
     # ── 3. KPI ──
-    kpi = _build_kpi(selected, _tasks)
+    kpi = _build_kpi(selected, _tasks, task_map)
 
     # ── 4. Column 상세 (interpretation용) ──
     columns_detail = _build_columns_detail(selected, task_map)
@@ -212,6 +212,7 @@ def _build_schedule_rows(
 def _build_kpi(
     selected: List[FeasibleColumn],
     all_tasks: List[TaskItem],
+    task_map: Dict[int, TaskItem] = None,
 ) -> Dict[str, Any]:
     """Generic KPI 계산"""
     total_assigned = sum(len(c.trips) for c in selected)
@@ -231,9 +232,16 @@ def _build_kpi(
     trip_std_dev = (sum((tc - avg_trips) ** 2 for tc in trip_counts) / n) ** 0.5 if n > 1 else 0.0
     max_min_trip_gap = max(trip_counts) - min(trip_counts) if trip_counts else 0
 
-    # 운행 시간대 (earliest start ~ latest end)
-    earliest = min((c.start_time for c in selected), default=0)
-    latest = max((c.end_time for c in selected), default=0)
+    # 운행 시간대 — 실제 trip 기준 (overnight의 morning trip 포함)
+    if task_map:
+        all_dep_times = [task_map[tid].dep_time for c in selected for tid in c.trips if tid in task_map]
+        all_arr_times = [task_map[tid].arr_time for c in selected for tid in c.trips if tid in task_map]
+        earliest = min(all_dep_times, default=0)
+        latest = max(all_arr_times, default=0)
+    else:
+        # fallback: duty start/end (overnight morning 부정확)
+        earliest = min((c.start_time for c in selected), default=0)
+        latest = max((c.end_time for c in selected), default=0)
     earliest_hhmm = f"{earliest // 60:02d}:{earliest % 60:02d}"
     latest_hhmm = f"{latest // 60:02d}:{latest % 60:02d}"
 

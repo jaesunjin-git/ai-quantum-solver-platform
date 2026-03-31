@@ -93,7 +93,7 @@ def _inject_stage_validation(result_dict: dict) -> None:
             # Problem definition stage
             confirmed = data.get("confirmed_problem") or data.get("proposal", {})
             context["parameters"] = confirmed.get("parameters", {})
-            context["domain"] = confirmed.get("domain", data.get("domain", "railway"))
+            context["domain"] = confirmed.get("domain", data.get("domain", settings.DEFAULT_DOMAIN))
             context["confirmed_problem"] = confirmed
         elif stage == 4:
             # Normalization stage

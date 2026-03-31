@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import yaml
 import pandas as pd
 
+from core.config import settings
 from core.platform.ambiguity_detector import _safe_eval, _DotDict
 from domains.crew.session import CrewSession, save_session_state
 
@@ -162,7 +163,7 @@ class ProblemDefinitionSkill:
             return await self._handle_user_response(model, session, project_id, message)
 
         # 첫 진입: 분석 결과 + Phase 1 기반 제안 생성
-        self._current_domain = state.detected_domain or "railway"
+        self._current_domain = state.detected_domain or settings.DEFAULT_DOMAIN
         dk = self._load_domain(state)
         detected_data_types = self._detect_data_types(state)
         problem_type = self._determine_problem_type(state, dk, detected_data_types)
@@ -703,7 +704,7 @@ class ProblemDefinitionSkill:
     # reference_ranges.yaml lookup (도메인별 격리)
     def _lookup_reference_value(self, param_name: str, domain: str = None):
         """해당 도메인의 reference_ranges.yaml에서 기본값 반환"""
-        domain = domain or self._current_domain or "railway"
+        domain = domain or self._current_domain or settings.DEFAULT_DOMAIN
         cache_key = f"_reference_cache_{domain}"
         if not hasattr(self, cache_key):
             setattr(self, cache_key, self._load_reference_ranges(domain))
@@ -1711,7 +1712,7 @@ class ProblemDefinitionSkill:
 
         # objectives 로드
         dk = self._load_domain(state)
-        domain_name = state.problem_definition.get("domain", "railway")
+        domain_name = state.problem_definition.get("domain", settings.DEFAULT_DOMAIN)
         _constraints_path = f"knowledge/domains/{domain_name}/constraints.yaml"
         try:
             with open(_constraints_path, encoding="utf-8") as _f:
@@ -2199,7 +2200,7 @@ class ProblemDefinitionSkill:
 
         # 사용 가능한 목적함수 목록 로드
         dk = self._load_domain(state)
-        domain_name = current_pd.get("domain", "railway")
+        domain_name = current_pd.get("domain", settings.DEFAULT_DOMAIN)
         objectives_map = {}
         try:
             import yaml as _yaml
@@ -2240,7 +2241,7 @@ class ProblemDefinitionSkill:
         _semantic_hints = ""
         try:
             from engine.policy.parameter_catalog import get_catalog
-            _domain = current_pd.get("domain", "railway")
+            _domain = current_pd.get("domain", settings.DEFAULT_DOMAIN)
             _catalog = get_catalog(_domain)
             _hints = _catalog.build_prompt_hints(
                 data_facts=_data_facts, current_params=params
@@ -2399,7 +2400,7 @@ Soft 제약조건:
                     # parameter_catalog 기반 2단 검증 (범위 + 의미)
                     try:
                         from engine.policy.parameter_catalog import get_catalog
-                        _domain = pdef.get("domain", "railway")
+                        _domain = pdef.get("domain", settings.DEFAULT_DOMAIN)
                         _catalog = get_catalog(_domain)
                         # 1단: valid_range 검증
                         _err = _catalog.validate_value(pid, val)
@@ -2540,7 +2541,7 @@ Soft 제약조건:
 
         domain = state.detected_domain or state.problem_definition.get("domain", "") if state.problem_definition else ""
         if not domain:
-            domain = "railway"  # fallback (프로젝트 도메인 미설정 시)
+            domain = settings.DEFAULT_DOMAIN  # fallback (프로젝트 도메인 미설정 시)
 
         try:
             detector = AmbiguityDetector(domain)
@@ -2702,7 +2703,7 @@ Soft 제약조건:
         state.clarification_answers = answers
 
         # AmbiguityDetector로 답변 적용
-        domain = state.detected_domain or "railway"
+        domain = state.detected_domain or settings.DEFAULT_DOMAIN
         detector = AmbiguityDetector(domain)
         parameters = state.problem_definition.get("parameters", {}) if state.problem_definition else {}
 

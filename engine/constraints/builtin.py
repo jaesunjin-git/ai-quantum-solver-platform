@@ -67,9 +67,21 @@ class CardinalityConstraint(SideConstraintHandler):
         # threshold가 있으면 numeric 비교, 없으면 boolean truthy
         threshold = resolve_param(config, "threshold", params)
 
+        # type_filter: 특정 column_type만 대상 (예: "day" → overnight 제외)
+        type_filter = config.get("type_filter")
+        if type_filter:
+            if isinstance(type_filter, str):
+                type_filter = [t.strip() for t in type_filter.split(",")]
+            type_filter_set = set(type_filter)
+        else:
+            type_filter_set = None
+
         # 조건 만족 column 필터링
         eligible_ids = []
         for col in columns:
+            # type_filter 적용
+            if type_filter_set and getattr(col, "column_type", "") not in type_filter_set:
+                continue
             attr_val = getattr(col, attr_name, None)
             if attr_val is None:
                 continue
@@ -104,7 +116,7 @@ class CardinalityConstraint(SideConstraintHandler):
             column_ids=eligible_ids,
             operator=operator,
             rhs=value,
-            label=f"Cardinality: {attr_name} {operator} {value} ({len(eligible_ids)} eligible)",
+            label=f"Cardinality: {attr_name} {operator} {value} ({len(eligible_ids)} eligible{', type=' + ','.join(type_filter) if type_filter else ''})",
             constraint_ref=config.get("constraint_ref", ""),
             is_soft=is_soft,
             penalty_weight=penalty_weight,

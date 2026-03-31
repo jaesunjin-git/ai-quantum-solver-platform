@@ -27,30 +27,62 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
-# ── Problem Type → Engine Config 경로 매핑 ──────────────────
-# problem type마다 engine이 다르므로, 기본값 경로도 다름.
-# 현재: crew_scheduling 1개. 향후 problem type 추가 시 이 매핑에 1줄 추가.
-_PROBLEM_TYPE_ENGINE_DEFAULTS: Dict[str, str] = {
-    "crew_scheduling": "problem_types/crew_scheduling/engine_defaults.yaml",
-    # 향후:
-    # "material_optimization": "problem_types/material_optimization/engine_defaults.yaml",
-}
+# ── Problem Type / Domain 매핑 (configs/domain_registry.yaml에서 로딩) ──
 
-# domain → problem_type 매핑 (domain_registry.py와 일관)
-_DOMAIN_PROBLEM_TYPE: Dict[str, str] = {
-    "railway": "crew_scheduling",
-    "bus": "crew_scheduling",
-    "airline": "crew_scheduling",
-    # 향후:
-    # "battery_materials": "material_optimization",
-}
+_PROBLEM_TYPE_ENGINE_DEFAULTS: Dict[str, str] = {}
+_DOMAIN_PROBLEM_TYPE: Dict[str, str] = {}
+_registry_loaded = False
+
+
+def _ensure_registry():
+    """configs/domain_registry.yaml에서 problem_type/domain 매핑 로딩 (1회)."""
+    global _PROBLEM_TYPE_ENGINE_DEFAULTS, _DOMAIN_PROBLEM_TYPE, _registry_loaded
+    if _registry_loaded:
+        return
+    _registry_loaded = True
+
+    yaml_path = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "configs", "domain_registry.yaml",
+    )
+    try:
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception as e:
+        logger.warning(f"domain_registry.yaml load failed, using empty mappings: {e}")
+        return
+
+    # problem_types 섹션
+    for pt_name, pt_spec in data.get("problem_types", {}).items():
+        defaults = pt_spec.get("engine_defaults")
+        if defaults:
+            _PROBLEM_TYPE_ENGINE_DEFAULTS[pt_name] = defaults
+
+    # domains 섹션 → domain → problem_type 매핑
+    for domain_name, spec in data.get("domains", {}).items():
+        pt = spec.get("problem_type")
+        if pt:
+            _DOMAIN_PROBLEM_TYPE[domain_name] = pt
+            # 별칭도 같은 problem_type으로 매핑
+            for alias in spec.get("aliases", []):
+                _DOMAIN_PROBLEM_TYPE[alias] = pt
+
+    logger.info(
+        f"ConfigLoader registry: {len(_PROBLEM_TYPE_ENGINE_DEFAULTS)} problem_types, "
+        f"{len(_DOMAIN_PROBLEM_TYPE)} domain mappings"
+    )
 
 
 def _resolve_problem_type(domain: Optional[str] = None) -> str:
-    """domain에서 problem_type을 해석. 미등록 시 crew_scheduling fallback."""
+    """domain에서 problem_type을 해석. 미등록 시 첫 번째 problem_type fallback."""
+    _ensure_registry()
     if domain:
-        return _DOMAIN_PROBLEM_TYPE.get(domain, "crew_scheduling")
-    return "crew_scheduling"
+        pt = _DOMAIN_PROBLEM_TYPE.get(domain)
+        if pt:
+            return pt
+    # fallback: 첫 번째 등록된 problem_type (또는 crew_scheduling)
+    from core.config import settings
+    return _DOMAIN_PROBLEM_TYPE.get(settings.DEFAULT_DOMAIN, "crew_scheduling")
 
 
 # ── 통합 Engine Config 로딩 ─────────────────────────────────
@@ -58,6 +90,7 @@ def _resolve_problem_type(domain: Optional[str] = None) -> str:
 def _get_engine_yaml_paths(domain: Optional[str] = None) -> list:
     """Engine config YAML 경로 목록 (탐색 순서대로).
     로딩 계층: problem_type 기본값 → 산업 도메인 override"""
+    _ensure_registry()
     problem_type = _resolve_problem_type(domain)
     defaults_path = _PROBLEM_TYPE_ENGINE_DEFAULTS.get(problem_type)
 

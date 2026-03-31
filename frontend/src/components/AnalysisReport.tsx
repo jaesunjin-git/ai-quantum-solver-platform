@@ -282,7 +282,7 @@ export default function AnalysisReport({
         {/* Stateful views: kept mounted but hidden to preserve local state */}
         {hasSolverData && (
           <div className="h-full" style={{ display: isSolverView ? 'block' : 'none' }}>
-            <SolverView data={stepCache.solver as SolverData} onAction={onAction} projectId={projectId} onResultReady={setAnalysisData} />
+            <SolverView data={stepCache.solver as SolverData} onAction={onAction} onEvent={onEvent} projectId={projectId} onResultReady={setAnalysisData} />
           </div>
         )}
         {hasResultData && (

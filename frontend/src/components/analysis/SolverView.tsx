@@ -63,11 +63,13 @@ function compareReducer(state: CompareState, action: CompareAction): CompareStat
 export function SolverView({
   data,
   onAction,
+  onEvent,
   onResultReady,
   projectId,
 }: {
   data: SolverData;
   onAction?: (type: string, message: string) => void;
+  onEvent?: (message: string, eventType: string, eventData: any) => void;
   onResultReady?: (data: any) => void;
   projectId?: string;
 }) {
@@ -184,7 +186,13 @@ export function SolverView({
         };
         onResultReady?.(resultView);
         const statusText = result.success ? '완료' : '완료 (일부 제약 미충족)';
-        onAction?.('execute_done', `${label}으로 최적화 실행이 ${statusText}되었습니다. 결과를 설명해주세요.`);
+        // event_type으로 전달 — classifier를 거치지 않고 SHOW_OPT_RESULT로 직접 처리
+        const msg = `${label}으로 최적화 실행이 ${statusText}되었습니다. 결과를 설명해주세요.`;
+        if (onEvent) {
+          onEvent(msg, 'OPTIMIZATION_COMPLETE', { solver_name: label });
+        } else {
+          onAction?.('execute_done', msg);
+        }
       }
       // 성공 시 이전 infeasibility 정보 초기화, 실패 시 새 정보 설정
       if (result.success) {
@@ -349,7 +357,12 @@ export function SolverView({
       };
       onResultReady?.(resultView);
     }
-    onAction?.('execute_done', `${entries.length}개 솔버 비교 실행이 완료되었습니다.`);
+    const compareMsg = `${entries.length}개 솔버 비교 실행이 완료되었습니다.`;
+    if (onEvent) {
+      onEvent(compareMsg, 'OPTIMIZATION_COMPLETE', { compare: true });
+    } else {
+      onAction?.('execute_done', compareMsg);
+    }
   }, [compareState.jobs]);
 
   // Cleanup compare intervals on unmount

@@ -8,6 +8,12 @@ from .expression_parser import parse_and_apply_expression
 
 logger = logging.getLogger(__name__)
 
+# ── Soft Constraint 스케일링 상수 ──
+# MAX_SLACK: slack 변수 상한 (분 단위, 24시간)
+# NORMALIZE: 패널티 정규화 기준 (5시간 = 300분)
+_SOFT_MAX_SLACK = 1440
+_SOFT_NORMALIZE = 300
+
 
 # ── soft constraint weight 캐싱 ──
 _soft_weights_cache: Optional[Dict[str, float]] = None
@@ -412,8 +418,8 @@ class ORToolsCompiler(BaseCompiler):
         # ★ 스케일 정규화: 주 목적함수(duty 수)와 비교하여 적절한 계수 산출
         #   primary_scale ≈ duty 수, soft 패널티가 전체의 ~10% 수준
         #   MAX_SLACK을 제한하여 solver 성능 보장
-        MAX_SLACK = 1440  # 최대 슬랙: 24시간(분)
-        NORMALIZE = 300   # 정규화 상수 (5시간 = 300분 기준)
+        MAX_SLACK = _SOFT_MAX_SLACK
+        NORMALIZE = _SOFT_NORMALIZE
 
         try:
             results = build_constraint(con_def, ctx)
@@ -508,8 +514,8 @@ class ORToolsCompiler(BaseCompiler):
             return None
 
         weight = float(con_def.get("weight", soft_weights.get(cname, 1.0)))
-        MAX_SLACK = 1440
-        NORMALIZE = 300
+        MAX_SLACK = _SOFT_MAX_SLACK
+        NORMALIZE = _SOFT_NORMALIZE
 
         bindings = _parse_for_each(for_each_str, ctx)
         slack_entries = []
@@ -783,8 +789,8 @@ class ORToolsCompiler(BaseCompiler):
             return None
 
         weight = float(con_def.get("weight", soft_weights.get(cname, 1.0)))
-        MAX_SLACK = 1440.0
-        NORMALIZE = 300.0
+        MAX_SLACK = float(_SOFT_MAX_SLACK)
+        NORMALIZE = float(_SOFT_NORMALIZE)
 
         try:
             results = build_constraint(con_def, ctx)

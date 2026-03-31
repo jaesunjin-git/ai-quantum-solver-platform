@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from core.config import settings
 from domains.crew.session import CrewSession, save_session_state
 
 logger = logging.getLogger(__name__)
@@ -631,7 +632,7 @@ class ConstraintSemanticMapper:
         if not hasattr(self, '_catalog'):
             try:
                 from engine.policy.parameter_catalog import ParameterCatalog
-                self._catalog = ParameterCatalog("railway")
+                self._catalog = ParameterCatalog(settings.DEFAULT_DOMAIN)
             except Exception:
                 self._catalog = None
 

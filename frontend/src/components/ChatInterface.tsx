@@ -244,15 +244,20 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
           console.log('📊 proposal.objective:', data.data.proposal.objective?.target);
         }
         const incoming = data.data;
-        const isMinimalResult = incoming.view_mode === 'result' && !incoming.compile_summary && !incoming.status;
-        // SolverView에서 이미 result를 설정한 경우, solver/analysis 뷰로 덮어쓰기 방지
-        const isResultAlreadySet = analysisData?.view_mode === 'result' && incoming.view_mode !== 'result';
-        if (isMinimalResult || isResultAlreadySet) {
-          // 결과가 이미 표시 중 — 덮어쓰지 않음
-        } else if (incoming.view_mode === 'normalization_complete') {
-          // auto-next 처리
-        } else {
+        // target_tab만 있는 응답: 항상 전달 (탭 전환 요청)
+        if (!incoming.view_mode && incoming.target_tab) {
           setAnalysisData(incoming);
+        } else {
+          const isMinimalResult = incoming.view_mode === 'result' && !incoming.compile_summary && !incoming.status;
+          // SolverView에서 이미 result를 설정한 경우, solver/analysis 뷰로 덮어쓰기 방지
+          const isResultAlreadySet = analysisData?.view_mode === 'result' && incoming.view_mode !== 'result';
+          if (isMinimalResult || isResultAlreadySet) {
+            // 결과가 이미 표시 중 — 덮어쓰지 않음
+          } else if (incoming.view_mode === 'normalization_complete') {
+            // auto-next 처리
+          } else {
+            setAnalysisData(incoming);
+          }
         }
       }
 

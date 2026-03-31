@@ -18,6 +18,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
+from core.config import settings
 from core.platform.session import SessionState, CrewSession, save_session_state
 from core.platform.utils import (
     build_facts_summary, build_next_options, clean_report,
@@ -432,7 +433,7 @@ async def skill_math_model(model, session: CrewSession, project_id: str, message
             # LLM이 생성한 expression 대신 constraints.yaml의 검증된 수식 사용
             try:
                 from engine.math_model_generator import _load_domain_yaml
-                _dy = _load_domain_yaml(state.detected_domain or 'railway')
+                _dy = _load_domain_yaml(state.detected_domain or settings.DEFAULT_DOMAIN)
                 _ct = _dy.get('constraint_templates', {})
                 _aux = _dy.get('auxiliary_variables', {})
                 _efix = 0

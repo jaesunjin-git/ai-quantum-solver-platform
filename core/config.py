@@ -6,6 +6,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Settings:
+    # 0. 플랫폼 기본 도메인 (신규 도메인 추가 시 여기만 변경 불필요 — 각 프로젝트에서 detected_domain 사용)
+    # fallback 전용: domain 정보가 아직 결정되지 않은 초기 상태에서만 사용
+    DEFAULT_DOMAIN: str = os.getenv("DEFAULT_DOMAIN", "railway")
+
     # 1. API 키 (환경변수에서 가져옴)
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
     DWAVE_API_TOKEN = os.getenv("DWAVE_API_TOKEN")

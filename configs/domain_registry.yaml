@@ -1,0 +1,42 @@
+# ============================================================
+# Domain Registry — 도메인 → 모듈/problem_type 매핑
+# ============================================================
+# 새 도메인 추가 = 이 파일에 선언 추가 (코드 변경 불필요).
+#
+# 구조:
+#   domains:    도메인 → adapter 모듈 + problem_type 매핑
+#   problem_types: problem_type → engine_defaults 경로
+#
+# engine/domain_registry.py + engine/config_loader.py가 이 파일을 로딩.
+# ============================================================
+
+domains:
+  railway:
+    problem_type: crew_scheduling
+    module: domains.crew.duty_generator
+    generator_class: CrewDutyGenerator
+    config_class: CrewDutyConfig
+    converter_module: domains.crew.result_converter
+    converter_func: convert_crew_result
+    aliases:
+      - crew
+      - rail
+
+  battery_materials:
+    problem_type: material_optimization
+    module: domains.materials.structure_generator
+    generator_class: StructureGenerator
+    config_class: MaterialConfig
+    converter_module: domains.materials.result_converter
+    converter_func: convert_material_result
+    aliases:
+      - materials
+      - battery
+      - posco
+
+problem_types:
+  crew_scheduling:
+    engine_defaults: problem_types/crew_scheduling/engine_defaults.yaml
+
+  material_optimization:
+    engine_defaults: problem_types/material_optimization/engine_defaults.yaml

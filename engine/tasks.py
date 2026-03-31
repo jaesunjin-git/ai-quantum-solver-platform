@@ -102,7 +102,16 @@ def _run_solver_sync(
             logger.info(f"Time limit override: {time_limit}s (runtime)")
         else:
             from engine.solver_registry import get_solver_time_limit
-            time_limit = get_solver_time_limit(solver_id, db)
+            if strategy == "quantum_warmstart":
+                # Hybrid 총 시간 = CQM(DB) + CP-SAT(DB)
+                cqm_time = get_solver_time_limit("dwave_hybrid_cqm", db)
+                cpsat_time = get_solver_time_limit("classical_cpu", db)
+                time_limit = cqm_time + cpsat_time
+                logger.info(
+                    f"Hybrid time budget: CQM={cqm_time}s + CP-SAT={cpsat_time}s = {time_limit}s"
+                )
+            else:
+                time_limit = get_solver_time_limit(solver_id, db)
 
         # 컴파일 시작 progress
         _update_job_progress(db, job_id, "모델 컴파일 중", 20)
@@ -112,7 +121,8 @@ def _run_solver_sync(
 
         # 도메인 adapter 주입 (GR-1: domain_registry 경유, 하드코딩 없음)
         from engine.domain_registry import get_domain_adapter
-        domain = getattr(state, "detected_domain", None) or "railway"
+        from core.config import settings
+        domain = getattr(state, "detected_domain", None) or settings.DEFAULT_DOMAIN
         adapter = get_domain_adapter(domain)
         if adapter:
             pipeline.set_domain_adapter(**adapter)

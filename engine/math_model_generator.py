@@ -336,7 +336,7 @@ def _load_domain_yaml(domain: str) -> dict:
             return merged
     return {}
 
-def _get_model_schema(domain: str = "railway") -> str:
+def _get_model_schema(domain: str = settings.DEFAULT_DOMAIN) -> str:
     config = load_yaml_prompt(domain, "math_model")
     if not config:
         return "{}"
@@ -1276,7 +1276,7 @@ async def repair_constraints(
         from utils.prompt_loader import load_yaml_prompt, get_constraint_schema_text
 
         # 모델 JSON에서 도메인 추출 (fallback: railway)
-        _repair_domain = model.get("domain", "railway")
+        _repair_domain = model.get("domain", settings.DEFAULT_DOMAIN)
         config = load_yaml_prompt(_repair_domain, "constraint_repair")
         system = config.get("system", "")
         rules = config.get("rules", [])
