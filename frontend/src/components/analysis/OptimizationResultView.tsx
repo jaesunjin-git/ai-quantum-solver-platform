@@ -92,7 +92,6 @@ export function OptimizationResultView({
             <div>
               <h2 className="text-base font-bold text-white flex items-center gap-2">
                 {hasInterpreted ? interpreted!.objective_label : 'Optimization Result'}
-                <span className={`text-lg ${sc.color}`}>{formatNumber(data.objective_value)}</span>
               </h2>
               <p className="text-[12px] text-slate-400">{data.solver_name} · {sc.label}</p>
             </div>
