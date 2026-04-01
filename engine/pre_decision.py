@@ -330,7 +330,7 @@ def _generate_execution_strategies(
                 _hybrid_standalone_penalties.get("default", 0)
             )
             if penalty > 0:
-                confidence -= penalty
+                confidence = round(confidence - penalty, 1)
                 _extra_cons.append(
                     "Heuristic standalone은 이 문제 유형에서 feasible 해 보장 불가 → Hybrid 전략 권장"
                 )

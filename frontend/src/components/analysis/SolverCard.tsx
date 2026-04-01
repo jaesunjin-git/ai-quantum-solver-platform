@@ -73,6 +73,11 @@ export function SolverCard({
     recommendedStrategy?.strategy_id === st.strategy_id
   ) || relatedStrategies[0];
 
+  // 카드 대표 점수: 관련 전략 중 최고 confidence (전략 없으면 solver base score)
+  const displayScore = relatedStrategies.length > 0
+    ? Math.max(...relatedStrategies.map((st: any) => st.confidence ?? 0))
+    : svr.total_score;
+
   return (
     <div
       onClick={onSelect}
@@ -93,7 +98,7 @@ export function SolverCard({
             <span className={`text-[13px] px-1.5 py-0.5 rounded font-bold ${getSuitabilityColor(svr.suitability)}`}>
               {svr.suitability}
             </span>
-            <div className="text-[13px] text-slate-500 mt-1">점수: {svr.total_score}</div>
+            <div className="text-[13px] text-slate-500 mt-1">점수: {displayScore}</div>
           </div>
         </div>
 
@@ -232,7 +237,7 @@ export function SolverCard({
                           <span className={`text-[11px] ml-auto flex-shrink-0 ${
                             st.confidence < 40 ? 'text-orange-400' : 'text-slate-500'
                           }`}>
-                            {st.confidence}
+                            {typeof st.confidence === 'number' ? st.confidence.toFixed(1) : st.confidence}
                           </span>
                         </div>
                         <div className="text-[12px] text-slate-500 mt-0.5">{st.description}</div>
