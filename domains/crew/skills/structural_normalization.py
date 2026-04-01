@@ -165,7 +165,7 @@ class StructureDetector:
 
         # 피벗 시간표 감지: .1 접미사 컬럼 + 시간값 컬럼이 많음
         cols = [str(c) for c in df.columns]
-        suffix_count = sum(1 for c in cols if ".1" in c)
+        suffix_count = sum(1 for c in cols if re.search(r'\.\d+$', c))
 
         time_col_count = 0
         for col in df.columns:
@@ -229,23 +229,26 @@ class PivotUnpivoter:
             else:
                 meta_cols.append(col)
 
-        # Step 3: 상행/하행 분리
-        fwd = [c for c in station_cols if ".1" not in str(c)]
-        rev = [c for c in station_cols if ".1" in str(c)]
-        if not rev and len(station_cols) > 10:
-            seen = {}
-            fwd, rev = [], []
-            for col in station_cols:
-                base = str(col).split(".")[0].strip()
-                if base in seen:
-                    rev.append(col)
-                else:
-                    seen[base] = col
-                    fwd.append(col)
-        has_round = len(rev) >= 3
+        # Step 3: 섹션 분리 (연속된 역 컬럼 그룹 = 하나의 섹션)
+        # pandas는 중복 컬럼명에 .1, .2, .3 등을 자동 부여함
+        _PANDAS_SUFFIX_RE = re.compile(r'\.\d+$')
+        col_positions = {col: i for i, col in enumerate(df.columns)}
+        sections: List[List] = []
+        current_section: List = []
+        prev_pos = -999
+        for col in station_cols:
+            pos = col_positions[col]
+            if current_section and pos - prev_pos > 1:
+                sections.append(current_section)
+                current_section = []
+            current_section.append(col)
+            prev_pos = pos
+        if current_section:
+            sections.append(current_section)
 
-        # Step 4: ID 컬럼 탐색
-        id_col, id_col_rev = None, None
+        # Step 4: 각 섹션에 ID 컬럼, 영업구분 컬럼 매핑
+        # ID 컬럼 후보 탐색
+        _all_id_cols: List = []
         for col in non_time_cols:
             nn = df[col].dropna().head(10)
             if len(nn) == 0:
@@ -253,79 +256,134 @@ class PivotUnpivoter:
             try:
                 vals = pd.to_numeric(nn, errors="coerce")
                 if vals.notna().sum() >= 8 and (vals % 1 == 0).all():
-                    if id_col is None:
-                        id_col = col
-                    elif id_col_rev is None and str(col) != str(id_col):
-                        id_col_rev = col
-                        break
+                    _all_id_cols.append(col)
             except Exception:
                 continue
 
-        # Step 5: trip 추출
+        # 영업구분 컬럼 탐색 (서비스 유형: 영업/비영업)
+        _svc_cols = [
+            c for c in non_time_cols
+            if _PANDAS_SUFFIX_RE.sub('', str(c)).strip() == '영업구분'
+        ]
+
+        def _find_nearest_before(target_pos: int, candidates: list):
+            """target_pos 바로 앞에 있는 후보 컬럼 반환."""
+            best = None
+            for col in candidates:
+                pos = col_positions[col]
+                if pos < target_pos:
+                    if best is None or pos > col_positions[best]:
+                        best = col
+            return best
+
+        def _find_nearest_after(target_pos: int, candidates: list):
+            """target_pos 바로 뒤에 있는 후보 컬럼 반환."""
+            best = None
+            for col in candidates:
+                pos = col_positions[col]
+                if pos > target_pos:
+                    if best is None or pos < col_positions[best]:
+                        best = col
+            return best
+
+        # 섹션 0의 첫/마지막 역 이름 (방향 판단용)
+        sec0_first = _PANDAS_SUFFIX_RE.sub('', str(sections[0][0])).strip() if sections else ""
+        sec0_last = _PANDAS_SUFFIX_RE.sub('', str(sections[0][-1])).strip() if sections else ""
+
+        section_configs = []
+        for sec_idx, sec_cols in enumerate(sections):
+            first_pos = col_positions[sec_cols[0]]
+            last_pos = col_positions[sec_cols[-1]]
+            sec_id_col = _find_nearest_before(first_pos, _all_id_cols)
+            sec_svc_col = _find_nearest_after(last_pos, _svc_cols)
+
+            # 방향 판단: 섹션0 = forward, 이후 섹션은 첫 역이 섹션0의 마지막 역이면 reverse
+            if sec_idx == 0:
+                direction = "forward"
+            else:
+                sec_first_base = _PANDAS_SUFFIX_RE.sub('', str(sec_cols[0])).strip()
+                direction = "reverse" if sec_first_base == sec0_last else "forward"
+
+            section_configs.append({
+                'cols': sec_cols,
+                'id_col': sec_id_col,
+                'svc_col': sec_svc_col,
+                'direction': direction,
+            })
+
+        logger.info(
+            f"PivotUnpivoter: {len(sections)} sections detected: "
+            + ", ".join(
+                f"[{i}] {cfg['direction']} {len(cfg['cols'])}cols "
+                f"id={cfg['id_col']} svc={cfg['svc_col']}"
+                for i, cfg in enumerate(section_configs)
+            )
+        )
+
+        # Step 5: 각 섹션에서 독립적으로 trip 추출
         trips = []
-        for idx, row in df.iterrows():
-            # Forward
-            if fwd:
-                tid = row.get(id_col) if id_col else idx * 2 + 1
-                if pd.notna(tid):
-                    times = []
-                    for st in fwd:
-                        val = row.get(st)
-                        if pd.notna(val):
-                            m = _to_minutes(val)
-                            if m is not None:
-                                times.append((str(st), m))
-                    # 자정 넘김 보정: 역 시퀀스에서 시각이 감소하면 +1440
-                    times = _fix_midnight_wrap(times)
-                    if len(times) >= 2:
-                        trips.append({
-                            "trip_id": int(tid) if not isinstance(tid, str) else tid,
-                            "direction": "forward",
-                            "dep_station": times[0][0],
-                            "arr_station": times[-1][0],
-                            "trip_dep_time": times[0][1],
-                            "trip_arr_time": times[-1][1],
-                            "trip_duration": times[-1][1] - times[0][1],
-                            "station_count": len(times),
-                        })
-            # Reverse
-            if has_round and rev:
-                tid_r = row.get(id_col_rev) if id_col_rev else (
-                    int(row.get(id_col, 0)) + 1
-                    if id_col and pd.notna(row.get(id_col))
-                    else idx * 2 + 2
-                )
-                if pd.notna(tid_r):
-                    times = []
-                    for st in rev:
-                        val = row.get(st)
-                        if pd.notna(val):
-                            m = _to_minutes(val)
-                            if m is not None:
-                                times.append((str(st).replace(".1", "").strip(), m))
-                    # 자정 넘김 보정: 역 시퀀스에서 시각이 감소하면 +1440
-                    times = _fix_midnight_wrap(times)
-                    if len(times) >= 2:
-                        trips.append({
-                            "trip_id": int(tid_r) if not isinstance(tid_r, str) else tid_r,
-                            "direction": "reverse",
-                            "dep_station": times[0][0],
-                            "arr_station": times[-1][0],
-                            "trip_dep_time": times[0][1],
-                            "trip_arr_time": times[-1][1],
-                            "trip_duration": times[-1][1] - times[0][1],
-                            "station_count": len(times),
-                        })
+        for sec_cfg in section_configs:
+            s_cols = sec_cfg['cols']
+            s_id_col = sec_cfg['id_col']
+            s_svc_col = sec_cfg['svc_col']
+            s_direction = sec_cfg['direction']
+
+            for idx, row in df.iterrows():
+                # ID 결정
+                if s_id_col:
+                    tid = row.get(s_id_col)
+                else:
+                    tid = idx
+                if not pd.notna(tid):
+                    continue
+
+                # 역별 시간 추출
+                times = []
+                for st in s_cols:
+                    val = row.get(st)
+                    if pd.notna(val):
+                        m = _to_minutes(val)
+                        if m is not None:
+                            clean_name = _PANDAS_SUFFIX_RE.sub('', str(st)).strip()
+                            times.append((clean_name, m))
+                times = _fix_midnight_wrap(times)
+                if len(times) < 2:
+                    continue
+
+                # 서비스 유형 판별 (영업/비영업)
+                service_type = "revenue"
+                if s_svc_col:
+                    raw_svc = str(row.get(s_svc_col, '')).strip()
+                    if '회송' in raw_svc or '비영업' in raw_svc:
+                        service_type = "deadhead"
+
+                trips.append({
+                    "trip_id": int(tid) if not isinstance(tid, str) else tid,
+                    "direction": s_direction,
+                    "service_type": service_type,
+                    "dep_station": times[0][0],
+                    "arr_station": times[-1][0],
+                    "trip_dep_time": times[0][1],
+                    "trip_arr_time": times[-1][1],
+                    "trip_duration": times[-1][1] - times[0][1],
+                    "station_count": len(times),
+                })
 
         if not trips:
             return None
 
         result = pd.DataFrame(trips)
         result = result.sort_values("trip_dep_time").reset_index(drop=True)
+        # service_type 컬럼이 없는 경우 (2-section 데이터 등) 기본값 추가
+        if "service_type" not in result.columns:
+            result["service_type"] = "revenue"
+        fwd_count = len(result[result.direction == 'forward'])
+        rev_count = len(result[result.direction == 'reverse'])
+        dh_count = len(result[result.service_type == 'deadhead'])
+        svc_info = f", deadhead={dh_count}" if dh_count > 0 else ""
         logger.info(
             f"PivotUnpivoter: {len(result)} trips "
-            f"(fwd={len(result[result.direction=='forward'])}, "
-            f"rev={len(result[result.direction=='reverse'])})"
+            f"(fwd={fwd_count}, rev={rev_count}{svc_info})"
         )
         return result
 
@@ -774,6 +832,7 @@ class StructuralNormalizationSkill:
         state.data_facts["sequential_pair_count"] = result.get("sequential_pairs", 0)
         trip_stats = result.get("trip_stats", {})
         state.data_facts["station_count"] = len(trip_stats.get("stations", []))
+        state.data_facts["deadhead_count"] = trip_stats.get("deadhead", 0)
 
         # 세션 저장
         state.structural_normalization_done = True
@@ -947,10 +1006,13 @@ class StructuralNormalizationSkill:
                     report["warnings"].append(f"sequential_pairs 생성 실패: {e}")
 
             # 기본 통계
+            deadhead_count = int((trips_df.get("service_type") == "deadhead").sum()) if "service_type" in trips_df.columns else 0
             report["trip_stats"] = {
                 "total": len(trips_df),
                 "forward": int((trips_df.get("direction") == "forward").sum()) if "direction" in trips_df.columns else 0,
                 "reverse": int((trips_df.get("direction") == "reverse").sum()) if "direction" in trips_df.columns else 0,
+                "deadhead": deadhead_count,
+                "revenue": len(trips_df) - deadhead_count,
                 "first_departure": float(trips_df["trip_dep_time"].min()),
                 "last_arrival": float(trips_df["trip_arr_time"].max()),
                 "avg_duration": round(float(trips_df["trip_duration"].mean()), 1),

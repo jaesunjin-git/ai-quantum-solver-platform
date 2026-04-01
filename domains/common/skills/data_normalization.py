@@ -535,6 +535,19 @@ Each mapping must have: target_table, source_file, source_sheet, transform_type,
                     src_path = upload_dir / source_file
                     if src_path.exists():
                         df = pd.read_csv(str(src_path), encoding="utf-8")
+                        # service_type 기반 범용 필터링: exclude_service_types 파라미터
+                        if "service_type" in df.columns:
+                            _cp = state.confirmed_problem or {}
+                            _exclude_types = _cp.get("parameters", {}).get(
+                                "exclude_service_types", {}
+                            ).get("value", [])
+                            if _exclude_types:
+                                before = len(df)
+                                df = df[~df["service_type"].isin(_exclude_types)]
+                                logger.info(
+                                    f"service_type filter ({target}): {before} → {len(df)} "
+                                    f"(excluded: {_exclude_types})"
+                                )
                         if target == "trips":
                             out_path = norm_dir / "trips.csv"
                             df.to_csv(str(out_path), index=False, encoding="utf-8")

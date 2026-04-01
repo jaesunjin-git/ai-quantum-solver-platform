@@ -496,17 +496,8 @@ constraints:
         typical_range:
         - 120
         - 240
-      recognized_wait_minutes:
-        description: 사업당 인정대기시간 (고정값)
-        detection_hints:
-        - 인정대기
-        - 인정 대기
-        - 고정값
-        context_must:
-        - 인정
-        typical_range:
-        - 120
-        - 240
+      # recognized_wait_minutes: expression에서 미사용 → 제거 (Gate2 미바인딩 경고 해소)
+      # 향후 인정대기시간 제약 추가 시 복원
     default_category: soft
     fixed_category: false
     penalty_var: slack_avg_wait
@@ -615,8 +606,8 @@ constraints:
     parameters:
       cleanup_minutes_relay:
         description: 승계/편승 종무시 정리시간
-        detection_hints: [승계, 편승, 종무]
-        context_must: [종무]
+        detection_hints: [승계, 편승, 종무, 종료]
+        context_must: [종무, 종료]
         context_exclude: [출무, 입고]
         typical_range: [20, 40]
       cleanup_minutes_arrival:

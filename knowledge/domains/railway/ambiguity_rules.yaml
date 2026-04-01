@@ -15,6 +15,29 @@
 
 rules:
 
+  # ── 비영업(회송) 열차 포함 여부 ──
+  deadhead_trip_inclusion:
+    description: "비영업(회송) 열차가 감지되어 승무원 배정 포함 여부 확인 필요"
+    importance: high
+    trigger:
+      condition: "facts.get('deadhead_count', 0) > 0"
+      description: "비영업(회송) 열차 감지됨"
+    questions:
+      - id: include_deadhead
+        text: "비영업(회송) 열차 {deadhead_count}개가 감지되었습니다. 이 열차들도 승무원 배정 대상에 포함하시겠습니까? (회송도 승무원이 탑승해야 하는 경우 '예')"
+        text_vars:
+          deadhead_count: "facts.get('deadhead_count', 0)"
+        type: yes_no
+        default: true
+        on_yes:
+          set_params:
+            include_deadhead_trips: {value: true, source: "user_clarification"}
+        on_no:
+          set_params:
+            include_deadhead_trips: {value: false, source: "user_clarification"}
+            # 범용 필터: data_normalization이 service_type 값으로 필터링
+            exclude_service_types: {value: ["deadhead"], source: "user_clarification"}
+
   # ── 운영 패턴: 숙박조 (새벽 운행) ──
   overnight_crew_pattern:
     description: "새벽 시간대 운행이 감지되어 숙박조 운영 여부 확인 필요"
