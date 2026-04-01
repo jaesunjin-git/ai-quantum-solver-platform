@@ -92,11 +92,12 @@ class CQMExecutor:
                 error=f"D-Wave API call failed: {e}",
                 execution_time_sec=round(wall_time, 3),
             )
-        wall_time = time.time() - t0
 
         # ── 결과 해석: best sample 사용 (feasible 우선, 없으면 best overall) ──
+        # NOTE: sampleset.filter()/.first 접근 시 D-Wave 결과 resolve (blocking)
         feasible = sampleset.filter(lambda s: s.is_feasible)
         feasible_count = len(feasible)
+        wall_time = time.time() - t0  # resolve 완료 후 측정 (실제 대기 시간 포함)
 
         if feasible_count > 0:
             best = feasible.first
@@ -174,8 +175,16 @@ class CQMExecutor:
         else:
             status = "FEASIBLE"
 
+        # D-Wave 서버 측 실행 시간 (과금 기준)
+        # Hybrid solver: sampleset.info["charge_time"] (초 단위, top-level)
+        dwave_timing = sampleset.info.get("timing", {})
+        charge_time_s = sampleset.info.get("charge_time", 0)
+        if not charge_time_s:
+            charge_time_us = dwave_timing.get("charge_time", 0)
+            charge_time_s = charge_time_us / 1_000_000 if charge_time_us else 0
         logger.info(f"D-Wave CQM: {status}, obj={objective_value:.2f}, "
                      f"selected={selected_count}, wall_time={wall_time:.1f}s, "
+                     f"charge_time={charge_time_s:.1f}s, "
                      f"feasible={feasible_count}/{len(sampleset)}, repaired={repaired}")
 
         return ExecuteResult(

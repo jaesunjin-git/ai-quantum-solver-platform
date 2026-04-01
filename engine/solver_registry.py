@@ -968,18 +968,18 @@ def recommend_solvers(
     # v2.0: 문제 규모 기반 동적 가중치 조정
     weights = _get_dynamic_weights(priority, profile)
 
-    # 실행 경로 보정 점수 (configs/pre_decision/scoring.yaml)
-    _path_scoring = {}
+    # 모델링 패턴 보너스 + 전략 패널티 (configs/pre_decision/scoring.yaml)
+    _scoring_cfg = {}
     try:
         import yaml as _yaml
         _ps_path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
                                 "configs", "pre_decision", "scoring.yaml")
         if os.path.exists(_ps_path):
             with open(_ps_path, "r", encoding="utf-8") as _f:
-                _ps_data = _yaml.safe_load(_f) or {}
-            _path_scoring = _ps_data.get("path_scoring", {})
+                _scoring_cfg = _yaml.safe_load(_f) or {}
     except Exception:
         pass
+    _pattern_bonus = _scoring_cfg.get("modeling_pattern_bonus", {})
 
     scored = []
     for solver in solvers:
@@ -991,7 +991,8 @@ def recommend_solvers(
             for k in result["scores"]
         )
 
-        # 실행 경로(SP/IR) 보정: SP가 가능한 problem_type에서 IR을 타는 solver에 패널티
+        # 모델링 패턴 보너스: 문제의 최적 패턴을 지원하는 solver에 보너스
+        # 지원하지 않으면 보너스를 못 받을 뿐, 별도 패널티 없음
         from engine.compiler.compiler_registry import supports_set_partitioning, _COLUMN_GEN_PROBLEM_TYPES
         from engine.config_loader import _resolve_problem_type
         _solver_id = solver.get("id", "")
@@ -999,14 +1000,10 @@ def recommend_solvers(
         _pt = _resolve_problem_type(_domain)
         _use_sp = supports_set_partitioning(_solver_id, _pt)
 
-        if _pt in _COLUMN_GEN_PROBLEM_TYPES:
-            if _use_sp:
-                total += _path_scoring.get("sp_bonus", 10)
-                result["reasons"].append(f"SP 경로 보너스 (+{_path_scoring.get('sp_bonus', 10)})")
-            else:
-                penalty = _path_scoring.get("ir_penalty_when_sp_available", 15)
-                total -= penalty
-                result["reasons"].append(f"IR 경로 패널티 (-{penalty}): SP 가능 problem type에서 IR 사용")
+        if _pt in _COLUMN_GEN_PROBLEM_TYPES and _use_sp:
+            bonus = _pattern_bonus.get("column_generation", 10)
+            total += bonus
+            result["reasons"].append(f"Column Generation 보너스 (+{bonus})")
 
         scored.append({
             "solver_id": solver.get("id", ""),

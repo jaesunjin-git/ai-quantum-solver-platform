@@ -284,23 +284,58 @@ def _generate_execution_strategies(
     is_large_scale = model_analysis.get("is_large_scale", False)
     decomposable = model_analysis.get("decomposable", False)
 
-    # 
+    #
     # Strategy A: 단일 솔버 (상위 N개)
-    # 
+    #   quantum_hybrid standalone 패널티: problem_type 기반 조건부 적용
+    #   (column_generation 문제에서만 패널티, 그 외는 standalone 유효)
+    #
+    _strategy_penalty_cfg = {}
+    try:
+        import yaml as _yaml
+        _ss_path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                                "configs", "pre_decision", "scoring.yaml")
+        if os.path.exists(_ss_path):
+            with open(_ss_path, "r", encoding="utf-8") as _f:
+                _ss_data = _yaml.safe_load(_f) or {}
+            _strategy_penalty_cfg = _ss_data.get("strategy_penalty", {})
+    except Exception:
+        pass
+    _hybrid_standalone_penalties = _strategy_penalty_cfg.get("quantum_hybrid_standalone", {})
+
+    # 현재 problem type 판별
+    from engine.config_loader import _resolve_problem_type
+    _domain = profile.get("domain") if profile else None
+    _problem_type = _resolve_problem_type(_domain) if _domain else None
+    # problem_type → modeling_pattern 매핑
+    from engine.compiler.compiler_registry import _COLUMN_GEN_PROBLEM_TYPES
+    _modeling_pattern = "column_generation" if _problem_type in _COLUMN_GEN_PROBLEM_TYPES else None
+
     max_single = min(2, len(solvers))
     for i in range(max_single):
         top = solvers[i]
         label = "최고 점수 솔버" if i == 0 else f"{i+1}순위 솔버"
+        confidence = top["total_score"]
+        _extra_cons = []
+        if top.get("category") == "quantum_hybrid":
+            penalty = _hybrid_standalone_penalties.get(
+                _modeling_pattern,
+                _hybrid_standalone_penalties.get("default", 0)
+            )
+            if penalty > 0:
+                confidence -= penalty
+                _extra_cons.append(
+                    "Heuristic standalone은 이 문제 유형에서 feasible 해 보장 불가 → Hybrid 전략 권장"
+                )
         strategies.append({
             "strategy_id": f"single_best_{i+1}",
             "strategy_type": "single",
             "name": f"단일 솔버: {top['solver_name']}",
             "description": f"{label} {top['solver_name']}으로 전체 문제를 직접 해결합니다.",
             "pros": ["구현 단순", "오버헤드 없음", f"적합도: {top.get('suitability', '-')}"],
-            "cons": _get_single_cons(top, model_analysis),
+            "cons": _get_single_cons(top, model_analysis) + _extra_cons,
             "estimated_time": top.get("estimated_time", []),
             "estimated_cost": top.get("estimated_cost", []),
-            "confidence": top["total_score"],
+            "confidence": confidence,
             "steps": [
                 {
                     "step_id": "step_1",

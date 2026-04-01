@@ -1,18 +1,33 @@
 # ============================================================
 # Pre-Decision Scoring Configuration
 # ============================================================
-# solver 추천 시 실행 경로(SP/IR)에 따른 점수 보정.
+# solver 추천 점수 보정 — problem_type × solver/strategy 조합 기준.
 #
-# 핵심 구분:
-#   - IR 경로 자체가 나쁜 것이 아님
-#   - SP 경로가 있는 problem_type에서 굳이 IR로 가는 것이 비효율
-#   - SP 경로가 없는 problem_type (material_optimization)에서는 패널티 없음
+# 설계 원칙:
+#   score = base_score
+#         + modeling_pattern_bonus(problem_type, solver)
+#         - strategy_penalty(problem_type, strategy)
+#
+# 카테고리 일괄 적용 없음 — 모든 보정은 problem_type 기반.
 # ============================================================
 
-path_scoring:
-  # SP 경로를 탈 수 있는 solver에 보너스
-  sp_bonus: 10
+# ── 모델링 패턴 보너스 ──
+# 문제 유형의 최적 모델링 패턴을 지원하는 solver에 보너스.
+# 지원하지 않는 solver는 보너스를 못 받을 뿐, 별도 패널티 없음.
+modeling_pattern_bonus:
+  column_generation: 10      # crew_scheduling, vehicle_routing
+  # nl_native: 10            # material_optimization (향후)
+  # qubo_native: 10          # portfolio (향후)
 
-  # SP 경로가 존재하는 problem_type에서 IR로 가는 solver에 패널티
-  # (Column Gen 사전 검증, overlap 구조적 보장, 변수 수 감소 등의 이점을 놓치므로)
-  ir_penalty_when_sp_available: 15
+# ── 전략 패널티 ──
+# quantum_hybrid solver를 standalone(단일 솔버)으로 사용 시 confidence 패널티.
+# problem_type별 분리: heuristic이 standalone으로 비실용적인 문제에만 적용.
+#
+# column_generation: Set Partitioning의 coverage ==1 exact constraint →
+#   heuristic solver가 feasible 해를 찾지 못함 → Hybrid 전용 권장
+#   85 - 50 = 35 → "Limited"  |  85 - 55 = 30 → "Not Suitable"
+# default: 그 외 문제 유형에서는 standalone 유효 → 패널티 없음
+strategy_penalty:
+  quantum_hybrid_standalone:
+    column_generation: 50
+    default: 0

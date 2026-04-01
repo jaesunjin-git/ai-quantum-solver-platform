@@ -126,14 +126,62 @@ class CQMCompiler(BaseSPCompiler):
         logger.info(f"CQM cap: {len(anchor_ids)} anchor columns "
                      f"(covers {len(covered)}/{len(all_tasks)} tasks)")
 
-        # ── 2단계: 나머지 budget을 cost 기준으로 채움 ──
+        # ── 2단계: Diversity-aware fill (대안 부족 task 우선 배정) ──
         remaining_budget = max_columns - len(anchor_ids)
         if remaining_budget > 0:
-            candidates = sorted(
-                [c for c in columns if c.id not in anchor_ids],
-                key=lambda c: c.cost
-            )
-            fill_ids = {c.id for c in candidates[:remaining_budget]}
+            # task별 현재 대안 수 (anchor 기준)
+            task_alt_count: Dict[int, float] = {tid: 0 for tid in all_tasks}
+            for cid in anchor_ids:
+                for tid in col_tasks.get(cid, set()):
+                    if tid in task_alt_count:
+                        task_alt_count[tid] += 1
+
+            # task → remaining columns 인덱스 (빠른 탐색용)
+            task_to_remaining: Dict[int, List] = {}
+            for c in columns:
+                if c.id not in anchor_ids:
+                    for tid in c.trips:
+                        task_to_remaining.setdefault(tid, []).append(c)
+
+            fill_ids: set = set()
+            while len(fill_ids) < remaining_budget:
+                # 대안이 가장 적은 task 찾기 (round-robin)
+                min_count = min(task_alt_count.values())
+                if min_count == float('inf'):
+                    break  # 모든 task에 추가 가능한 column 없음
+                min_task = min(task_alt_count, key=task_alt_count.get)
+
+                # 해당 task를 포함하는 미선택 column 중 cheapest
+                cands = [c for c in task_to_remaining.get(min_task, [])
+                         if c.id not in fill_ids]
+                if not cands:
+                    task_alt_count[min_task] = float('inf')
+                    continue
+
+                best = min(cands, key=lambda c: c.cost)
+                fill_ids.add(best.id)
+                for tid in col_tasks.get(best.id, set()):
+                    if tid in task_alt_count and task_alt_count[tid] != float('inf'):
+                        task_alt_count[tid] += 1
+
+            # diversity fill 후 남은 budget → cheapest로 채움
+            if len(fill_ids) < remaining_budget:
+                extra = sorted(
+                    [c for c in columns if c.id not in anchor_ids and c.id not in fill_ids],
+                    key=lambda c: c.cost
+                )
+                for c in extra[:remaining_budget - len(fill_ids)]:
+                    fill_ids.add(c.id)
+
+            # diversity 통계 로깅
+            final_alt = {tid: 0 for tid in all_tasks}
+            for cid in anchor_ids | fill_ids:
+                for tid in col_tasks.get(cid, set()):
+                    if tid in final_alt:
+                        final_alt[tid] += 1
+            alt_vals = list(final_alt.values())
+            logger.info(f"CQM cap fill: task alternatives min={min(alt_vals)}, "
+                        f"avg={sum(alt_vals)/len(alt_vals):.1f}, max={max(alt_vals)}")
         else:
             fill_ids = set()
 

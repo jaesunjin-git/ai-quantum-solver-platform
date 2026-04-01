@@ -235,13 +235,20 @@ def _run_solver_sync(
                     is_compare = bool(job.compare_group_id)
 
                 from engine.post_processing import post_process_solve_result
+                # objective_value: interpreted result의 실제 값 우선 (repair 후 duty 수 등)
+                # fallback: executor의 raw objective_value
+                _obj_val = result.execute_result.objective_value if result.execute_result else None
+                _interpreted = (summary or {}).get("interpreted_result", {})
+                _kpi = _interpreted.get("kpi", {})
+                if _kpi.get("active_duties") is not None:
+                    _obj_val = float(_kpi["active_duties"])
                 post_process_solve_result(
                     project_id=int(project_id),
                     solver_id=solver_id,
                     solver_name=solver_name,
                     summary=summary,
                     status=result.execute_result.status if result.execute_result else "UNKNOWN",
-                    objective_value=result.execute_result.objective_value if result.execute_result else None,
+                    objective_value=_obj_val,
                     db=db,
                     job_id=job_id,
                     is_compare=is_compare,

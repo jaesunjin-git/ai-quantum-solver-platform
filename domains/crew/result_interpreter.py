@@ -476,10 +476,16 @@ class RailwayResultInterpreter(GenericResultInterpreter):
         if constraint_violations:
             warnings.append(f"제약 위반 {len(constraint_violations)}건 감지")
 
+        # ── objective display 해석 (YAML 기반, SP/IR 공통) ──
+        from domains.crew.result_converter import _resolve_objective_display
+        _obj_display = _resolve_objective_display(obj_type, kpi, objective_value)
+
         return {
             "objective_type": obj_type,
-            "objective_label": obj_label,
+            "objective_label": _obj_display["label"] or obj_label,
             "objective_value": objective_value,
+            "objective_display_value": _obj_display["display_value"],
+            "objective_direction": _obj_display["direction"],
             "solver_id": solver_id,
             "solver_name": solver_name,
             "status": status,

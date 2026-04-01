@@ -6,7 +6,7 @@
 # ── Objective classification ──
 objective_types:
   duty_count_min:
-    patterns: ["sum(u[", "minimize.*u[", "min.*duty"]
+    patterns: ["sum(u[", "sum(y[", "minimize.*u[", "minimize.*y[", "min.*duty"]
     label_ko: "듀티 수 최소화"
     label_en: "Minimize Duty Count"
   cost_min:
@@ -163,6 +163,11 @@ artifacts:
 # direction: 최적화 방향 안내
 objective_display:
   minimize_duties:
+    label_ko: "최소 승무원 수"
+    value_source: "kpi.active_duties"
+    value_suffix: "조"
+    direction: "낮을수록 좋음"
+  duty_count_min:
     label_ko: "최소 승무원 수"
     value_source: "kpi.active_duties"
     value_suffix: "조"

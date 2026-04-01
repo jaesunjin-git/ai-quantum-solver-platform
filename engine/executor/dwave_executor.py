@@ -57,9 +57,9 @@ class DWaveExecutor(BaseExecutor):
             logger.info(f"CQM: submitting to D-Wave (time_limit={time_limit}s)")
             start = time.time()
             sampleset = sampler.sample_cqm(cqm, time_limit=time_limit)
-            elapsed = time.time() - start
 
-            # Filter feasible solutions
+            # NOTE: sample_cqm()은 future를 즉시 반환.
+            # filter()/first 접근 시 blocking resolve → 여기서 wall_time 측정.
             feasible = sampleset.filter(lambda s: s.is_feasible)
             if len(feasible) > 0:
                 best = feasible.first
@@ -70,12 +70,14 @@ class DWaveExecutor(BaseExecutor):
                 status = "INFEASIBLE_BEST"
                 success = True
             else:
+                elapsed = time.time() - start
                 return ExecuteResult(
                     success=False,
                     solver_type="cqm",
                     status="NO_SOLUTION",
                     execution_time_sec=round(elapsed, 3),
                 )
+            elapsed = time.time() - start  # resolve 완료 후 측정
 
             # Extract solution
             solution = {}
@@ -93,14 +95,49 @@ class DWaveExecutor(BaseExecutor):
 
             obj_val = float(best.energy) if hasattr(best, 'energy') and best.energy is not None else None
 
-            logger.info(f"CQM: status={status}, energy={obj_val}, time={elapsed:.2f}s, feasible={len(feasible)}/{len(sampleset)}")
+            # D-Wave 서버 측 실행 시간 (과금 기준)
+            # Hybrid solver: sampleset.info["charge_time"] (초 단위, top-level)
+            # QPU solver: sampleset.info["timing"]["charge_time"] (μs, nested)
+            dwave_timing = sampleset.info.get("timing", {})
+            charge_time_s = sampleset.info.get("charge_time", 0)
+            if not charge_time_s:
+                # QPU fallback: timing dict 내 μs 단위
+                charge_time_us = dwave_timing.get("charge_time", 0)
+                charge_time_s = charge_time_us / 1_000_000 if charge_time_us else 0
 
-            # INFEASIBLE_BEST 진단 정보 생성
-            infeasibility_info = None
+            logger.info(
+                f"CQM: status={status}, energy={obj_val}, "
+                f"wall_time={elapsed:.1f}s, charge_time={charge_time_s:.1f}s, "
+                f"feasible={len(feasible)}/{len(sampleset)}"
+            )
+
+            # ── INFEASIBLE_BEST → 경량 repair (최대 2 round) ──
+            repaired = False
             if status == "INFEASIBLE_BEST":
+                solution, repaired = self._repair_ir_coverage(
+                    solution, var_map, max_rounds=2
+                )
+                if repaired:
+                    # repair 후 재검증
+                    remaining = self._check_ir_coverage(solution, var_map)
+                    if not remaining:
+                        status = "FEASIBLE_REPAIRED"
+                        success = True
+                        logger.info("CQM IR repair: success → FEASIBLE_REPAIRED")
+                    else:
+                        status = "INFEASIBLE_POST"
+                        logger.warning(
+                            f"CQM IR repair: {len(remaining)} violations remain "
+                            f"→ INFEASIBLE_POST"
+                        )
+
+            # INFEASIBLE 진단 정보 생성
+            infeasibility_info = None
+            if status in ("INFEASIBLE_BEST", "INFEASIBLE_POST"):
                 metadata = compile_result.metadata or {}
                 constraint_info = metadata.get("constraint_info", [])
-                hard_names = [c["name"] for c in constraint_info if c.get("category") == "hard" and c.get("count", 0) > 0]
+                hard_names = [c["name"] for c in constraint_info
+                              if c.get("category") == "hard" and c.get("count", 0) > 0]
                 infeasibility_info = {
                     "summary": {
                         "total_samples": len(sampleset),
@@ -122,7 +159,7 @@ class DWaveExecutor(BaseExecutor):
             return ExecuteResult(
                 success=success,
                 solver_type="cqm",
-                status=status,
+                status="FEASIBLE" if status == "FEASIBLE_REPAIRED" else status,
                 objective_value=obj_val,
                 solution=solution,
                 execution_time_sec=round(elapsed, 3),
@@ -131,7 +168,8 @@ class DWaveExecutor(BaseExecutor):
                     "feasible_samples": len(feasible),
                     "qpu_access_time": sampleset.info.get("qpu_access_time", 0),
                     "charge_time": sampleset.info.get("charge_time", 0),
-                    "timing": sampleset.info.get("timing", {}),
+                    "timing": dwave_timing,
+                    "repaired": repaired,
                 },
                 raw_response=sampleset,
                 infeasibility_info=infeasibility_info,
@@ -142,6 +180,130 @@ class DWaveExecutor(BaseExecutor):
         except Exception as e:
             logger.error(f"CQM execution failed: {e}", exc_info=True)
             return ExecuteResult(success=False, solver_type="cqm", error=str(e))
+
+    # ── IR coverage repair ────────────────────────────────────
+
+    @staticmethod
+    def _parse_tuple_key(key_str: str):
+        """solution key 문자열 "(i, j)" → tuple 파싱."""
+        import ast
+        try:
+            return ast.literal_eval(key_str)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _check_ir_coverage(solution, var_map):
+        """IR 경로 coverage 검증. 위반 trip 목록 반환 (빈 list = 정상)."""
+        from collections import defaultdict
+
+        x_vars = var_map.get("x", {})
+        if not x_vars:
+            return []
+
+        all_trips = set()
+        for key in x_vars:
+            if isinstance(key, tuple) and len(key) >= 2:
+                all_trips.add(key[0])
+
+        x_sol = solution.get("x", {})
+        coverage = defaultdict(int)
+        for key_str, val in x_sol.items():
+            if float(val) < 0.5:
+                continue
+            parsed = DWaveExecutor._parse_tuple_key(key_str)
+            if parsed and len(parsed) >= 2:
+                coverage[parsed[0]] += 1
+
+        violations = []
+        for tid in all_trips:
+            cnt = coverage.get(tid, 0)
+            if cnt != 1:
+                violations.append((tid, cnt))
+        return violations
+
+    @staticmethod
+    def _repair_ir_coverage(solution, var_map, max_rounds=2):
+        """IR(assignment) 경로 coverage repair (경량 1-2 round).
+
+        x[i,j]=1: trip i를 crew j에 배정. coverage 조건: Σ_j x[i,j] == 1.
+        - uncovered (count=0): load 가장 적은 crew에 배정
+        - duplicate (count>1): 하나만 남기고 제거
+        """
+        from collections import defaultdict
+
+        x_vars = var_map.get("x", {})
+        if not x_vars:
+            return solution, False
+
+        # var_map에서 trip → 가능한 crew 매핑 구축
+        all_trips = set()
+        trip_to_crew_keys = defaultdict(list)  # trip → [(key_tuple, key_str)]
+        for key in x_vars:
+            if isinstance(key, tuple) and len(key) >= 2:
+                trip_id = key[0]
+                all_trips.add(trip_id)
+                trip_to_crew_keys[trip_id].append((key, str(key)))
+
+        if not all_trips:
+            return solution, False
+
+        x_sol = solution.get("x", {})
+        y_sol = solution.get("y", {})
+        repaired = False
+
+        for round_num in range(max_rounds):
+            # 현재 trip별 활성 배정 파악
+            trip_active = defaultdict(list)   # trip → [(key_str, crew_id)]
+            crew_load = defaultdict(int)
+
+            for key_str, val in x_sol.items():
+                if float(val) < 0.5:
+                    continue
+                parsed = DWaveExecutor._parse_tuple_key(key_str)
+                if parsed and len(parsed) >= 2:
+                    trip_id, crew_id = parsed[0], parsed[-1]
+                    trip_active[trip_id].append((key_str, crew_id))
+                    crew_load[crew_id] += 1
+
+            uncovered = [t for t in all_trips if not trip_active.get(t)]
+            duplicated = {t: assigns for t, assigns in trip_active.items()
+                          if len(assigns) > 1}
+
+            if not uncovered and not duplicated:
+                break
+
+            logger.info(
+                f"IR repair round {round_num + 1}: "
+                f"uncovered={len(uncovered)}, duplicate={len(duplicated)}"
+            )
+
+            # Case A: uncovered → load 가장 적은 crew에 배정
+            for trip_id in uncovered:
+                candidates = trip_to_crew_keys.get(trip_id, [])
+                if candidates:
+                    best_key, best_str = min(
+                        candidates, key=lambda c: crew_load.get(c[0][-1], 0)
+                    )
+                    x_sol[best_str] = 1.0
+                    crew_id = best_key[-1]
+                    crew_load[crew_id] += 1
+                    y_sol[str((crew_id,))] = 1.0
+                    repaired = True
+
+            # Case B: duplicate → load 가장 적은 crew 것만 유지, 나머지 제거
+            for trip_id, assigns in duplicated.items():
+                assigns_sorted = sorted(assigns, key=lambda a: crew_load.get(a[1], 0))
+                # 첫 번째(load 최소) 유지, 나머지 제거
+                for key_str, crew_id in assigns_sorted[1:]:
+                    if key_str in x_sol:
+                        del x_sol[key_str]
+                    crew_load[crew_id] = max(0, crew_load.get(crew_id, 0) - 1)
+                    repaired = True
+
+        solution["x"] = x_sol
+        solution["y"] = y_sol
+        return solution, repaired
 
     def _execute_bqm(self, compile_result, time_limit) -> ExecuteResult:
         token = self._get_token()
@@ -159,9 +321,10 @@ class DWaveExecutor(BaseExecutor):
             logger.info(f"BQM: submitting to D-Wave (time_limit={time_limit}s)")
             start = time.time()
             sampleset = sampler.sample(bqm, time_limit=time_limit)
-            elapsed = time.time() - start
 
+            # NOTE: sample()은 future 반환 → 결과 접근 시 blocking resolve
             if len(sampleset) == 0:
+                elapsed = time.time() - start
                 return ExecuteResult(
                     success=False,
                     solver_type="bqm",
@@ -170,6 +333,7 @@ class DWaveExecutor(BaseExecutor):
                 )
 
             best = sampleset.first
+            elapsed = time.time() - start  # resolve 완료 후 측정
 
             # Extract solution
             solution = {}
@@ -185,7 +349,7 @@ class DWaveExecutor(BaseExecutor):
 
             obj_val = best.energy
 
-            logger.info(f"BQM: energy={obj_val}, time={elapsed:.2f}s, samples={len(sampleset)}")
+            logger.info(f"BQM: energy={obj_val}, wall_time={elapsed:.1f}s, samples={len(sampleset)}")
 
             return ExecuteResult(
                 success=obj_val is not None,

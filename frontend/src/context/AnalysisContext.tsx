@@ -1,5 +1,5 @@
 ﻿// src/context/AnalysisContext.tsx
-import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useRef, type ReactNode } from 'react';
 import { useProjectContext } from './ProjectContext';
 import { useEffect } from 'react';
 import type { StageValidation } from '../components/analysis/types';
@@ -62,15 +62,24 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
   const [stepCache, setStepCache] = useState<StepCache>({});
   const [completedSteps, setCompletedSteps] = useState<Set<StepId>>(new Set());
   const [stageValidation, setStageValidation] = useState<StageValidation | null>(null);
-
+  // 프로젝트 변경 시 reset — ref로 이전 ID 추적하여 동일 ID 재실행 방지
+  const prevProjectIdRef = useRef<string | number | undefined>(undefined);
   useEffect(() => {
-    setAnalysisDataRaw(null);
-    setStepCache({});
-    setCompletedSteps(new Set());
-    setStageValidation(null);
+    const pid = currentProject?.id;
+    if (pid === prevProjectIdRef.current) return; // 동일 프로젝트 재실행 skip
+    if (prevProjectIdRef.current !== undefined) {
+      // 실제 프로젝트 전환 시에만 reset (초기 로딩 시에는 skip → restore 우선)
+      setAnalysisDataRaw(null);
+      setStepCache({});
+      setCompletedSteps(new Set());
+      setStageValidation(null);
+    }
+    prevProjectIdRef.current = pid;
   }, [currentProject?.id]);
 
   const setAnalysisData = useCallback((data: any) => {
+    // null/undefined → 현재 뷰가 result면 덮어쓰지 않음 (SolverView mount 시 race condition 방지)
+    if (!data && analysisData?.view_mode === 'result') return;
     // ★ 항상 새 객체 참조 생성 — React useEffect dependency 갱신 보장
     // 백엔드가 같은 state 객체를 반환해도 프론트엔드에서 변경 감지 가능
     const freshData = data ? structuredClone(data) : data;
@@ -142,8 +151,15 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
       setCompletedSteps(restoredSteps);
       setStepCache(restoredCache);
     }
+    // 복원 우선순위: result > solver > 기타
+    // 빈 report(content 없음)가 lastData인 경우, result가 있으면 result를 표시
     if (lastData) {
-      setAnalysisDataRaw(lastData);
+      const resultData = restoredCache.result;
+      if (resultData && lastData.view_mode === 'report' && !lastData.report) {
+        setAnalysisDataRaw(resultData);
+      } else {
+        setAnalysisDataRaw(lastData);
+      }
     }
   }, []);
 

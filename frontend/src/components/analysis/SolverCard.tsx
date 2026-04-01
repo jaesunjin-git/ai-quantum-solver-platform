@@ -229,7 +229,9 @@ export function SolverCard({
                               추천
                             </span>
                           )}
-                          <span className="text-[11px] text-slate-500 ml-auto flex-shrink-0">
+                          <span className={`text-[11px] ml-auto flex-shrink-0 ${
+                            st.confidence < 40 ? 'text-orange-400' : 'text-slate-500'
+                          }`}>
                             {st.confidence}
                           </span>
                         </div>

@@ -388,7 +388,7 @@ class SolverPipeline(BaseSolverPipeline):
 
             # 총 시간 예산: generation + compile 시간을 차감하여 solver에 할당
             total_elapsed = compile_time  # compile_time은 generation 포함
-            margin = max(30, time_limit_sec * 0.05)
+            margin = min(60, max(10, time_limit_sec * 0.05))
             solver_time = max(60, time_limit_sec - total_elapsed - margin)
             logger.info(
                 f"Executor: {type(executor).__name__}, "

@@ -404,8 +404,8 @@ class TestRecommendSolversV2:
         weights = _get_dynamic_weights("accuracy", profile)
         assert weights == DEFAULT_WEIGHTS["accuracy"]
 
-    def test_nl_path_penalty_for_crew_scheduling(self):
-        """crew scheduling에서 NL은 IR 경로 패널티로 SP solver보다 낮은 순위"""
+    def test_sp_bonus_ranks_cpsat_above_nl(self):
+        """crew scheduling에서 CP-SAT은 SP 보너스로 NL보다 높은 순위"""
         from engine.solver_registry import recommend_solvers
         model = _make_math_model(
             problem_name="crew_scheduling_permutation",
@@ -430,16 +430,17 @@ class TestRecommendSolversV2:
         result = recommend_solvers(model)
         recs = result["recommendations"]
 
-        # SP 가능 solver (classical_cpu, CQM)가 NL보다 높은 순위
+        # CP-SAT(SP 보너스)이 NL(IR 자연 경로, 패널티 없음)보다 높은 순위
         nl_rec = next((r for r in recs if r["solver_id"] == "dwave_nl"), None)
         cpsat_rec = next((r for r in recs if r["solver_id"] == "classical_cpu"), None)
         if nl_rec and cpsat_rec:
             assert cpsat_rec["total_score"] > nl_rec["total_score"], \
                 f"CP-SAT ({cpsat_rec['total_score']}) should rank higher than NL ({nl_rec['total_score']}) for crew scheduling"
-        # NL에 IR 패널티 reason이 포함되어 있는지
-        if nl_rec:
-            reasons = " ".join(nl_rec.get("reasons", []))
-            assert "IR" in reasons or "패널티" in reasons, f"NL should have IR penalty reason: {nl_rec.get('reasons', [])}"
+        # CP-SAT에 SP 보너스 reason이 포함되어 있는지
+        if cpsat_rec:
+            reasons = " ".join(cpsat_rec.get("reasons", []))
+            assert "SP" in reasons or "보너스" in reasons, \
+                f"CP-SAT should have SP bonus reason: {cpsat_rec.get('reasons', [])}"
 
 
 # ============================================================

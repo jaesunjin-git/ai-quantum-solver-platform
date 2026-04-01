@@ -131,8 +131,11 @@ export function SolverView({
         const resComplete = await authFetch(`/api/jobs?project_id=${projectId}&status=COMPLETE`);
         if (resComplete.ok && !cancelled) {
           const completeJobs = await resComplete.json();
-          if (completeJobs.length > 0 && completeJobs[0].result) {
-            onResultReady?.(completeJobs[0].result);
+          const latestResult = completeJobs?.[0]?.result;
+          // result가 유효한 객체이고 view_mode 또는 status가 있을 때만 전달
+          // (빈 객체/null → 현재 패널 상태를 덮어쓰지 않음)
+          if (latestResult && (latestResult.view_mode || latestResult.status)) {
+            onResultReady?.(latestResult);
           }
         }
       } catch { /* silent */ }
