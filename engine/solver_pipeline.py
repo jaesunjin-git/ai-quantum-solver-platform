@@ -1383,6 +1383,7 @@ class SolverPipeline(BaseSolverPipeline):
                     solver_name=solver_name,
                     status=execute_result.status,
                     objective_value=execute_result.objective_value,
+                    params=(bound_data or {}).get("parameters"),
                     policy_snapshot=bound_data.get("_policy_result"),
                 )
                 saved = save_artifacts(
