@@ -128,18 +128,24 @@ class GenericResultInterpreter:
         return pd.read_csv(path)
 
     def load_parameters(self, project_dir: str) -> dict:
-        """Load parameters.csv → dict. Falls back to mapping defaults."""
+        """Load parameters.csv → dict. semantic_id 기반 키 + param_name 키 병행."""
         import pandas as pd
 
         params_path = os.path.join(project_dir, "normalized", "parameters.csv")
         if os.path.exists(params_path):
             pf = pd.read_csv(params_path)
             params = {}
+            has_semantic = "semantic_id" in pf.columns
             for _, row in pf.iterrows():
                 try:
-                    params[row.iloc[0]] = float(row.iloc[1])
+                    val = float(row.iloc[1])
                 except (ValueError, TypeError):
-                    params[row.iloc[0]] = row.iloc[1]
+                    val = row.iloc[1]
+                # param_name 키 (하위 호환)
+                params[row.iloc[0]] = val
+                # semantic_id 키 (YAML verify 룰과 매칭)
+                if has_semantic and pd.notna(row.get("semantic_id")):
+                    params[row["semantic_id"]] = val
             return params
         return dict(self.mapping.get("parameter_defaults", {}))
 

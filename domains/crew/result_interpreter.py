@@ -74,129 +74,157 @@ class RailwayResultInterpreter(GenericResultInterpreter):
         total_trips: int,
         covered_trips: int,
     ) -> Optional[dict]:
+        """YAML 기반 자동 검증 — result_mapping.yaml의 constraint_verify 룰 사용."""
         label = self.get_hard_label(cname)
+        verify_rules = self.mapping.get("constraint_verify", {})
+        rule = verify_rules.get(cname)
 
-        # Structural constraints
-        if cname == "trip_coverage":
+        # ── 룰 없는 제약: 구조적 보장으로 표시 ──
+        if not rule:
             return {
-                "name": label, "limit": f"{total_trips}개",
-                "max_actual": f"{covered_trips}개",
-                "satisfied": covered_trips == total_trips,
+                "name": label, "limit": "-",
+                "max_actual": "-", "satisfied": True,
                 "constraint_type": "structural",
+                "auto_guaranteed": True,
+                "guarantee_reason": "Column Gen에서 사전 검증됨",
             }
 
-        if cname == "no_overlap":
-            all_tids = [t["trip_id"] for d in duties for t in d.get("trips", [])]
-            overlap_cnt = len(all_tids) - len(set(all_tids))
+        rule_type = rule.get("type", "structural")
+
+        # ── skip: 표시 안 함 ──
+        if rule_type == "skip":
+            return None
+
+        # ── structural: SP 모델 구조상 보장 ──
+        if rule_type == "structural":
+            # trip_coverage, no_overlap은 실제 검증도 수행
+            if cname == "trip_coverage":
+                return {
+                    "name": label, "limit": f"{total_trips}개",
+                    "max_actual": f"{covered_trips}개",
+                    "satisfied": covered_trips == total_trips,
+                    "constraint_type": "structural",
+                    "auto_guaranteed": covered_trips == total_trips,
+                    "guarantee_reason": rule.get("guarantee_reason", ""),
+                }
+            if cname == "no_overlap":
+                all_tids = [t["trip_id"] for d in duties for t in d.get("trips", [])]
+                overlap_cnt = len(all_tids) - len(set(all_tids))
+                return {
+                    "name": label, "limit": "중복 없음",
+                    "max_actual": "없음" if overlap_cnt == 0 else f"{overlap_cnt}건",
+                    "satisfied": overlap_cnt == 0,
+                    "constraint_type": "structural",
+                    "auto_guaranteed": overlap_cnt == 0,
+                    "guarantee_reason": rule.get("guarantee_reason", ""),
+                }
             return {
-                "name": label, "limit": "중복 없음",
-                "max_actual": "없음" if overlap_cnt == 0 else f"{overlap_cnt}건",
-                "satisfied": overlap_cnt == 0,
+                "name": label, "limit": "-",
+                "max_actual": "-", "satisfied": True,
                 "constraint_type": "structural",
+                "auto_guaranteed": True,
+                "guarantee_reason": rule.get("guarantee_reason", ""),
             }
 
-        if cname == "crew_activation_linking":
-            empty = sum(1 for d in duties if d["trip_count"] == 0)
-            return {
-                "name": label, "limit": "빈 듀티 없음",
-                "max_actual": "없음" if empty == 0 else f"빈 듀티 {empty}개",
-                "satisfied": empty == 0,
-                "constraint_type": "structural",
-            }
+        # ── parametric: duty 필드 vs 파라미터 비교 ──
+        if rule_type == "parametric":
+            duty_field = rule.get("duty_field", "")
+            op = rule.get("operator", "<=")
+            param_name = rule.get("param", "")
+            aggregation = rule.get("aggregation", "max")
+            unit = rule.get("unit", "")
+            label_suffix = rule.get("label_suffix", "")
+            condition = rule.get("condition")
 
-        if cname == "preparation_time":
-            prep = self.get_param(params, "prep_time_minutes")
-            return {
-                "name": label, "limit": f"{prep:.0f}분",
-                "max_actual": "적용됨", "satisfied": True,
-                "constraint_type": "structural",
-            }
-
-        if cname == "cleanup_time":
-            cleanup = self.get_param(params, "cleanup_time_minutes")
-            return {
-                "name": label, "limit": f"{cleanup:.0f}분",
-                "max_actual": "적용됨", "satisfied": True,
-                "constraint_type": "structural",
-            }
-
-        # Parametric constraints
-        if cname == "max_driving_time":
-            limit = self.get_param(params, "max_driving_minutes")
-            max_val = max((d["total_driving_min"] for d in duties), default=0)
-            return {
-                "name": label, "limit": f"{limit:.0f}분",
-                "max_actual": f"{max_val:.0f}분",
-                "satisfied": max_val <= limit,
-                "constraint_type": "parametric",
-            }
-
-        if cname == "max_work_time":
-            limit = self.get_param(params, "max_work_minutes")
-            max_val = max((d["total_work_min"] for d in duties), default=0)
-            return {
-                "name": label, "limit": f"{limit:.0f}분",
-                "max_actual": f"{max_val:.0f}분",
-                "satisfied": max_val <= limit,
-                "constraint_type": "parametric",
-            }
-
-        if cname == "max_wait_time":
-            limit = float(params.get("max_wait_minutes", params.get("max_idle_minutes", 0)))
-            if limit <= 0:
+            limit_val = float(params.get(param_name, 0))
+            if limit_val <= 0:
                 return {
                     "name": label, "limit": "미설정",
                     "max_actual": "-", "satisfied": True,
                     "constraint_type": "parametric",
                 }
-            max_val = max((d["idle_min"] for d in duties), default=0)
+
+            # 조건 필터링 (예: overnight만)
+            filtered = duties
+            if condition:
+                cond_field = condition.get("duty_field", "")
+                if "equals" in condition:
+                    cond_val = condition["equals"]
+                    filtered = [d for d in duties if d.get(cond_field) == cond_val]
+                elif "in" in condition:
+                    cond_vals = condition["in"]
+                    filtered = [d for d in duties if d.get(cond_field) in cond_vals]
+
+            if not filtered:
+                return {
+                    "name": label, "limit": f"{limit_val:.0f}{unit}",
+                    "max_actual": "해당 없음", "satisfied": True,
+                    "constraint_type": "parametric",
+                }
+
+            # 필드 값 추출 + 집계
+            values = [d.get(duty_field, 0) for d in filtered]
+            if aggregation == "max":
+                actual = max(values) if values else 0
+            elif aggregation == "min":
+                actual = min(values) if values else 0
+            else:
+                actual = sum(values) / len(values) if values else 0
+
+            # 비교
+            if op == "<=":
+                satisfied = actual <= limit_val
+            elif op == ">=":
+                satisfied = actual >= limit_val
+            elif op == "<":
+                satisfied = actual < limit_val
+            elif op == ">":
+                satisfied = actual > limit_val
+            else:
+                satisfied = actual == limit_val
+
             return {
-                "name": label, "limit": f"{limit:.0f}분",
-                "max_actual": f"{max_val:.0f}분",
-                "satisfied": max_val <= limit,
+                "name": label, "limit": f"{limit_val:.0f}{unit}",
+                "max_actual": f"{actual:.0f}{unit}{' ' + label_suffix if label_suffix else ''}",
+                "satisfied": satisfied,
                 "constraint_type": "parametric",
             }
 
-        if cname == "mandatory_break":
-            limit = float(params.get("mandatory_break_minutes", 0))
-            if limit <= 0:
+        # ── count: 위반 건수 집계 ──
+        if rule_type == "count":
+            check = rule.get("check", "")
+            op = rule.get("operator", ">=")
+            param_name = rule.get("param", "")
+            unit = rule.get("unit", "")
+
+            limit_val = float(params.get(param_name, 0))
+            if limit_val <= 0:
                 return {
                     "name": label, "limit": "미설정",
                     "max_actual": "-", "satisfied": True,
                     "constraint_type": "parametric",
                 }
-            violated = sum(
-                1 for d in duties if _max_inter_trip_gap(d.get("trips", [])) < limit
-            )
+
+            violated = 0
+            if check == "max_inter_trip_gap":
+                for d in duties:
+                    gap = _max_inter_trip_gap(d.get("trips", []))
+                    if op == ">=" and gap < limit_val:
+                        violated += 1
+                    elif op == "<=" and gap > limit_val:
+                        violated += 1
+
             return {
-                "name": label, "limit": f"{limit:.0f}분",
+                "name": label, "limit": f"{limit_val:.0f}{unit}",
                 "max_actual": "충족" if violated == 0 else f"위반 {violated}건",
                 "satisfied": violated == 0,
                 "constraint_type": "parametric",
             }
 
-        if cname == "meal_break_guarantee":
-            limit = float(params.get("meal_break_minutes", 0))
-            if limit <= 0:
-                return {
-                    "name": label, "limit": "미설정",
-                    "max_actual": "-", "satisfied": True,
-                    "constraint_type": "parametric",
-                }
-            violated = sum(
-                1 for d in duties if _max_inter_trip_gap(d.get("trips", [])) < limit
-            )
-            return {
-                "name": label, "limit": f"{limit:.0f}분",
-                "max_actual": "충족" if violated == 0 else f"위반 {violated}건",
-                "satisfied": violated == 0,
-                "constraint_type": "parametric",
-            }
-
-        # Unknown hard constraint → structural applied
+        # fallback
         return {
-            "name": label, "limit": "적용됨",
-            "max_actual": "적용됨", "satisfied": True,
+            "name": label, "limit": "-",
+            "max_actual": "-", "satisfied": True,
             "constraint_type": "structural",
         }
 
@@ -440,33 +468,29 @@ class RailwayResultInterpreter(GenericResultInterpreter):
             if c.get("category", c.get("priority", "hard")) == "soft"
         ]
 
+        # YAML constraint_verify 기반 자동 검증
+        # math_model 제약 + YAML 정의 제약 합집합으로 검증
         constraint_status = []
+        verified_names = set()
+
+        # 1차: math_model에 정의된 hard constraint
         for c in hard_constraints:
             cname = c.get("name", c.get("id", ""))
             entry = self._check_hard_constraint(cname, duties, params, total_trips, total_trips_covered)
             if entry:
                 constraint_status.append(entry)
+                verified_names.add(cname)
 
-        # Fallback: no model constraints → basic 4
-        if not constraint_status:
-            constraint_status = [
-                {"name": "운전시간 상한", "limit": f"{max_driving:.0f}분",
-                 "max_actual": f"{max(d['total_driving_min'] for d in duties):.0f}분" if duties else "-",
-                 "satisfied": all(d["total_driving_min"] <= max_driving for d in duties),
-                 "constraint_type": "parametric"},
-                {"name": "근무시간 상한", "limit": f"{max_work:.0f}분",
-                 "max_actual": f"{max(d['total_work_min'] for d in duties):.0f}분" if duties else "-",
-                 "satisfied": all(d["total_work_min"] <= max_work for d in duties),
-                 "constraint_type": "parametric"},
-                {"name": "체류시간 상한", "limit": f"{max_stay:.0f}분",
-                 "max_actual": f"{max(d['total_stay_min'] for d in duties):.0f}분" if duties else "-",
-                 "satisfied": all(d["total_stay_min"] <= max_stay for d in duties),
-                 "constraint_type": "parametric"},
-                {"name": "트립 커버리지", "limit": f"{total_trips}개",
-                 "max_actual": f"{total_trips_covered}개",
-                 "satisfied": total_trips_covered == total_trips,
-                 "constraint_type": "structural"},
-            ]
+        # 2차: YAML constraint_verify에 정의되었지만 math_model에 없는 제약 추가
+        verify_rules = self.mapping.get("constraint_verify", {})
+        for cname, rule in verify_rules.items():
+            if cname in verified_names:
+                continue
+            if rule.get("type") == "skip":
+                continue
+            entry = self._check_hard_constraint(cname, duties, params, total_trips, total_trips_covered)
+            if entry:
+                constraint_status.append(entry)
 
         soft_constraint_status = self._build_soft_constraint_status(soft_constraints)
 

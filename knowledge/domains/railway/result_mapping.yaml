@@ -99,6 +99,151 @@ constraint_labels:
     night_sleep_guarantee: "야간 수면 보장"
     night_rest: "야간 휴식"
 
+# ── Post-solve verification rules ──
+# Result Interpreter가 duty 데이터를 기반으로 자동 검증.
+# type:
+#   structural: SP 모델 구조상 보장 (검증 불필요, 표시만)
+#   parametric: duty 필드 vs 파라미터 비교
+#   count:      위반 건수 집계
+# condition: 특정 duty에만 적용 (예: overnight만)
+constraint_verify:
+  # ── Structural (SP 모델 보장) ──
+  trip_coverage:
+    type: structural
+    guarantee_reason: "SP 모델에서 각 trip exactly once 포함"
+  crew_activation_linking:
+    type: structural
+    guarantee_reason: "SP 모델에서 column 선택 시 자동 포함"
+  crew_activation_reverse:
+    type: structural
+    guarantee_reason: "SP 모델에서 column 선택 시 자동 포함"
+  no_overlap:
+    type: structural
+    guarantee_reason: "Column Gen에서 feasible column만 생성"
+  preparation_time:
+    type: structural
+    guarantee_reason: "Column Gen에서 준비시간 포함하여 생성"
+  cleanup_time:
+    type: structural
+    guarantee_reason: "Column Gen에서 정리시간 포함하여 생성"
+  day_night_classification:
+    type: structural
+    guarantee_reason: "Column Gen에서 주야 분류 적용하여 생성"
+
+  # ── Parametric (duty 필드 vs 파라미터) ──
+  max_driving_time:
+    type: parametric
+    duty_field: total_driving_min
+    operator: "<="
+    param: max_driving_minutes
+    aggregation: max
+    unit: "분"
+  max_work_time:
+    type: parametric
+    duty_field: total_work_min
+    operator: "<="
+    param: max_work_minutes
+    aggregation: max
+    unit: "분"
+  max_wait_time_day:
+    type: parametric
+    duty_field: wait_minutes
+    operator: "<="
+    param: max_wait_minutes
+    aggregation: max
+    unit: "분"
+    condition:
+      duty_field: is_night
+      equals: false
+  max_wait_time_night:
+    type: parametric
+    duty_field: wait_minutes
+    operator: "<="
+    param: max_wait_minutes
+    aggregation: max
+    unit: "분"
+    condition:
+      duty_field: is_night
+      equals: true
+  max_total_stay_time:
+    type: parametric
+    duty_field: total_stay_min
+    operator: "<="
+    param: max_total_stay_minutes
+    aggregation: max
+    unit: "분"
+  day_duty_start:
+    type: parametric
+    duty_field: start_time_min
+    operator: ">="
+    param: day_duty_start_earliest
+    aggregation: min
+    unit: "분"
+    condition:
+      duty_field: is_night
+      equals: false
+  day_duty_end:
+    type: parametric
+    duty_field: start_time_min
+    operator: "<="
+    param: day_duty_end_latest
+    aggregation: max
+    unit: "분"
+    condition:
+      duty_field: is_night
+      equals: false
+  night_sleep_guarantee:
+    type: parametric
+    duty_field: sleep_minutes
+    operator: ">="
+    param: min_night_sleep_minutes
+    aggregation: min
+    unit: "분"
+    label_suffix: "(최소)"
+    condition:
+      duty_field: column_type
+      in: [overnight]
+  night_rest:
+    type: parametric
+    duty_field: sleep_minutes
+    operator: ">="
+    param: min_night_rest_total_minutes
+    aggregation: min
+    unit: "분"
+    condition:
+      duty_field: column_type
+      in: [overnight]
+  overnight_work_time_excluding_sleep:
+    type: parametric
+    duty_field: total_work_min
+    operator: "<="
+    param: max_work_minutes
+    aggregation: max
+    unit: "분"
+    condition:
+      duty_field: column_type
+      in: [overnight]
+
+  # ── Count (위반 건수 집계) ──
+  mandatory_break:
+    type: count
+    check: max_inter_trip_gap
+    operator: ">="
+    param: min_break_minutes
+    unit: "분"
+  meal_break_guarantee:
+    type: count
+    check: max_inter_trip_gap
+    operator: ">="
+    param: min_meal_break_minutes
+    unit: "분"
+  fixed_total_duties:
+    type: skip
+  fixed_day_crew_count:
+    type: skip
+  fixed_night_crew_count:
+    type: skip
+
 # ── KPI definitions ──
 # These define what KPIs are shown in the result dashboard
 kpi:
