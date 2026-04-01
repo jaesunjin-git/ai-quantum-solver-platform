@@ -79,14 +79,13 @@ class RailwayResultInterpreter(GenericResultInterpreter):
         verify_rules = self.mapping.get("constraint_verify", {})
         rule = verify_rules.get(cname)
 
-        # ── 룰 없는 제약: 구조적 보장으로 표시 ──
+        # ── 룰 없는 제약: 미검증으로 표시 (보장됨이라 하지 않음) ──
         if not rule:
             return {
                 "name": label, "limit": "-",
-                "max_actual": "-", "satisfied": True,
-                "constraint_type": "structural",
-                "auto_guaranteed": True,
-                "guarantee_reason": "Column Gen에서 사전 검증됨",
+                "max_actual": "미검증", "satisfied": True,
+                "constraint_type": "unverified",
+                "unverified": True,
             }
 
         rule_type = rule.get("type", "structural")

@@ -67,14 +67,27 @@ export function ConstraintCheckTab({
       {/* 하드 제약별 상세 */}
       <div className="space-y-2">
         {interpreted.constraint_status.map((cs: any, i: number) => {
-          // auto_guaranteed: 솔버가 구조적으로 보장하는 제약 (간결 표시)
+          // unverified: 검증 룰이 없어 post-solve 검증 불가
+          if (cs.unverified) {
+            return (
+              <div key={i} className="rounded-lg p-2.5 border bg-slate-800/30 border-slate-700/50 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle size={14} className="text-slate-500" />
+                  <span className="text-[12px] text-slate-400">{cs.name}</span>
+                  <span className="text-[9px] text-slate-500 bg-slate-700/50 px-1.5 py-0.5 rounded">미검증</span>
+                </div>
+              </div>
+            );
+          }
+
+          // auto_guaranteed: SP 모델 구조상 수학적으로 보장되는 제약
           if (cs.auto_guaranteed) {
             return (
               <div key={i} className="rounded-lg p-2.5 border bg-slate-800/30 border-slate-700/50 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <CheckCircle size={14} className="text-green-500/70" />
                   <span className="text-[12px] text-slate-400">{cs.name}</span>
-                  <span className="text-[9px] text-green-600 bg-green-500/10 px-1.5 py-0.5 rounded">보장됨</span>
+                  <span className="text-[9px] text-green-600 bg-green-500/10 px-1.5 py-0.5 rounded">SP 구조 보장</span>
                 </div>
                 <span className="text-[10px] text-slate-600">{cs.guarantee_reason}</span>
               </div>
