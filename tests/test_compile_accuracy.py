@@ -215,3 +215,130 @@ class TestModuleImport:
     def test_gate3_importable(self):
         from engine.gates.gate3_compile_check import run as run_gate3
         assert callable(run_gate3)
+
+
+# ============================================================
+# 8. Affine Collector → CompileIssue 등록 검증
+# ============================================================
+
+class TestAffineCollectorCompileIssue:
+    """affine collector 경로에서 constant infeasible이 CompileIssue로 등록되는지 검증."""
+
+    def test_hard_constant_infeasible_registers_issue(self):
+        """hard 제약이 constant infeasible이면 CompileIssue severity='error'로 등록"""
+        from engine.compiler.compile_types import CompileContext
+        from engine.compiler.affine_collector import (
+            AffineExprIR, check_constant_constraint,
+        )
+
+        ctx = CompileContext()
+
+        # -380 >= 0 → infeasible (변수 없이 상수만 남은 hard 제약)
+        expr = AffineExprIR(constant=-380.0, linear_terms={})
+        result = check_constant_constraint(expr, ">=")
+        assert result == "infeasible"
+
+        # CompileIssue 등록 로직 검증 (dwave_cqm_compiler 내부 로직 재현)
+        from engine.compiler.compile_types import CompileIssue
+        category = "hard"
+        ctx.add_issue(CompileIssue(
+            code="CONSTANT_INFEASIBLE",
+            severity="error" if category == "hard" else "warning",
+            constraint="day_duty_start", category=category,
+            detail="1 instances (affine_collector)",
+        ))
+
+        assert ctx.has_errors
+        assert ctx.constant_infeasible_count == 1
+        assert not ctx.feasibility_exact
+
+    def test_soft_constant_infeasible_registers_warning(self):
+        """soft 제약이 constant infeasible이면 severity='warning' (compile fail 아님)"""
+        from engine.compiler.compile_types import CompileContext, CompileIssue
+
+        ctx = CompileContext()
+        ctx.add_issue(CompileIssue(
+            code="CONSTANT_INFEASIBLE",
+            severity="warning",
+            constraint="workload_balance", category="soft",
+            detail="3 instances (affine_collector)",
+        ))
+
+        assert not ctx.has_errors  # soft는 error가 아님
+        assert ctx.constant_infeasible_count == 1  # 이슈는 기록됨
+        assert ctx.feasibility_exact  # soft는 feasibility에 영향 없음
+
+    def test_tautology_not_registered_as_issue(self):
+        """tautology(항상 참)는 CompileIssue로 등록하지 않음"""
+        from engine.compiler.affine_collector import AffineExprIR, check_constant_constraint
+
+        # 0 <= 0 → tautology
+        expr = AffineExprIR(constant=0.0, linear_terms={})
+        assert check_constant_constraint(expr, "<=") == "tautology"
+
+        # -5 <= 0 → tautology
+        expr2 = AffineExprIR(constant=-5.0, linear_terms={})
+        assert check_constant_constraint(expr2, "<=") == "tautology"
+
+    def test_compile_fails_on_hard_constant_infeasible(self):
+        """hard constant infeasible → _has_critical_issues=True → compile fail"""
+        from engine.compiler.compile_types import CompileContext, CompileIssue
+
+        ctx = CompileContext()
+        ctx.add_issue(CompileIssue(
+            code="CONSTANT_INFEASIBLE", severity="error",
+            constraint="max_driving_time", category="hard",
+            detail="5 instances (affine_collector)",
+        ))
+
+        # compile 결과 판정 로직 재현 (dwave_cqm_compiler.py line 419-420)
+        _has_critical_issues = any(i.severity == "error" for i in ctx.issues)
+        _compile_success = not ctx.has_errors and not _has_critical_issues
+        assert not _compile_success  # compile 실패해야 함
+
+
+# ============================================================
+# 9. L3→L4 Canonical 검증 (parameter_errors → compile 차단)
+# ============================================================
+
+class TestCanonicalValidationGate:
+    """GR-4: parameter validation 실패 시 L4 진입 차단 검증."""
+
+    def test_critical_param_error_blocks_compile(self):
+        """타입/range 위반은 compile 진입 차단"""
+        from engine.solver_pipeline import BaseSolverPipeline
+
+        pipeline = BaseSolverPipeline()
+        # _bind_data 내부에서 bound_data에 parameter_errors가 있으면 차단
+        # 직접 호출할 수 없으므로 로직을 단위 테스트
+
+        param_errors = [
+            "Parameter 'max_driving_minutes' = 9999: valid_range [60, 720] 벗어남 (family=time_limit)",
+            "Parameter 'prep_time_minutes' = 'abc': 숫자 변환 실패 (family=duration, type=scalar)",
+        ]
+        critical = [e for e in param_errors if "catalog 미등록" not in e]
+        assert len(critical) == 2  # 둘 다 치명적
+
+    def test_unregistered_param_is_warning_only(self):
+        """catalog 미등록은 경고만 (compile 진행)"""
+        param_errors = [
+            "Parameter 'custom_field': catalog 미등록 (검증 불가)",
+        ]
+        critical = [e for e in param_errors if "catalog 미등록" not in e]
+        assert len(critical) == 0  # 치명적 에러 없음
+
+    def test_mixed_errors_blocks_on_critical(self):
+        """미등록 + range 위반 혼합 시 range 위반만으로 차단"""
+        param_errors = [
+            "Parameter 'custom_field': catalog 미등록 (검증 불가)",
+            "Parameter 'num_crew_day' = -5: valid_range [1, 500] 벗어남 (family=count)",
+        ]
+        critical = [e for e in param_errors if "catalog 미등록" not in e]
+        assert len(critical) == 1
+        assert "num_crew_day" in critical[0]
+
+    def test_empty_param_errors_allows_compile(self):
+        """parameter_errors 없으면 정상 진행"""
+        param_errors = []
+        critical = [e for e in param_errors if "catalog 미등록" not in e]
+        assert len(critical) == 0

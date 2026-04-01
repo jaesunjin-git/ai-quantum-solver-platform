@@ -87,7 +87,11 @@ class BaseSolverPipeline(ABC):
     """
 
     def _bind_data(self, math_model: Dict, project_id: str, solver_id: str = "") -> tuple:
-        """데이터 바인딩. 성공 시 (bound_data, None), 실패 시 (None, PipelineResult)."""
+        """데이터 바인딩. 성공 시 (bound_data, None), 실패 시 (None, PipelineResult).
+
+        GR-4: catalog 검증 실패(타입/range 위반)가 있으면 L4 진입 차단.
+        catalog 미등록 파라미터는 경고만 (새 파라미터일 수 있음).
+        """
         try:
             binder = DataBinder(project_id)
             bound_data = binder.bind_all(math_model)
@@ -97,6 +101,23 @@ class BaseSolverPipeline(ABC):
             )
             for pw in bound_data.get("parameter_warnings", []):
                 logger.warning(f"ParamValidation: {pw}")
+
+            # GR-4: parameter_errors 중 치명적 에러(타입/range 위반) 차단
+            param_errors = bound_data.get("parameter_errors", [])
+            if param_errors:
+                # catalog 미등록은 경고만, 타입/range 위반은 차단
+                critical = [e for e in param_errors if "catalog 미등록" not in e]
+                warnings = [e for e in param_errors if "catalog 미등록" in e]
+                for w in warnings:
+                    logger.warning(f"ParamCatalog: {w}")
+                if critical:
+                    error_msg = "; ".join(critical[:5])
+                    logger.error(f"L3→L4 차단: parameter validation failed — {error_msg}")
+                    return None, PipelineResult(
+                        success=False, phase="bind", solver_id=solver_id,
+                        error=f"Parameter validation failed (GR-4): {error_msg}",
+                    )
+
             return bound_data, None
         except Exception as e:
             logger.error(f"DataBinding failed: {e}", exc_info=True)

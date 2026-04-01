@@ -85,7 +85,7 @@ export function SolverView({
   const [infeasibilityInfo, setInfeasibilityInfo] = useState<any>(null);
   const [selectedStrategyId, setSelectedStrategyId] = useState<string>('');
   const [timeLimitOverride, setTimeLimitOverride] = useState<string>(''); // 런타임 시간 오버라이드
-  const [selectedStrategyType, setSelectedStrategyType] = useState<string>('');
+  const [selectedStrategyType, setSelectedStrategyType] = useState<string>('single');
   const [solverTimeLimits, setSolverTimeLimits] = useState<Record<string, number>>({});
 
   // ── solver settings에서 현재 time_limit 실시간 조회 ──
@@ -214,9 +214,8 @@ export function SolverView({
     const solver = solvers[selectedSolver];
     if (!solver || !projectId) return;
     setInfeasibilityInfo(null);
-    // 선택된 전략 사용. 미선택 시 추천 전략 fallback (UI에서 추천이 기본 선택으로 보이므로)
-    const recommendedType = data.recommended_strategy?.strategy_type;
-    const effectiveStrategy = strategy || selectedStrategyType || recommendedType || undefined;
+    // 사용자가 명시 선택한 전략만 사용 — 추천은 참고용이지 자동 적용 아님
+    const effectiveStrategy = strategy || selectedStrategyType || undefined;
     // 전략에 따른 표시 이름 결정
     const relatedStrategies = data.execution_strategies?.filter((st: any) => {
       if (st.strategy_type === 'parallel_comparison') return false;
@@ -408,9 +407,9 @@ export function SolverView({
       });
     } else {
       setSelectedSolver(idx);
-      // 솔버 변경 시 전략 초기화 (새 솔버의 추천 전략이 자동 선택됨)
+      // 솔버 변경 시 전략을 single로 리셋 — 추천은 표시만, 실행은 사용자 명시 선택만
       setSelectedStrategyId('');
-      setSelectedStrategyType('');
+      setSelectedStrategyType('single');
     }
   };
 
@@ -422,8 +421,8 @@ export function SolverView({
   const selectedSolverData = solvers[selectedSolver];
   const estimatedTime = selectedSolverData?.estimated_time;
 
-  // 전략별 시간 계산 (추천 전략 fallback 포함)
-  const effectiveStrategyForTime = selectedStrategyType || data.recommended_strategy?.strategy_type || '';
+  // 전략별 시간 계산 — 사용자 명시 선택 기준
+  const effectiveStrategyForTime = selectedStrategyType || '';
   const isHybridStrategy = effectiveStrategyForTime === 'quantum_warmstart';
   const cpSatSolver = solvers.find((s: any) => s.category?.startsWith('classical'));
   const cqmSolver = solvers.find((s: any) => s.solver_id === 'dwave_hybrid_cqm');

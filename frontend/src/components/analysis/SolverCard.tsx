@@ -194,8 +194,8 @@ export function SolverCard({
               <div className="space-y-1.5">
                 {relatedStrategies.map((st: any) => {
                   const isRecommended = bestStrategy?.strategy_id === st.strategy_id;
-                  const isStrategySelected = selectedStrategyId === st.strategy_id
-                    || (!selectedStrategyId && isRecommended);
+                  // 사용자가 명시 선택한 전략만 활성 표시 — 추천은 배지로만 표시
+                  const isStrategySelected = selectedStrategyId === st.strategy_id;
 
                   return (
                     <label

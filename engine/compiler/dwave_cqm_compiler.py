@@ -223,7 +223,8 @@ class DWaveCQMCompiler(BaseCompiler):
                         else:
                             _affine_budget = min(_affine_budget, 1000)
                     affine_count = self._try_affine_collector(
-                        cqm, var_map, con_def, ctx, max_count=_affine_budget
+                        cqm, var_map, con_def, ctx, max_count=_affine_budget,
+                        compile_ctx=compile_ctx,
                     )
                     if affine_count > 0:
                         total_constraints += affine_count
@@ -373,7 +374,8 @@ class DWaveCQMCompiler(BaseCompiler):
                 else:
                     # ── Affine Collector 경로 시도 (expression_parser보다 ~100x 빠름) ──
                     affine_count = self._try_affine_collector(
-                        cqm, var_map, con_def, ctx, max_count=min(remaining, per_constraint_cap)
+                        cqm, var_map, con_def, ctx, max_count=min(remaining, per_constraint_cap),
+                        compile_ctx=compile_ctx,
                     )
                     if affine_count > 0:
                         total_constraints += affine_count
@@ -807,7 +809,7 @@ class DWaveCQMCompiler(BaseCompiler):
     # 반복 에러 로그 제한용
     _affine_error_logged: set = set()
 
-    def _try_affine_collector(self, cqm, var_map, con_def, ctx, max_count: int = 0) -> int:
+    def _try_affine_collector(self, cqm, var_map, con_def, ctx, max_count: int = 0, compile_ctx=None) -> int:
         """
         Affine Collector 경로: expression_template → AST → AffineExprIR → dimod CQM.
         expression_parser의 51,200회 문자열 파싱을 우회하여 ~100x 속도 향상.
@@ -848,6 +850,8 @@ class DWaveCQMCompiler(BaseCompiler):
 
         # 4. 바인딩별 affine 수집 + lowering
         count = 0
+        _infeasible_count = 0
+        _tautology_count = 0
         for idx, binding in enumerate(bindings):
             try:
                 lhs_ir = collect_affine(entry.ast_lhs, binding, ctx)
@@ -857,9 +861,17 @@ class DWaveCQMCompiler(BaseCompiler):
                 # constant-only 검사
                 cc = check_constant_constraint(diff, op)
                 if cc == "tautology":
+                    _tautology_count += 1
                     continue
                 elif cc == "infeasible":
-                    logger.warning(f"Constraint {cid}_{idx}: constant infeasible ({diff.constant} {op} 0)")
+                    _infeasible_count += 1
+                    if category == "hard" and _infeasible_count <= 3:
+                        logger.error(
+                            f"Constant infeasible (hard): {cid}_{idx} | "
+                            f"expr={expr_str[:80]} | {diff.constant} {op} 0"
+                        )
+                    else:
+                        logger.warning(f"Constraint {cid}_{idx}: constant infeasible ({diff.constant} {op} 0)")
                     continue
 
                 # dimod lowering
@@ -896,6 +908,20 @@ class DWaveCQMCompiler(BaseCompiler):
                 if idx == 0:
                     logger.debug(f"Constraint '{cid}': affine collector failed ({e}) → fallback")
                 return 0
+
+        # 5. constant infeasible/tautology 집계 → CompileIssue 등록
+        if _infeasible_count > 0:
+            logger.warning(f"Constraint '{cid}': {_infeasible_count} constant infeasible instances (category={category})")
+            if compile_ctx:
+                from engine.compiler.compile_types import CompileIssue
+                compile_ctx.add_issue(CompileIssue(
+                    code="CONSTANT_INFEASIBLE",
+                    severity="error" if category == "hard" else "warning",
+                    constraint=cid, category=category,
+                    detail=f"{_infeasible_count} instances (affine_collector)",
+                ))
+        if _tautology_count > 0:
+            logger.debug(f"Constraint '{cid}': {_tautology_count} tautology instances skipped (affine_collector)")
 
         return count
 
