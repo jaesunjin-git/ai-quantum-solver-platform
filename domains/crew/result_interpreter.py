@@ -468,26 +468,11 @@ class RailwayResultInterpreter(GenericResultInterpreter):
             if c.get("category", c.get("priority", "hard")) == "soft"
         ]
 
-        # YAML constraint_verify 기반 자동 검증
-        # math_model 제약 + YAML 정의 제약 합집합으로 검증
+        # math_model에 정의된 제약만 검증 (사용자/AI가 실제 설정한 것만)
+        # YAML constraint_verify는 "검증 방법" 힌트일 뿐, 제약 목록의 소스가 아님
         constraint_status = []
-        verified_names = set()
-
-        # 1차: math_model에 정의된 hard constraint
         for c in hard_constraints:
             cname = c.get("name", c.get("id", ""))
-            entry = self._check_hard_constraint(cname, duties, params, total_trips, total_trips_covered)
-            if entry:
-                constraint_status.append(entry)
-                verified_names.add(cname)
-
-        # 2차: YAML constraint_verify에 정의되었지만 math_model에 없는 제약 추가
-        verify_rules = self.mapping.get("constraint_verify", {})
-        for cname, rule in verify_rules.items():
-            if cname in verified_names:
-                continue
-            if rule.get("type") == "skip":
-                continue
             entry = self._check_hard_constraint(cname, duties, params, total_trips, total_trips_covered)
             if entry:
                 constraint_status.append(entry)
