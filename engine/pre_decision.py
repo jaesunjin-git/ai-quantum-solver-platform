@@ -8,6 +8,7 @@
 # ============================================================
 
 import logging
+import os
 from typing import Dict, Optional, List
 from .solver_registry import (
     recommend_solvers,
@@ -298,8 +299,8 @@ def _generate_execution_strategies(
             with open(_ss_path, "r", encoding="utf-8") as _f:
                 _ss_data = _yaml.safe_load(_f) or {}
             _strategy_penalty_cfg = _ss_data.get("strategy_penalty", {})
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"scoring.yaml load failed: {e}")
     _hybrid_standalone_penalties = _strategy_penalty_cfg.get("quantum_hybrid_standalone", {})
 
     # 현재 problem type 판별
@@ -310,13 +311,20 @@ def _generate_execution_strategies(
     from engine.compiler.compiler_registry import _COLUMN_GEN_PROBLEM_TYPES
     _modeling_pattern = "column_generation" if _problem_type in _COLUMN_GEN_PROBLEM_TYPES else None
 
+    # 상위 N개 + quantum_hybrid 전체에 대해 단일 전략 생성
+    # (quantum_hybrid는 Hybrid 전략이 주력이므로, standalone 패널티 적용 후 비교용으로 표시)
+    _single_generated = set()  # 중복 방지
     max_single = min(2, len(solvers))
-    for i in range(max_single):
-        top = solvers[i]
-        label = "최고 점수 솔버" if i == 0 else f"{i+1}순위 솔버"
-        confidence = top["total_score"]
+
+    def _make_single_strategy(solver_data, label_prefix):
+        sid = solver_data["solver_id"]
+        if sid in _single_generated:
+            return
+        _single_generated.add(sid)
+
+        confidence = solver_data["total_score"]
         _extra_cons = []
-        if top.get("category") == "quantum_hybrid":
+        if solver_data.get("category") == "quantum_hybrid":
             penalty = _hybrid_standalone_penalties.get(
                 _modeling_pattern,
                 _hybrid_standalone_penalties.get("default", 0)
@@ -327,29 +335,39 @@ def _generate_execution_strategies(
                     "Heuristic standalone은 이 문제 유형에서 feasible 해 보장 불가 → Hybrid 전략 권장"
                 )
         strategies.append({
-            "strategy_id": f"single_best_{i+1}",
+            "strategy_id": f"single_{sid}",
             "strategy_type": "single",
-            "name": f"단일 솔버: {top['solver_name']}",
-            "description": f"{label} {top['solver_name']}으로 전체 문제를 직접 해결합니다.",
-            "pros": ["구현 단순", "오버헤드 없음", f"적합도: {top.get('suitability', '-')}"],
-            "cons": _get_single_cons(top, model_analysis) + _extra_cons,
-            "estimated_time": top.get("estimated_time", []),
-            "estimated_cost": top.get("estimated_cost", []),
+            "name": f"단일 솔버: {solver_data['solver_name']}",
+            "description": f"{label_prefix} {solver_data['solver_name']}으로 전체 문제를 직접 해결합니다.",
+            "pros": ["구현 단순", "오버헤드 없음", f"적합도: {solver_data.get('suitability', '-')}"],
+            "cons": _get_single_cons(solver_data, model_analysis) + _extra_cons,
+            "estimated_time": solver_data.get("estimated_time", []),
+            "estimated_cost": solver_data.get("estimated_cost", []),
             "confidence": confidence,
             "steps": [
                 {
                     "step_id": "step_1",
                     "step_order": 1,
-                    "solver_id": top["solver_id"],
-                    "solver_name": top["solver_name"],
-                    "provider": top["provider"],
+                    "solver_id": sid,
+                    "solver_name": solver_data["solver_name"],
+                    "provider": solver_data["provider"],
                     "role": "main_solver",
                     "input_type": "full_problem",
-                    "description": f"{top['solver_name']}으로 전체 문제 해결",
+                    "description": f"{solver_data['solver_name']}으로 전체 문제 해결",
                     "parallel_group": None,
                 }
             ],
         })
+
+    # 상위 N개 단일 전략
+    for i in range(min(max_single, len(solvers))):
+        label = "최고 점수 솔버" if i == 0 else f"{i+1}순위 솔버"
+        _make_single_strategy(solvers[i], label)
+
+    # quantum_hybrid solver 단일 전략 (상위 N에 미포함된 경우 추가)
+    for s in solvers:
+        if s.get("category") == "quantum_hybrid":
+            _make_single_strategy(s, f"{s['solver_name']}")
 
     # 
     # Strategy B: 순차 하이브리드 (전처리 + 양자)
@@ -694,7 +712,8 @@ def _generate_execution_strategies(
         })
 
     #
-    # 중복 제거 + 정렬 + 상위 5개
+    # 중복 제거 + 정렬
+    # 상위 N개 + quantum_hybrid 단일 전략은 항상 포함 (solver 카드에서 비교 표시용)
     #
     seen_ids = set()
     unique = []
@@ -704,7 +723,16 @@ def _generate_execution_strategies(
             unique.append(s)
 
     unique.sort(key=lambda s: s["confidence"], reverse=True)
-    return unique[:5]
+
+    # 상위 5개 선택 후, 잘린 quantum_hybrid 단일 전략 복원
+    top = unique[:5]
+    top_ids = {s["strategy_id"] for s in top}
+    for s in unique[5:]:
+        if s["strategy_type"] == "single" and s.get("confidence", 100) < 40:
+            # 낮은 점수 단일 전략 (quantum_hybrid standalone 등) — solver 카드 표시용
+            if s["strategy_id"] not in top_ids:
+                top.append(s)
+    return top
 
 
 
