@@ -64,12 +64,22 @@ generator:
 # action: 도메인 기본값. 고객별 Hard↔Soft 전환은 action_param으로 override.
 feasibility:
   checks:
-    # 유휴 대기시간 상한
+    # 유휴 대기시간 상한 (주간)
     - type: max_value
       field: idle_minutes
       limit_param: max_idle_time
+      column_type: day                     # 주간 duty만 적용
       action: reject
       constraint_ref: max_wait_time_day
+
+    # 유휴 대기시간 상한 (야간/숙박)
+    - type: max_value
+      field: idle_minutes
+      limit_param: max_idle_time_night
+      limit: 300                           # fallback: 주간과 동일
+      column_type: [night, overnight]      # 야간/숙박 duty만 적용
+      action: reject
+      constraint_ref: max_wait_time_night
 
     # 활동시간(운전시간) 상한
     - type: max_value

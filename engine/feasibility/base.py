@@ -182,6 +182,15 @@ class FeasibilityPipeline:
         checks_passed = 0
 
         for handler, cfg, default_action in self._checks:
+            # column_type 태그 매칭: 선언된 type만 적용 (평평한 등호 매칭)
+            type_filter = cfg.get("column_type")
+            if type_filter:
+                col_type = getattr(column, "column_type", "default")
+                # 리스트 또는 단일 문자열 지원
+                allowed = type_filter if isinstance(type_filter, list) else [type_filter]
+                if col_type not in allowed:
+                    continue  # 이 check는 이 column_type에 적용 안 함
+
             checks_run += 1
             result = handler.check(column, cfg, params)
 
