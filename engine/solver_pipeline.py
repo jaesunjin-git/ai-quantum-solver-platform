@@ -841,16 +841,44 @@ class SolverPipeline(BaseSolverPipeline):
         if not os.path.exists(trips_path):
             return None, [], {}, set(), "minimize_duties"
 
-        from engine.column_generator import load_tasks_from_csv, BaseColumnGenerator, BaseColumnConfig
+        from engine.column_generator import (
+            load_tasks_from_csv, resolve_task_depots,
+            BaseColumnGenerator, BaseColumnConfig,
+        )
         from engine.compiler.sp_problem import build_sp_problem, GenerationHint
-
-        tasks = load_tasks_from_csv(trips_path)
-        logger.info(f"SP: loaded {len(tasks)} tasks from {trips_path}")
-        all_task_ids = {t.id for t in tasks}
 
         params = bound_data.get("parameters", {})
         # domain 정보를 params에 주입 (side constraint pipeline에서 사용)
         params["_domain"] = math_model.get("domain")
+
+        # Data Layer: CSV 순수 읽기 → Problem Layer: depot 결정
+        tasks = load_tasks_from_csv(trips_path)
+        resolve_task_depots(tasks, params)
+        logger.info(f"SP: loaded {len(tasks)} tasks from {trips_path}")
+        all_task_ids = {t.id for t in tasks}
+
+        # Stage 5 depot validation (pre-solve 정합성 검증)
+        from engine.validation.registry import get_registry
+        _depot_ctx = {
+            "tasks": tasks,
+            "depot_policy": params.get("depot_policy") or {},
+        }
+        # generator config에서 depot_policy 보충 (params에 없으면 YAML에서)
+        if not _depot_ctx["depot_policy"].get("type"):
+            from engine.config_loader import _get_engine_yaml_paths
+            import yaml as _yaml
+            for _p in _get_engine_yaml_paths(params.get("_domain")):
+                if _p and os.path.exists(_p):
+                    with open(_p, 'r', encoding='utf-8') as _f:
+                        _vals = _yaml.safe_load(_f) or {}
+                    _gen = _vals.get("generator", {})
+                    if isinstance(_gen, dict) and "depot_policy" in _gen:
+                        _depot_ctx["depot_policy"] = _gen["depot_policy"]
+        _depot_result = get_registry().run_stage(5, _depot_ctx)
+        if _depot_result.error_count > 0:
+            logger.warning(f"SP Depot validation: {_depot_result.error_count} errors")
+            if ctx:
+                ctx.stage5_validation = _depot_result.to_dict()
 
         from engine.compiler.objective_builder import extract_objective_type
         objective_type = extract_objective_type(math_model)

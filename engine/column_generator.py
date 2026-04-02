@@ -20,9 +20,63 @@ import logging
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+# ── Segment Type (거점 정책의 적용 단위) ────────────────────
+
+class SegmentType:
+    """Duty segment 유형 — depot 정책이 segment별로 다르게 적용됨.
+
+    Engine은 segment 이름의 의미를 해석하지 않음 (opaque label).
+    도메인별 Generator가 segment를 결정하고, Engine은 rule만 따름.
+
+    기본 제공 값:
+      DAYTIME   — 주간 segment (기본)
+      OVERNIGHT — 야간/숙박 segment
+    도메인 확장 시 문자열로 자유 추가 가능 (예: "split", "multi_day").
+    """
+    DAYTIME = "daytime"
+    OVERNIGHT = "overnight"
+
+    _ALL_KNOWN = {DAYTIME, OVERNIGHT}
+
+    @classmethod
+    def validate(cls, value: str) -> str:
+        """알려진 segment인지 확인. 미등록이어도 허용 (경고만)."""
+        if value not in cls._ALL_KNOWN:
+            logger.warning(f"Unknown segment type: '{value}' — using as-is")
+        return value
+
+
+@dataclass
+class DepotRule:
+    """Segment별 depot 적용 규칙.
+
+    trip_depot_mode:
+      strict  — trip-level depot intersection 적용 (기본)
+      relaxed — trip-level 필터 비적용 (숙박 등 자유 경유)
+      penalty — soft penalty로 적용 (향후 확장)
+    continuity_mode:
+      strict  — 중간 경유도 동일 거점 강제
+      relaxed — 중간 경유 자유
+    """
+    trip_depot_mode: str = "strict"
+    continuity_mode: str = "strict"
+
+    @property
+    def enforce_trip_depot(self) -> bool:
+        return self.trip_depot_mode == "strict"
+
+    @property
+    def enforce_continuity(self) -> bool:
+        return self.continuity_mode == "strict"
+
+
+# 기본 rule (미정의 segment fallback)
+_DEFAULT_DEPOT_RULE = DepotRule(trip_depot_mode="strict", continuity_mode="strict")
 
 
 # ── Column 데이터 모델 (도메인 무관) ─────────────────────────
@@ -68,6 +122,10 @@ class FeasibleColumn:
     @property
     def sleep_minutes(self) -> int:
         return self.inactive_minutes
+
+    # 거점 (depot) — beam 종료 시 단일 값으로 확정
+    start_depot: str = ""           # 시작 거점 (빈 문자열 = 미확정/거점 정책 미적용)
+    end_depot: str = ""             # 종료 거점
 
     # 비용 (SP objective용)
     cost: float = 0.0
@@ -161,6 +219,62 @@ class BaseColumnConfig:
     # 시간 상수
     day_minutes: int = 1440               # 1일 = 1440분 (26시간제 등 대비)
 
+    # ── 거점(Depot) 정책 ─────────────────────────────────────
+    # depot_policy: 거점 분리 정책 (YAML engine_config에서 로딩)
+    #   type: multi(기본=자유) | single(완전분리) | hybrid(조건부)
+    #   enforce_round_trip_depot: 출근=퇴근 (validator에서 체크)
+    #   segment_rules: segment별 depot rule 목록
+    #   default_rule: 미정의 segment fallback
+    #
+    # 주의: 거점 이름/소속 역 매핑은 config가 아닌 고객 데이터(params/CSV)에서 결정.
+    #   엔진은 depot 이름의 의미를 해석하지 않음 (opaque label).
+    depot_policy: Dict = None  # type: ignore
+
+    def __post_init__(self):
+        if self.depot_policy is None:
+            self.depot_policy = {"type": "multi"}
+        if self.block_combine_exclude_types is None:
+            self.block_combine_exclude_types = []
+        if self.seed_trips is None:
+            self.seed_trips = []
+
+    @property
+    def depot_policy_type(self) -> str:
+        """거점 정책 유형 (multi/single/hybrid)"""
+        return self.depot_policy.get("type", "multi") if self.depot_policy else "multi"
+
+    @property
+    def depot_policy_active(self) -> bool:
+        """거점 정책이 활성화되어 있는지 (multi가 아니면 활성)"""
+        return self.depot_policy_type != "multi"
+
+    def get_depot_rule(self, segment: str = SegmentType.DAYTIME) -> DepotRule:
+        """segment에 해당하는 depot rule 반환. 미정의면 default_rule.
+
+        Lazy parsing: depot_policy dict에서 매 호출 시 검색.
+        (YAML 로딩이 __post_init__ 이후에 발생하므로 eager 파싱 불가)
+        """
+        if not self.depot_policy:
+            return _DEFAULT_DEPOT_RULE
+
+        # segment_rules에서 검색
+        for sr in self.depot_policy.get("segment_rules", []):
+            if sr.get("segment") == segment:
+                return DepotRule(
+                    trip_depot_mode=sr.get("trip_depot_mode", "strict"),
+                    continuity_mode=sr.get("continuity_mode", "strict"),
+                )
+
+        # default_rule fallback
+        dr = self.depot_policy.get("default_rule")
+        if dr:
+            return DepotRule(
+                trip_depot_mode=dr.get("trip_depot_mode", "strict"),
+                continuity_mode=dr.get("continuity_mode", "strict"),
+            )
+
+        return _DEFAULT_DEPOT_RULE
+
     # Adaptive CG
     acg_scale: float = 1.0          # 에스컬레이션 배율
     min_column_depth: int = 0       # 최소 task 수 (0=제한 없음, hint에서 설정)
@@ -229,6 +343,13 @@ class TaskItem:
     end_location: str        # 종료 위치
     direction: str = ""      # 방향 (선택)
 
+    # 거점 (depot)
+    # - allowed_depots: Problem Layer가 결정. 빈 set = wildcard (어떤 거점이든 가능)
+    # - raw_depot: CSV에서 읽은 원본값. Problem Layer의 입력 소스.
+    #   Engine은 raw_depot을 직접 사용하지 않음.
+    allowed_depots: FrozenSet[str] = frozenset()
+    raw_depot: str = ""
+
     # 하위 호환 property
     @property
     def dep_station(self) -> str:
@@ -245,6 +366,24 @@ TripInfo = TaskItem
 
 # ── Beam Search State ────────────────────────────────────────
 
+def is_depot_compatible(
+    task_depots: FrozenSet[str], state_depots: FrozenSet[str]
+) -> FrozenSet[str]:
+    """거점 호환성 계산. 결과가 빈 set이면 호환 불가.
+
+    규칙:
+      - task_depots가 빈 set → wildcard (state_depots 유지)
+      - state_depots가 빈 set → 미확정 (task_depots로 초기화)
+      - 둘 다 비어있으면 → 빈 set 유지 (거점 정책 미적용)
+      - 그 외 → intersection
+    """
+    if not task_depots:
+        return state_depots
+    if not state_depots:
+        return task_depots
+    return task_depots & state_depots
+
+
 @dataclass
 class _BeamState:
     """Beam Search 탐색 상태"""
@@ -254,6 +393,13 @@ class _BeamState:
     total_driving: int          # 누적 작업시간
     first_dep_time: int         # 첫 task 시작 시각
     score: float = 0.0          # 정렬 기준
+
+    # 거점 추적: 현재까지 확정된 가능 거점 집합
+    # 빈 set = 아직 거점 미확정 (첫 task 진입 시 결정)
+    current_depots: FrozenSet[str] = frozenset()
+
+    # segment 유형: 도메인 Generator가 결정, Engine은 rule lookup에만 사용
+    segment_type: str = SegmentType.DAYTIME
 
 
 # ── Column Generator (도메인 무관 Base) ──────────────────────
@@ -603,6 +749,8 @@ class BaseColumnGenerator:
         col_id = start_id
 
         for start_task in group_tasks:
+            # 첫 task에서 거점 초기화: allowed_depots가 있으면 그대로, 없으면 전체
+            initial_depots = start_task.allowed_depots if start_task.allowed_depots else frozenset()
             initial = _BeamState(
                 trips=[start_task.id],
                 last_arr_time=start_task.arr_time,
@@ -610,6 +758,7 @@ class BaseColumnGenerator:
                 total_driving=start_task.duration,
                 first_dep_time=start_task.dep_time,
                 score=start_task.duration,
+                current_depots=initial_depots,
             )
 
             # depth 1 column: min_column_depth <= 1일 때만 (과도 생성 방지)
@@ -669,6 +818,11 @@ class BaseColumnGenerator:
             iters = [self._location_departures.get(loc, []) for loc in reachable]
             location_tasks = list(_merge(*iters, key=lambda t: t.dep_time))
 
+        # 거점 사전 필터: segment rule에 따라 on/off
+        rule = cfg.get_depot_rule(state.segment_type) if cfg.depot_policy_active else None
+        depot_filter = (rule and rule.enforce_trip_depot
+                        and bool(state.current_depots))
+
         for t in location_tasks:
             if t.id in task_set:
                 continue
@@ -678,6 +832,9 @@ class BaseColumnGenerator:
             gap = t.dep_time - state.last_arr_time
             if gap <= cfg.max_gap:
                 if state.total_driving + t.duration <= cfg.max_active_time:
+                    if depot_filter and t.allowed_depots:
+                        if not (state.current_depots & t.allowed_depots):
+                            continue
                     candidates.append(t)
 
         return candidates
@@ -687,6 +844,15 @@ class BaseColumnGenerator:
     def _extend_state(self, state: _BeamState, next_task: TaskItem) -> Optional[_BeamState]:
         """상태 확장. feasibility 가능성 없으면 None (조기 pruning)."""
         cfg = self.config
+
+        # 거점 호환성 검사 (segment rule 기반)
+        new_depots = state.current_depots
+        if cfg.depot_policy_active:
+            rule = cfg.get_depot_rule(state.segment_type)
+            if rule.enforce_trip_depot:
+                new_depots = is_depot_compatible(next_task.allowed_depots, state.current_depots)
+                if not new_depots and (next_task.allowed_depots and state.current_depots):
+                    return None  # 거점 교집합 없음 → prune
 
         new_driving = state.total_driving + next_task.duration
         new_tasks = state.trips + [next_task.id]
@@ -734,6 +900,8 @@ class BaseColumnGenerator:
             total_driving=new_driving,
             first_dep_time=state.first_dep_time,
             score=cfg.task_count_score_weight * len(new_tasks) - idle_est + depth_bonus - pair_penalty,
+            current_depots=new_depots,
+            segment_type=state.segment_type,
         )
 
     # ── Column 생성 + feasibility 검증 (override 가능) ────────
@@ -837,12 +1005,30 @@ class BaseColumnGenerator:
             if not feas_result.feasible:
                 return None
 
+        # 거점 fail-safe: single 정책에서 비호환 trip 포함 column 거부
+        if cfg.depot_policy_active and state.current_depots:
+            for tid in state.trips:
+                task = self._task_map.get(tid)
+                if task and task.allowed_depots and not (task.allowed_depots & state.current_depots):
+                    logger.warning(
+                        f"Fail-safe: depot-incompatible column rejected "
+                        f"(resolved={state.current_depots}, "
+                        f"task {tid} depots={task.allowed_depots}, col_id={col_id})"
+                    )
+                    return None
+
         # 도메인별 추가 검증 (복잡 로직 hook — YAML로 표현 어려운 조건부 로직)
         if not self._check_domain_feasibility(column):
             return None
 
         # 도메인별 보정 적용 (검증 통과 후)
         column = self._finalize_column(column)
+
+        # 거점 확정: beam state의 current_depots에서 단일 depot으로 결정
+        if state.current_depots:
+            depots_list = sorted(state.current_depots)
+            column.start_depot = depots_list[0]
+            column.end_depot = depots_list[0]
 
         return column
 
@@ -1244,7 +1430,11 @@ class BaseColumnGenerator:
 # ── Helper: CSV에서 TaskItem 로딩 ────────────────────────────
 
 def load_tasks_from_csv(csv_path: str) -> List[TaskItem]:
-    """정규화된 CSV에서 TaskItem 목록 로딩"""
+    """정규화된 CSV에서 TaskItem 목록 로딩 (Data Layer — 순수 읽기).
+
+    CSV 'depot' 컬럼이 있으면 raw_depot에 저장.
+    allowed_depots는 여기서 결정하지 않음 — Problem Layer의 책임.
+    """
     import csv
 
     tasks = []
@@ -1259,9 +1449,69 @@ def load_tasks_from_csv(csv_path: str) -> List[TaskItem]:
                 start_location=row.get('dep_station', row.get('start_location', '')),
                 end_location=row.get('arr_station', row.get('end_location', '')),
                 direction=row.get('direction', ''),
+                raw_depot=row.get('depot', '').strip(),
             ))
 
     return tasks
+
+
+def resolve_task_depots(
+    tasks: List[TaskItem],
+    params: Optional[Dict] = None,
+) -> None:
+    """Problem Layer: 각 task의 allowed_depots를 결정하는 유일한 진실 공급원.
+
+    우선순위:
+      1. task.raw_depot (CSV 'depot' 컬럼에서 읽은 명시적 값) — 최우선
+      2. params["depots"] 맵 (problem definition에서 주입한 역→거점 매핑)
+      3. 둘 다 없으면 빈 set (wildcard = 어떤 거점이든 가능)
+
+    Engine은 이 함수의 결과(allowed_depots)만 사용.
+    depot 이름의 의미는 해석하지 않음 (opaque label).
+    """
+    # params에서 station→depot 역매핑 구축
+    station_to_depot: Dict[str, List[str]] = {}
+    depots_map = (params or {}).get("depots")
+    if depots_map and isinstance(depots_map, dict):
+        for depot_name, depot_info in depots_map.items():
+            stations = (
+                depot_info.get("stations", [])
+                if isinstance(depot_info, dict)
+                else depot_info
+            )
+            for station in stations:
+                station_to_depot.setdefault(station, []).append(depot_name)
+
+    for task in tasks:
+        # 1순위: CSV raw_depot (명시적)
+        if task.raw_depot:
+            task.allowed_depots = frozenset(
+                d.strip() for d in task.raw_depot.split(',')
+            )
+            continue
+
+        # 2순위: params depots 맵 (역 기반 추론)
+        if station_to_depot:
+            start_depots = set(station_to_depot.get(task.start_location, []))
+            end_depots = set(station_to_depot.get(task.end_location, []))
+            # 교집합 우선 (시작/종료 동일 거점), 없으면 합집합
+            common = start_depots & end_depots
+            task.allowed_depots = frozenset(common if common else (start_depots | end_depots))
+            continue
+
+        # 3순위: wildcard (거점 제약 없음)
+        task.allowed_depots = frozenset()
+
+    # 진단 로그
+    if station_to_depot or any(t.raw_depot for t in tasks):
+        from collections import Counter as _Counter
+        depot_counts = _Counter(d for t in tasks for d in t.allowed_depots)
+        wildcard_count = sum(1 for t in tasks if not t.allowed_depots)
+        logger.info(
+            f"resolve_task_depots: {len(tasks)} tasks, "
+            f"depot distribution={dict(depot_counts)}, "
+            f"wildcard={wildcard_count}"
+        )
 
 
 # 하위 호환 alias

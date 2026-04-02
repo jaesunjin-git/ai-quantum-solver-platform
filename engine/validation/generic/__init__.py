@@ -9,7 +9,8 @@ engine.validation.generic — 플랫폼 공통 검증기 패키지.
   Stage 3 (문제정의)  : ObjectiveValidator, ConstraintValidator, ParameterValidator
   Stage 4 (정규화)    : MappingConfidenceValidator, TransformIntegrityValidator, ColumnMappingValidator
   Stage 5 (컴파일)    : CompileQualityValidator, VariableBoundValidator, ObjectiveExprValidator
-  Stage 6 (솔버 후)   : StatusValidator, KpiRangeValidator, ConstraintSatValidator
+  Stage 5 (거점정책)  : DepotPolicyValidator
+  Stage 6 (솔버 후)   : StatusValidator, KpiRangeValidator, ConstraintSatValidator, DepotSolutionValidator
 """
 
 from engine.validation.generic.upload import (
@@ -44,6 +45,10 @@ from engine.validation.generic.normalization import (
     TransformIntegrityValidator,
     ColumnMappingValidator,
 )
+from engine.validation.generic.depot import (
+    DepotPolicyValidator,
+    DepotSolutionValidator,
+)
 
 __all__ = [
     # Stage 1: Upload
@@ -70,6 +75,9 @@ __all__ = [
     "InfeasibilityDiagnosisValidator",
     # Stage 5: Presolve Feasibility Probing
     "PresolveProber",
+    # Stage 5/6: Depot
+    "DepotPolicyValidator",
+    "DepotSolutionValidator",
 ]
 
 
@@ -93,8 +101,11 @@ def register_all(registry) -> None:
         ConstraintApplyRatioValidator(),
         CompileWarningAnalyzer(),
         PresolveProber(),
+        # Stage 5: Depot Policy
+        DepotPolicyValidator(),
         # Stage 6: Post-Solve
         SolutionStatusValidator(),
+        DepotSolutionValidator(),
         OptimalityGapValidator(),
         ConstraintSatisfactionValidator(),
         CompileQualityValidator(),

@@ -22,8 +22,10 @@ from engine.column_generator import (
     BaseColumnConfig,
     BaseColumnGenerator,
     FeasibleColumn,
+    SegmentType,
     TaskItem,
     _BeamState,
+    is_depot_compatible,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,6 +86,7 @@ class CrewDutyConfig(BaseColumnConfig):
     depot_suffixes: List[str] = None  # type: ignore
 
     def __post_init__(self):
+        super().__post_init__()
         if self.depot_suffixes is None:
             self.depot_suffixes = []  # YAML에서 설정, 미설정 시 매칭 비활성화
 
@@ -192,6 +195,27 @@ class CrewDutyGenerator(BaseColumnGenerator):
         overnight에서 완화되는 것은 span(수면 포함)이지 driving이 아님."""
         return self._crew_config.max_active_time
 
+    def _extend_state(self, state, next_task):
+        """crew 전용: segment 전환 판별.
+        자정 넘김(수면 gap) 연결 시 segment를 OVERNIGHT으로 전환.
+        Engine은 segment label만 보고 depot rule을 적용."""
+        new_state = super()._extend_state(state, next_task)
+        if new_state is None:
+            return None
+
+        # segment 전환: 저녁→새벽 자정 넘김이면 overnight
+        cfg = self._crew_config
+        mc_threshold = (
+            cfg.midnight_crossing_threshold
+            or cfg.overnight_morning_end
+            or cfg.day_start_earliest
+        )
+        if (state.segment_type == SegmentType.DAYTIME
+                and next_task.dep_time < mc_threshold
+                and state.last_arr_time >= cfg.night_threshold - cfg.evening_margin_minutes):
+            new_state.segment_type = SegmentType.OVERNIGHT
+
+        return new_state
 
     # ── depot 인접역 매칭 ─────────────────────────────────────
 
@@ -451,6 +475,17 @@ class CrewDutyGenerator(BaseColumnGenerator):
                     reject_reasons["location_mismatch"] += 1
                     continue
 
+                # 거점: overnight은 "출근 거점 = 퇴근 거점"만 강제.
+                # 중간 경유/숙박 장소는 자유 (타 거점 OK).
+                # 첫 trip(저녁 시작)의 거점 ∩ 마지막 trip(새벽 종료)의 거점
+                if cfg.depot_policy_active:
+                    ev_first_depots = ev_chain[0].allowed_depots
+                    mo_last_depots = mo_chain[-1].allowed_depots
+                    overnight_home = is_depot_compatible(ev_first_depots, mo_last_depots)
+                    if not overnight_home and (ev_first_depots and mo_last_depots):
+                        reject_reasons["depot_start_end_mismatch"] += 1
+                        continue
+
                 # 수면 gap 체크 (config 기반 — 하드코딩 제거)
                 effective_mo_dep = mo_first.dep_time + cfg.day_minutes
                 gap = effective_mo_dep - ev_last.arr_time
@@ -474,12 +509,21 @@ class CrewDutyGenerator(BaseColumnGenerator):
                     reject_reasons["max_active_exceeded"] += 1
                     continue
 
+                # overnight의 거점: 첫 trip ∩ 마지막 trip (출근=퇴근)
+                overnight_depots = frozenset()
+                if cfg.depot_policy_active:
+                    overnight_depots = is_depot_compatible(
+                        ev_chain[0].allowed_depots, mo_chain[-1].allowed_depots
+                    )
+
                 state = _BeamState(
                     trips=combined_ids,
                     last_arr_time=mo_chain[-1].arr_time,
                     last_end_location=mo_chain[-1].end_location,
                     total_driving=total_active,
                     first_dep_time=ev_chain[0].dep_time,
+                    current_depots=overnight_depots,
+                    segment_type=SegmentType.OVERNIGHT,
                 )
                 col = self._try_build_column(state, next_id + count)
                 if col:
@@ -592,12 +636,14 @@ class CrewDutyGenerator(BaseColumnGenerator):
                 continue
 
             # evening chain은 _try_build_column 통과 가능 (night로 분류됨)
+            chain_depots = self._resolve_chain_depots(chain) if cfg.depot_policy_active else frozenset()
             state = _BeamState(
                 trips=[t.id for t in chain],
                 last_arr_time=chain[-1].arr_time,
                 last_end_location=chain[-1].end_location,
                 total_driving=total_driving,
                 first_dep_time=chain[0].dep_time,
+                current_depots=chain_depots,
             )
             col = self._try_build_column(state, next_id + count)
             if col:
@@ -607,6 +653,23 @@ class CrewDutyGenerator(BaseColumnGenerator):
 
         logger.info(f"Evening-only: {count} columns from {len(evening_chains)} chains")
         return count
+
+    # ── 거점(depot) 헬퍼 ──────────────────────────────────────
+
+    def _resolve_chain_depots(self, chain: List[TaskItem]) -> frozenset:
+        """chain 내 모든 task의 allowed_depots 교집합 계산.
+        wildcard(빈 set) task는 무시. 전부 wildcard면 빈 set 반환."""
+        result: Optional[frozenset] = None
+        for task in chain:
+            if not task.allowed_depots:
+                continue  # wildcard — 무시
+            if result is None:
+                result = task.allowed_depots
+            else:
+                result = result & task.allowed_depots
+                if not result:
+                    return frozenset()  # 교집합 없음
+        return result or frozenset()
 
     # ── Greedy chain 구축 (overnight용) ───────────────────────
 
@@ -744,6 +807,8 @@ class CrewDutyGenerator(BaseColumnGenerator):
                     if (cfg.min_sleep_minutes <= gap
                             <= cfg.min_sleep_minutes + cfg.max_sleep_gap_extra):
                         if state.total_driving + t.duration <= self._get_max_active_time(state):
+                            # overnight 연결(자정 넘김)에서는 depot 필터 미적용.
+                            # 숙박 장소는 타 거점 OK — "출근=퇴근" 제약은 column 레벨에서 처리.
                             candidates.append(t)
                             candidate_ids.add(t.id)
 

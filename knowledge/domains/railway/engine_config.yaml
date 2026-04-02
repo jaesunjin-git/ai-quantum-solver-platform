@@ -12,6 +12,33 @@
 
 # ── Column Generator ───────────────────────────────────────
 generator:
+  # ── 거점(Depot) 정책 ─────────────────────────────────────
+  # type: multi(기본=자유) | single(완전분리) | hybrid(조건부)
+  # single: 한 duty 내 거점 변경 불가 + 시작/종료 동일 거점
+  # multi: 거점 제약 없음 (기존 동작, 단일거점 노선 호환)
+  #
+  # 주의: 거점 이름/소속 역 매핑은 여기가 아닌 고객 데이터에서 결정됨.
+  #   - CSV 'depot' 컬럼 (최우선)
+  #   - params의 depots 맵 (problem definition 단계)
+  #   엔진은 depot 이름의 의미를 해석하지 않음 (opaque label).
+  depot_policy:
+    type: single
+    enforce_round_trip_depot: true       # 출근 거점 = 퇴근 거점 (validator에서 체크)
+
+    # segment별 depot rule — Engine은 segment 이름의 의미를 모름
+    default_rule:
+      trip_depot_mode: strict            # trip-level depot intersection 적용
+      continuity_mode: strict            # 중간 경유도 동일 거점
+
+    segment_rules:
+      - segment: daytime
+        trip_depot_mode: strict          # 주간: trip마다 거점 검증
+        continuity_mode: strict          # 중간 경유도 같은 거점
+
+      - segment: overnight
+        trip_depot_mode: relaxed         # 야간: trip-level 필터 OFF (숙박 자유)
+        continuity_mode: relaxed         # 중간 경유 거점 자유 (다대포/신평/노포 숙박)
+
   # Depot 인접역
   depot_suffixes:
     - "기지"

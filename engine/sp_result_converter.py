@@ -319,6 +319,8 @@ def _build_columns_detail(
             "sleep_minutes": col.inactive_minutes,
             "source": col.source,
             "cost": round(col.cost, 2),
+            "start_depot": col.start_depot,
+            "end_depot": col.end_depot,
             "violations": [],
         })
 
