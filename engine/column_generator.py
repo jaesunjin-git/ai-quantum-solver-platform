@@ -536,6 +536,30 @@ class BaseColumnGenerator:
                 )
 
         # ═════════════════════════════════════════════════════
+        # Phase F: Frontier Seeding (고립 시작 노드 rescue)
+        # PREV=0 + NEXT>0인 task를 seed로 beam search.
+        # 그래프의 frontier(시작점)가 1차 beam에서 누락되는 문제 해결.
+        # ═════════════════════════════════════════════════════
+        _task_cov_pre = Counter()
+        for c in all_columns:
+            for tid in c.trips:
+                _task_cov_pre[tid] += 1
+
+        frontier_seeds = self._find_frontier_seeds(_task_cov_pre)
+        if frontier_seeds:
+            frontier_columns = []
+            for seed_task in frontier_seeds:
+                seed_cols = self._run_beam_for_group([seed_task], col_id, cfg)
+                frontier_columns.extend(seed_cols)
+                col_id += len(seed_cols)
+            if frontier_columns:
+                all_columns.extend(frontier_columns)
+                logger.info(
+                    f"Phase F: {len(frontier_columns)} frontier columns "
+                    f"from {len(frontier_seeds)} isolated start nodes"
+                )
+
+        # ═════════════════════════════════════════════════════
         # Phase 3: Greedy fallback (미커버 task)
         # ═════════════════════════════════════════════════════
         covered = set()
@@ -1033,6 +1057,71 @@ class BaseColumnGenerator:
         return column
 
     # ── Single task → multi-task column (2차 패스) ─────────────
+
+    def _find_frontier_seeds(self, task_coverage: Counter) -> List[TaskItem]:
+        """PREV=0 + NEXT>0 + low coverage인 task를 frontier seed로 식별.
+
+        그래프의 시작점(anchor)이 beam search에서 누락되면 fallback에만
+        갇히는 문제를 방지. 이 seed로 forward beam search를 재실행.
+
+        조건:
+          1. coverage <= 1 (beam에서 거의 커버 안 됨)
+          2. PREV=0 (이 task 앞에 연결 가능한 trip 없음)
+          3. NEXT>0 (이 task 뒤로는 확장 가능)
+        """
+        cfg = self.config
+        seeds: List[TaskItem] = []
+
+        # low coverage task만 대상
+        low_cov_ids = {tid for tid, cnt in task_coverage.items() if cnt <= 1}
+        if not low_cov_ids:
+            return seeds
+
+        for tid in low_cov_ids:
+            task = self._task_map.get(tid)
+            if not task:
+                continue
+
+            # PREV degree: 이 task의 start_location에 도착하는 trip 중 gap 내 연결 가능한 것
+            has_prev = False
+            reachable_to = [loc for loc in self._location_departures
+                            if self._can_connect(loc, task.start_location)]
+            # 역방향: 다른 task가 이 task의 start_location에 도착하는지
+            for other in self.tasks:
+                if other.id == tid:
+                    continue
+                if self._can_connect(other.end_location, task.start_location):
+                    gap = task.dep_time - other.arr_time
+                    if 0 <= gap <= cfg.max_gap:
+                        has_prev = True
+                        break
+
+            if has_prev:
+                continue  # 앞에 연결 가능 → frontier 아님
+
+            # NEXT degree: 이 task의 end_location에서 출발하는 trip
+            has_next = False
+            reachable_from = self._reachable_locations(task.end_location)
+            for loc in reachable_from:
+                for nt in self._location_departures.get(loc, []):
+                    if nt.id == tid:
+                        continue
+                    gap = nt.dep_time - task.arr_time
+                    if 0 <= gap <= cfg.max_gap:
+                        has_next = True
+                        break
+                if has_next:
+                    break
+
+            if has_next:
+                seeds.append(task)
+                logger.info(
+                    f"Frontier seed: trip {tid} "
+                    f"({task.start_location}→{task.end_location}, "
+                    f"dep={task.dep_time}, cov={task_coverage.get(tid, 0)})"
+                )
+
+        return seeds
 
     def _build_columns_for_single_tasks(
         self, single_tasks: set, existing: List[FeasibleColumn], start_id: int

@@ -296,12 +296,15 @@ class CrewDutyGenerator(BaseColumnGenerator):
         return column.active_minutes <= cfg.max_active_time
 
     def _check_day_feasibility(self, column, cfg, has_early) -> bool:
-        """주간 duty feasibility (순수 검증)"""
+        """주간 duty feasibility (순수 검증).
+        day_start_earliest 체크: 첫 trip 출발 시각 기준 (prep 미포함).
+        prep은 depot start / relay에 따라 다르지만, eligibility는
+        "첫 운행 시작 시각"으로 판단해야 함."""
         if has_early:
             return False
 
-        duty_start = column.first_trip_dep - cfg.setup_time_relay
-        if duty_start < cfg.day_start_earliest:
+        # day_start: 첫 trip 출발 시각 기준 (prep 제외)
+        if column.first_trip_dep < cfg.day_start_earliest:
             return False
 
         duty_end = column.last_trip_arr + cfg.teardown_time_day
